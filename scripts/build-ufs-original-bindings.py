@@ -86,7 +86,9 @@ while index < len(arguments):
 command += ['-I', str(ROOT / 'build/storage-abi/include'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
             '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-deprecated-declarations',
             '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-unnecessary-virtual-specifier',
-            '-Wno-deprecated-enum-enum-conversion']
+            '-Wno-deprecated-enum-enum-conversion',
+            # Xcode 27 treats the macOS SDK against an iOS target as an error.
+            '-Wno-incompatible-sysroot']
 result = subprocess.run(command, cwd=recipe['directory'], capture_output=True, text=True)
 (reference.with_suffix('.log')).write_text(result.stdout + result.stderr)
 require(result.returncode == 0, (result.stdout + result.stderr)[-3500:])

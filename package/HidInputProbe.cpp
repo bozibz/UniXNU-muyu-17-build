@@ -16,6 +16,9 @@ extern "C" IOService *native_hid_touch_allocate(void);
 extern "C" {
 extern kern_return_t OSKextLoadKextWithIdentifier(const char *);
 volatile uint32_t native_hid_stage,native_hid_resource_found;
+// Which of the two owned devices exist: 0 none, 1 created, 2 created and started. The touch digitizer is the
+// split service (sheng-touch-split=1); a touch request that never leaves this table is not a HID stack problem.
+volatile uint32_t native_hid_device_state, native_hid_touch_state;
 volatile int native_hid_load_status=-1;
 volatile int native_hid_matching_load_status=-1;
 volatile uint32_t native_hid_class_sizes[5];
@@ -176,6 +179,7 @@ void native_hid_input_probe(void) {
                     bool attached=valid && device->attach(resource);
                     native_hid_input_observed(1,attached?0:kIOReturnError);
                     bool started=attached && device->start(resource);
+                    native_hid_device_state=started?2:(valid?1:0);
                     if(!started) {
                         native_hid_input_observed(7,kIOReturnError);
                         if(attached)device->detach(resource);
@@ -188,6 +192,7 @@ void native_hid_input_probe(void) {
                         // Separate digitizer service (primary usage Digitizer/Touch Screen, Built-In).
                         IOService *touch=native_hid_touch_allocate();
                         bool touchStarted=touch && touch->metaCast("IOHIDDevice") && touch->init() && touch->attach(resource) && touch->start(resource);
+                        native_hid_touch_state=touchStarted?2:(touch?1:0);
                         if(!touchStarted && touch){touch->detach(resource);OSSafeReleaseNULL(touch);}
                     }
                     // The offline devices live for this bounded boot. Its

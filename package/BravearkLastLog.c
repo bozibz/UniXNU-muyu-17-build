@@ -205,6 +205,243 @@ braveark_last_log_write(void)
 	braveark_ramoops_write(m);
 }
 
+/* Filtered snapshot of the live message buffer, shared by the timed dump, the marker dump and the
+ * critical-exit hook. Returns the number of bytes written to out (always NUL terminated). */
+#define MUYU_FLAT_BYTES 65536
+static char muyu_flat[MUYU_FLAT_BYTES];
+
+static int
+muyu_keep(const char *line, size_t len)
+{
+	char list[200];
+	char probe[400];
+	size_t copy = len < sizeof(probe) - 1 ? len : sizeof(probe) - 1;
+	const char *token;
+
+	if (!PE_parse_boot_argn("muyu-dump-keep", list, (int)sizeof(list))) {
+		return -1;
+	}
+	memcpy(probe, line, copy);
+	probe[copy] = '\0';
+	for (token = list; *token;) {
+		const char *end = token;
+		size_t n;
+		char needle[64];
+
+		while (*end && *end != ',') {
+			end++;
+		}
+		n = (size_t)(end - token);
+		/* The token must be terminated: searching with the rest of the comma-separated list still
+		 * attached never matches (that bug made every filtered dump report 0 lines). */
+		if (n > 0 && n < sizeof(needle)) {
+			memcpy(needle, token, n);
+			needle[n] = '\0';
+			if (strnstr(probe, needle, copy) != NULL) {
+				return 1;
+			}
+		}
+		token = *end ? end + 1 : end;
+	}
+	return 0;
+}
+
+static int
+muyu_noise(const char *line, size_t len)
+{
+	static const char *skip[] = { "CoreAnalyticsHub", "messageClients of", "LiveActivities",
+	    "For-debug:", "temporary sandbox", "deny(1)", "apfs_gpm", "APFS: disk" };
+	char probe[256];
+	size_t copy = len < sizeof(probe) - 1 ? len : sizeof(probe) - 1;
+
+	memcpy(probe, line, copy);
+	probe[copy] = '\0';
+	for (size_t i = 0; i < sizeof(skip) / sizeof(skip[0]); i++) {
+		if (strnstr(probe, skip[i], copy) != NULL) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+size_t
+muyu_build_dump(char *out, size_t cap)
+{
+	struct msgbuf *m = msgbufp;
+	size_t used = 0, at, want, size, start, first;
+	if (out == NULL || cap < 2) {
+		return 0;
+	}
+	out[0] = '\0';
+	if (m == NULL || m->msg_bufc == NULL || m->msg_size <= 1 || m->msg_magic != MSG_MAGIC) {
+		return 0;
+	}
+	size = (size_t)m->msg_size;
+	want = (size_t)m->msg_bufx;
+	if (want == 0) {
+		return 0;
+	}
+	want = want < MUYU_FLAT_BYTES ? want : MUYU_FLAT_BYTES;
+	start = ((size_t)m->msg_bufx + size - want) % size;
+	first = size - start;
+	if (first > want) {
+		first = want;
+	}
+	memcpy(muyu_flat, m->msg_bufc + start, first);
+	if (want > first) {
+		memcpy(muyu_flat + first, m->msg_bufc, want - first);
+	}
+	at = want;
+	while (at > 0 && used + 1 < cap) {
+		size_t line_start = at;
+		size_t len;
+
+		while (line_start > 0 && muyu_flat[line_start - 1] != '\n') {
+			line_start--;
+		}
+		len = at - line_start;
+		while (len > 0 && (muyu_flat[line_start + len - 1] == '\r' ||
+		    muyu_flat[line_start + len - 1] == '\0')) {
+			len--;
+		}
+		if (len > 0) {
+			int keep = muyu_keep(muyu_flat + line_start, len);
+			if (keep == 1 || (keep < 0 && !muyu_noise(muyu_flat + line_start, len))) {
+				if (used + len + 1 >= cap) {
+					break;
+				}
+				memmove(out + len + 1, out, used);
+				memcpy(out, muyu_flat + line_start, len);
+				out[len] = '\n';
+				used += len + 1;
+			}
+		}
+		if (line_start == 0) {
+			break;
+		}
+		at = line_start - 1;
+	}
+	/* Bring-up: the display path's counters go on top of every dump. Its prints scroll out of the
+	 * window within a minute, but the counters say whether the compositor was still submitting and
+	 * whether the last swap retired, and the timestamps say when the path stopped. */
+	{
+		extern char *native_legacy_state_line(char *, unsigned) __attribute__((weak_import));
+		extern void muyu_proc_census(char *, size_t) __attribute__((weak_import));
+		char line[192];
+		size_t length;
+
+		if (&muyu_proc_census != NULL) {
+			muyu_proc_census(line, sizeof(line));
+			length = strlen(line);
+			if (length > 0 && length + used < cap) {
+				memmove(out + length, out, used + 1);
+				memcpy(out, line, length);
+				used += length;
+			}
+		}
+		if (&native_legacy_state_line != NULL) {
+			native_legacy_state_line(line, (unsigned)sizeof(line));
+			length = strlen(line);
+			if (length > 0 && length + used < cap) {
+				memmove(out + length, out, used + 1);
+				memcpy(out, line, length);
+				used += length;
+			}
+		}
+	}
+	out[used] = '\0';
+	return used;
+}
+
+/* Snapshot text taken when the marker first appears (the buffer wraps within seconds on this board,
+ * so the text must be copied then, not after the delay). */
+#define MUYU_SAVED_BYTES 2401
+static char muyu_saved[MUYU_SAVED_BYTES];
+static size_t muyu_saved_len;
+
+void muyu_console_wake(void);
+
+/* muyu-dump-on=<substring> (+ muyu-dump-after=<seconds>) fires the msgbuf dump a fixed time after that
+ * substring first appears in the newest part of the buffer. Timing-based dumps miss the moment: the
+ * board's boot is slow, and a panic screen drawn while SpringBoard still presents is overpainted by
+ * the next frame, so the dump must wait until the display client is gone. */
+static int
+muyu_dump_on_seen(void)
+{
+	char wanted[96];
+	static unsigned fired = 0;
+	uint32_t after = 0;
+	struct msgbuf *m = msgbufp;
+	char probe[512];
+	size_t size, window, start, first, copy;
+	int write;
+
+	if (fired) {
+		return 0;
+	}
+	if (!PE_parse_boot_argn("muyu-dump-on", wanted, (int)sizeof(wanted)) || wanted[0] == '\0') {
+		return 0;
+	}
+	if (m == NULL || m->msg_bufc == NULL || m->msg_size <= 1 || m->msg_magic != MSG_MAGIC) {
+		return 0;
+	}
+	write = m->msg_bufx;
+	if (write <= 0) {
+		return 0;
+	}
+	size = (size_t)m->msg_size;
+	window = 2048;
+	if (window > (size_t)write) {
+		window = (size_t)write;
+	}
+	start = ((size_t)write + size - window) % size;
+	first = size - start;
+	if (first > window) {
+		first = window;
+	}
+	copy = first < sizeof(probe) - 1 ? first : sizeof(probe) - 1;
+	memcpy(probe, m->msg_bufc + start, copy);
+	probe[copy] = '\0';
+	if (window > first && copy < sizeof(probe) - 1) {
+		size_t more = window - first;
+		if (more > sizeof(probe) - 1 - copy) {
+			more = sizeof(probe) - 1 - copy;
+		}
+		memcpy(probe + copy, m->msg_bufc, more);
+		probe[copy + more] = '\0';
+	}
+	if (strnstr(probe, wanted, copy) == NULL) {
+		return 0;
+	}
+	muyu_saved_len = muyu_build_dump(muyu_saved, sizeof(muyu_saved));
+	if (!PE_parse_boot_argn("muyu-dump-after", &after, (int)sizeof(after))) {
+		after = 0;
+	}
+	if (after) {
+		IOSleep(after * 1000);
+	}
+	fired = 1;
+	return 1;
+}
+
+void muyu_panic_with_log(void);
+void muyu_panic_crash_report(void);
+
+/* Bring-up: take the panel away from the display client before the dump prints. The client keeps
+ * presenting frames for minutes after the boot's last useful one, so a late dump used to be painted
+ * over within a frame. See native_legacy_swap_hold. */
+void
+muyu_console_take_panel(void)
+{
+	extern volatile int native_legacy_swap_hold __attribute__((weak_import));
+
+	if (&native_legacy_swap_hold != NULL) {
+		native_legacy_swap_hold = 1;
+		/* Let a swap that is already past the validator finish, so its copy cannot land on the text. */
+		IOSleep(150);
+	}
+}
+
 static void
 braveark_last_log_writer(void *arg, wait_result_t result)
 {
@@ -213,6 +450,19 @@ braveark_last_log_writer(void *arg, wait_result_t result)
 
 	for (;;) {
 		braveark_last_log_write();
+		if (muyu_dump_on_seen()) {
+			unsigned int crash = 0;
+
+			/* muyu-dump-crash=1: userland logs live in logd and in ReportCrash's files on the
+			 * Data volume, not in msgbuf, so render the newest crash report instead. */
+			if (PE_parse_boot_argn("muyu-dump-crash", &crash, (int)sizeof(crash)) && crash) {
+				muyu_panic_crash_report();
+			}
+			muyu_console_take_panel();
+			muyu_console_wake();
+			panic("LASTLOG %u bytes, snapshot at marker (filtered):\n%s",
+			    (unsigned)muyu_saved_len, muyu_saved);
+		}
 		IOSleep(BRAVEARK_LAST_LOG_INTERVAL_MS);
 	}
 }
@@ -235,3 +485,100 @@ braveark_last_log_start(void)
 }
 
 STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, braveark_last_log_start);
+
+
+/* Bring-up: the kernel text console is parked once the render server owns the scanout (the console
+ * otherwise paints over the frame buffer until the panel shows nothing but text). Every panic path
+ * unparks it first, so a dump is still readable. */
+void
+muyu_console_wake(void)
+{
+	extern void vc_set_text_quiet(int) __attribute__((weak_import));
+
+	if (&vc_set_text_quiet != NULL) {
+		vc_set_text_quiet(0);
+	}
+}
+
+/* Critical-exit hook: build the filtered dump and panic with it (see kern_exit.c). */
+void
+muyu_panic_with_log(void)
+{
+	static char out[MUYU_SAVED_BYTES];
+
+	muyu_console_take_panel();
+	muyu_console_wake();
+	{
+		/* muyu touch bring-up: run the probe here, not during the display bring-up, so a bus fault in the
+		 * probe cannot cost the dump and its rows always land in the same panic text. */
+		extern void native_touch_muyu_probe(void) __attribute__((weak_import));
+		/* The touch frame pump (package/TouchProbeMuyu.cpp) logs a row every couple of seconds; its IOLog
+		 * lines repaint the console and cover this panic screen with small text (measured 2026-10-25 21:13).
+		 * Tell it to go quiet before the dump is built, so the rows it already logged survive on the panel. */
+		extern volatile unsigned int native_touch_muyu_log_off __attribute__((weak_import));
+		if (&native_touch_muyu_log_off != NULL) {
+			native_touch_muyu_log_off = 1;
+		}
+		if (&native_touch_muyu_probe != NULL) {
+			native_touch_muyu_probe();
+		}
+	}
+	muyu_build_dump(out, sizeof(out));
+	panic("LASTLOG %u bytes (filtered):\n%s", (unsigned)strlen(out), out);
+}
+
+/* muyu-dump-at=<seconds>, started from load_init_program so the delay uses the calibrated clock.
+ *
+ * 2026-10-27 pm: this used to panic at the requested time. On this port a panic in a late boot does not
+ * leave the text on the panel (the display client's frames come back, and the panic may reset), so the
+ * dump was captured only by luck. It now takes the panel (native_legacy_swap_hold), unparks the text
+ * console and prints the same snapshot every five seconds. Nothing paints over it, and if anything
+ * still does, the next pass repaints it: the screen can be photographed at leisure, and no panic means
+ * no reset and no stackshot. */
+static void
+muyu_dump_later(void *arg, wait_result_t result)
+{
+	uint32_t at = (uint32_t)(uintptr_t)arg;
+	static char out[MUYU_SAVED_BYTES];
+	(void)result;
+
+	IOSleep(at * 1000);
+	muyu_console_take_panel();
+	muyu_console_wake();
+	{
+		/* Same quieting the panic path does, so the touch pump's rows cannot push the dump off. */
+		extern volatile unsigned int native_touch_muyu_log_off __attribute__((weak_import));
+		extern void native_touch_muyu_probe(void) __attribute__((weak_import));
+		if (&native_touch_muyu_log_off != NULL) {
+			native_touch_muyu_log_off = 1;
+		}
+		if (&native_touch_muyu_probe != NULL) {
+			native_touch_muyu_probe();
+		}
+	}
+	muyu_build_dump(out, sizeof(out));
+	for (;;) {
+		printf("LASTLOG %u bytes (filtered):\n%s\n", (unsigned)strlen(out), out);
+		IOSleep(5000);
+	}
+}
+
+static void
+muyu_dump_start(void)
+{
+	uint32_t at = 0;
+	thread_t thread;
+
+	if (!PE_parse_boot_argn("muyu-dump-at", &at, (int)sizeof(at)) || at < 5) {
+		return;
+	}
+	if (kernel_thread_start_priority(muyu_dump_later, (void *)(uintptr_t)at, BASEPRI_KERNEL, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
+}
+
+void
+muyu_dump_start_late(void)
+{
+	muyu_dump_start();
+}

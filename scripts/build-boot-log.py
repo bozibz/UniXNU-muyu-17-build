@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/braveark-last-log'
 OUT.mkdir(parents=True, exist_ok=True)
 record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
-source = ROOT / 'kits/braveark/BravearkLastLog.c'
+source = ROOT / 'kits/muyu/BravearkLastLog.c'
 obj = OUT / 'BravearkLastLog.o'
 command = []
 args = record['arguments']
@@ -27,12 +27,13 @@ while i < len(args):
     elif not arg.startswith('-W'):
         command.append(arg)
     i += 1
-command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror']
+# Xcode 27 treats the macOS SDK against an iOS target as an error (as in build-arm-driver.py).
+command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-Wno-incompatible-sysroot']
 subprocess.run(command, cwd=record['directory'], check=True, timeout=120)
 (OUT / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 
 policy_record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))
-policy_source = ROOT / 'kits/braveark/BootWatchdogPolicy.c'
+policy_source = ROOT / 'kits/muyu/BootWatchdogPolicy.c'
 policy_obj = OUT / 'BootWatchdogPolicy.o'
 policy_command = []
 policy_args = policy_record['arguments']
@@ -50,18 +51,28 @@ while j < len(policy_args):
     elif not arg.startswith('-W'):
         policy_command.append(arg)
     j += 1
-policy_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror']
+policy_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-Wno-incompatible-sysroot']
 subprocess.run(policy_command, cwd=policy_record['directory'], check=True, timeout=120)
 (OUT / 'policy-compile-command.json').write_text(json.dumps(policy_command, indent=2) + '\n')
 
+# BSD-side crash-log reader (kernel VFS): compiled with the kern_exec record like the policy.
+crash_source = ROOT / 'kits/muyu/MuyuCrashLog.c'
+crash_obj = OUT / 'MuyuCrashLog.o'
+crash_command = [str(crash_source) if arg == str(policy_source) else str(crash_obj) if arg == str(policy_obj) else arg
+                 for arg in policy_command]
+subprocess.run(crash_command, cwd=policy_record['directory'], check=True, timeout=120)
+(OUT / 'crash-compile-command.json').write_text(json.dumps(crash_command, indent=2) + '\n')
+
 archive = OUT / 'libBravearkLastLog.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(policy_obj)], check=True, timeout=30)
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(policy_obj), str(crash_obj)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
     'object_sha256': hashlib.sha256(obj.read_bytes()).hexdigest(),
     'policy_source_sha256': hashlib.sha256(policy_source.read_bytes()).hexdigest(),
     'policy_object_sha256': hashlib.sha256(policy_obj.read_bytes()).hexdigest(),
+    'crash_source_sha256': hashlib.sha256(crash_source.read_bytes()).hexdigest(),
+    'crash_object_sha256': hashlib.sha256(crash_obj.read_bytes()).hexdigest(),
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

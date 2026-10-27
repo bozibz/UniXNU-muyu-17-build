@@ -45,8 +45,11 @@ static bool publishOrMatchWord(IORegistryEntry *entry,const char *key,uint32_t v
     OSData *data=OSData::withBytes(&value,sizeof(value));
     bool result=data && entry->setProperty(key,data);OSSafeReleaseNULL(data);added=result;return result;
 }
+// Bring-up: text console park/unpark (osfmk/console/video_console.c).
+extern "C" void vc_set_text_quiet(int) __attribute__((weak_import));
 extern "C" {
 volatile uint32_t native_legacy_stage;
+volatile uint32_t native_legacy_console_quiet;
 volatile int native_legacy_meta_status=-1;
 volatile uint32_t native_legacy_init_result,native_legacy_start_result,native_legacy_probe_match;
 volatile uint32_t native_legacy_parent_match,native_legacy_object_size,native_legacy_released;
@@ -70,6 +73,22 @@ volatile uint32_t native_legacy_transfer_calls;
 volatile int native_legacy_transfer_status=-1;
 volatile uint64_t native_legacy_transfer_bytes,native_legacy_transfer_request;
 volatile uint32_t native_legacy_retirement_calls,native_legacy_retired_generation,native_legacy_presented_generation,native_legacy_retired_frames;
+// Bring-up: seconds since boot (from the real counter, not the board timebase) of the last validated
+// swap, the last finished transfer and the last retirement, plus the stalled swaps kickSwapQueue had
+// to abandon. A dump then says when the display path stopped, not only what it counted at the end.
+volatile uint32_t native_legacy_stall_recoveries,native_legacy_validate_seconds,native_legacy_xfer_seconds,native_legacy_retire_seconds;
+volatile uint32_t native_legacy_scanout_wcomb;
+volatile uint32_t native_legacy_blank_frames;
+// Bring-up: 1 = the panic dump owns the panel. The display client keeps presenting long after the last
+// useful frame of a boot, so a late dump was painted over within one frame ("small text flashes once").
+// The swap validator rejects everything while this is set.
+extern "C" volatile int native_legacy_swap_hold = 0;
+static uint32_t native_legacy_seconds_now(void) {
+    uint64_t now=0,frequency=0;
+    __asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(now));__asm__ volatile("mrs %0, cntfrq_el0":"=r"(frequency));
+    if(!frequency)frequency=19200000;
+    return (uint32_t)(now/frequency);
+}
 volatile uint64_t native_legacy_retired_current,native_legacy_retired_pending;
 char native_legacy_properties[4096];
 volatile uint32_t native_legacy_client_calls,native_legacy_client_type;
@@ -163,6 +182,7 @@ void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *
     native_legacy_frame_color_other[n]=other;
 }
 void native_legacy_swap_validation_observed(bool accepted,unsigned reason,const void *request,const void *surface) {
+    native_legacy_validate_seconds=native_legacy_seconds_now();
     if(accepted)native_legacy_swap_accepted_count=native_legacy_swap_accepted_count+1;
     else {native_legacy_swap_rejected_count=native_legacy_swap_rejected_count+1;recordRejectedSwap(reason,request,surface);}
     native_legacy_swap_validation_calls=native_legacy_swap_validation_calls+1;
@@ -179,6 +199,13 @@ void native_legacy_copy_timing_observed(uint64_t ticks,uint64_t bytes) {
 }
 __attribute__((noinline)) void native_legacy_transfer_observed(IOReturn status,const void *request,uint64_t bytes) {
     native_legacy_transfer_calls=native_legacy_transfer_calls+1;
+    native_legacy_xfer_seconds=native_legacy_seconds_now();
+    // A frame reached the scanout, so the render server owns the panel: park the kernel text output so it
+    // stops painting over it. Every panic path unparks it before printing.
+    if(status==kIOReturnSuccess && !native_legacy_console_quiet) {
+        unsigned wanted=1;PE_parse_boot_argn("offline-legacy-console-quiet",&wanted,sizeof(wanted));
+        if(wanted && &vc_set_text_quiet) {vc_set_text_quiet(1);native_legacy_console_quiet=1;}
+    }
     native_legacy_transfer_status=status;native_legacy_transfer_request=(uintptr_t)request;native_legacy_transfer_bytes=bytes;
     if(status!=kIOReturnSuccess && boot_progress_stage) {
         char message[120];snprintf(message,sizeof(message),"DISPLAY COPY FAILED status=%08x prepare=%u tries=%u",
@@ -194,6 +221,29 @@ __attribute__((noinline)) void native_legacy_retirement_observed(IOService *disp
     native_legacy_retired_current=current;native_legacy_retired_pending=pending;
     native_legacy_retired_generation=completed;native_legacy_presented_generation=presented;native_legacy_retired_frames=frames;
     native_legacy_retirement_calls=native_legacy_retirement_calls+1;
+    native_legacy_retire_seconds=native_legacy_seconds_now();
+}
+// One line for the panic dump: how far the display path got and when it stopped.
+extern "C" char *native_legacy_state_line(char *buf,unsigned cap) {
+    snprintf(buf,cap,"DISP map=%u cq=%u blk=%u val=%u acc=%u rej=%u xfer=%u ret=%u cl=%u stall=%u fail=%d last_val=%u last_xfer=%u last_ret=%u\n",
+        (unsigned)native_legacy_scanout_wcomb,(unsigned)native_legacy_console_quiet,
+        (unsigned)native_legacy_blank_frames,
+        (unsigned)native_legacy_swap_validation_calls,(unsigned)native_legacy_swap_accepted_count,
+        (unsigned)native_legacy_swap_rejected_count,(unsigned)native_legacy_transfer_calls,
+        (unsigned)native_legacy_retirement_calls,(unsigned)native_legacy_client_calls,
+        (unsigned)native_legacy_stall_recoveries,(int)native_legacy_transfer_status,
+        (unsigned)native_legacy_validate_seconds,
+        (unsigned)native_legacy_xfer_seconds,(unsigned)native_legacy_retire_seconds);
+    return buf;
+}
+// Bring-up: the couple of counters the data probe's heartbeat needs, plus the same uptime clock the
+// display rows use, so the two land on one timeline.
+extern "C" void native_legacy_swap_counters(unsigned *swaps,unsigned *last_swap_seconds) {
+    *swaps=(unsigned)native_legacy_swap_validation_calls;
+    *last_swap_seconds=(unsigned)native_legacy_validate_seconds;
+}
+extern "C" unsigned native_legacy_uptime_seconds(void) {
+    return (unsigned)native_legacy_seconds_now();
 }
 void native_legacy_registration_observed(IOService *display) {
     native_legacy_registration_calls=native_legacy_registration_calls+1;
@@ -373,6 +423,13 @@ void native_legacy_display_late_probe(void);
 extern void native_hid_input_probe(void);
 extern void native_keystore_probe(void);
 extern void native_touch_probe(void);
+// The touch driver (drivers/NativeNovatekTouch): an IOService that owns the panel, brought up here because
+// this is where the boot is settled enough for the SPI/DMA bring-up. Weak, so a build without it still links.
+extern void native_novatek_touch_start(void) __attribute__((weak_import));
+// Live-Data probe (package/MuyuDataProbe.c): muyu-data-probe=<n> lists what the running system actually
+// sees under /private/var (keybags, migration/Setup prefs) - the overlay is invisible from the host.
+extern void muyu_data_probe_start(void) __attribute__((weak_import));
+extern void native_touch_muyu_start(void) __attribute__((weak_import));
 extern void sheng_cpufreq_probe(void);
 extern void sheng_gpu_power_probe(void);
 void native_legacy_display_late_probe(void) {
@@ -384,6 +441,8 @@ void native_legacy_display_late_probe(void) {
     sheng_cpufreq_probe();
     sheng_gpu_power_probe();
     native_touch_probe();
+    if (&native_novatek_touch_start) native_novatek_touch_start();
+    if (&muyu_data_probe_start) muyu_data_probe_start();
     native_hid_input_probe();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");

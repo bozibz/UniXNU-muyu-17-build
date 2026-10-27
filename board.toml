@@ -2,10 +2,10 @@
 # Derived from UniXNU-uke (Xiaomi Pad 7, SM7675): both are Palawan and share the SoC-level values below.
 
 [board]
-name = "braveark"
+name = "muyu"
 soc = "SM8635"
-description = "Brave Ark"
-kit = "braveark"                 # the package/ of this repository appears as kits/braveark in the build tree
+description = "Xiaomi Pad 7 Pro"
+kit = "muyu"                 # the package/ of this repository appears as kits/braveark in the build tree
 
 # The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image. Give --ipsw PATH to use a local file; without
 # it the remote url is read with range requests, only the members that are needed.
@@ -24,11 +24,17 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
 # The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
-# The GPT entry "userdata" (sda12) of LUN 0: first_lba from the BSP GPT (Document_tools/default_bin/gpt_main0.bin),
-# last_lba = first_lba + (fastboot getvar partition-size:userdata = 0x383F1D3000) / 4096 - 1 (224.98 GiB).
+# The GPT entry "userdata" (sda32) of LUN 0. **Derive these from the live GPT every time**: this device's
+# `super` was enlarged once, which moved userdata 2.10 GiB later and changed its size. The values below are
+# from the running system (2026-10-24):
+#   /sys/block/sda/sda32/start = 23691264 sectors (512 B) -> first_lba = 23691264 / 8 = 0x2d3000
+#   /sys/block/sda/sda32/size  = 471908312 sectors       -> 58988539 blocks of 4096 B
+#   last_lba = first_lba + blocks - 1 = 0x3b147fa
+# The previous BSP values (0x24c628..0x3a8b7fa) now point *inside* the current super partition
+# (0x33000..0x2d2fff): using them would overwrite Android's dynamic partitions.
 [userdata]
-first_lba = 0x24c628
-last_lba = 0x3a8b7fa
+first_lba = 0x2d3000
+last_lba = 0x3b147fa
 lba_bytes = 4096
 windows = [
   { name = "OS", component = "OS" },
@@ -36,7 +42,11 @@ windows = [
 ]
 
 [kernel]
-defconfig = "braveark_defconfig"
+# Userland stage: the full kernel plus the owner cache/Data mounts, the RAM block
+# provider (the Data seed) and the launchd watchdog policy. Under muyu-full_defconfig
+# launchd has no writable /private/var (swap reports EROFS 30) and nothing holds the
+# watchdog, so the console stops after load_init_program and the board resets.
+defconfig = "muyu-userland_defconfig"
 # Archive builders of the kernel step, in order. They run only for a configuration with
 # CONFIG_XNU_BUILD_ARCHIVES=y (configs/braveark-full_defconfig), after the bootstrap pass has left the
 # compile records behind. Each entry is a script of the build tree with its arguments.
@@ -45,16 +55,34 @@ archives = [
   "build-corecrypto-14.py --namespace",
   "build-arm-driver.py ArmDTPlatform",
   "build-arm-driver.py ArmCpu",
+  # Userland stage: the AES subclass the storage stack wants (CONFIG_XNU_NATIVE_AES).
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
   "prepare-storage-headers.py",
   "build-arm-driver.py NativeUfs --unverified",
   "build-ufs-original-bindings.py",
+  # The Data seed's typed provider: the packed DBRDISK1 that DarwinBoot hands over is
+  # published by NativeRamBlock, which native_owner_data_prepare() mounts on /private/var.
   "build-arm-driver.py NativeRamBlock",
+  # NativeRamBlock needs the original IOBlockStorageDevice aliases, but the UFS binder
+  # below already emits them (same pinned candidate, same class, identical .set values).
+  # A second copy of original-bindings.o is 11 duplicate symbols at link time, so the
+  # RAM block archive keeps only its own object and resolves the aliases from libNativeUfs.a.
+  # Upstream's build-native-virtio-bindings.py would need the live storage snapshot
+  # (build/storage-abi/interface-audit.json), which this board does not have.
+  # CONFIG_XNU_SOURCE_MOCKFS: the minimal executable-root filesystem for offline mounts.
   "build-mockfs-fixture.py",
-  "build-sheng-platform-power.py",
-  "build-libpthread-kernel.py",
   "build-native-legacy-display.py",
+  # pthread is needed by pthread_shims (kernel panics without it at pthread_shims.c:318).
+  # Turned on together with CONFIG_XNU_SOURCE_PTHREAD in the board configuration.
+  "build-libpthread-kernel.py",
+  # AMFI panics with "No PMGR?" unless an ApplePMGRNub exists; this kit is the
+  # original-PMGR integration it wants. Paired with CONFIG_XNU_SHENG_PMGR=y and the
+  # sheng-pmgr=2 boot argument.
+  "build-sheng-platform-power.py",
+  # CONFIG_XNU_BOOT_LOG / CONFIG_XNU_WATCHDOG_POLICY: the pram log writer (the next boot
+  # prints "PREVIOUS XNU LOG") and the launchd policy that disables com.apple.watchdogd,
+  # so a missing boot-task check-in no longer resets the board.
   "build-boot-log.py",
 ]
 
@@ -102,15 +130,15 @@ roots = [
 ]
 
 [firmware]
-config = "braveark"              # Resources/Configs/braveark.toml in the Mu-Silicium checkout (--uefi, branch braveark)
-dsc = "Platforms/Brave/bravearkPkg/braveark.dsc"
-fd = "Build/bravearkPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+config = "muyu"              # Resources/Configs/braveark.toml in the Mu-Silicium checkout (--uefi, branch braveark)
+dsc = "Platforms/Xiaomi/muyuPkg/muyu.dsc"
+fd = "Build/muyuPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
 preflight = []
 submodules = ["Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
-patches = ["Resources/MuPatches/Gic-Spurious.patch"]
+patches = []  # TODO: Gic-Spurious.patch 在 braveark 私有 UEFI 仓库里，暂缺
 packages = [
   "{uefi}",
-  "{uefi}/Platforms/Brave",
+  "{uefi}/Platforms/Xiaomi",
   "{tree}/package",
   "{tree}/drivers/DarwinBoot",
   "{edk2}",
@@ -125,33 +153,87 @@ packages = [
 
 [firmware.defines]
 ENABLE_SECUREBOOT = "1"
-DEVICE_MODEL = "braveark"
+DEVICE_MODEL = "muyu"
 MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
-BUILDID_STRING = "braveark-research"
+BUILDID_STRING = "muyu-research"
 
 # The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and
 # the optional trust cache and Data seed. The loader (DarwinBoot) is part of the firmware volume.
 [payload]
-volume = "BRAVEESP"
-size_mib = 64
+# Bring-up: no menu wait at all; spurious USB input events cancel a countdown.
+timeout = 0
+volume = "MUYUESP"
+size_mib = 60          # fragments mode keeps the 33.8 MB stock ramdisk; 60 MiB still fits the 96 MiB partition
 loader = "firmware"
-title = "braveark first boot: source 4K XNU to console"
+title = "muyu first boot: source 4K XNU to console"
 dram_size = "0x80000000"             # SMEM RAM table observed on the device
 skip_setup_tool = "scripts/seed-data-skip-setup.py"   # used by --skip-setup
-panic_screen = true                  # native XNU panic output; Font.h is vendored in scripts/
+panic_screen = true
+# The panel is black after the boot logo and no text ever appears, while the kernel is
+# known to run (reset probes). Two payload-only probes separate the possible causes
+# without a kernel rebuild:
+#
+#  entry_probe_fill  paint the whole panel at kernel entry (MMU still off, the physical
+#                    GOP base from boot_args Video[0], no mapping and no console), then
+#                    park. A solid colour proves the kernel entry ran and the frame
+#                    buffer is reachable; black means either the entry never ran or the
+#                    handed-over base is wrong.
+#  entry_probe_fb_after
+#                    draw one line later, through the panic screen renderer's mapped
+#                    vinfo, right after PE_create_console(); proves the mapped path
+#                    works even if the video console stays disabled.
+# PROVEN 2026-10-24 14:20: the fill probes fires - the kernel entry code runs on this
+# device. It parks the kernel, so it is off for normal bring-up; turn it back on to
+# confirm the entry again.
+# entry_probe_fill = "0xFF00FF00"
+# entry_probe_fill_base = "0xE3940000"
+# entry_probe_fill_size = "3200x2136"
+# Mu-Silicium's GOP base was not the scanned-out buffer (green never appeared), while the
+# UEFI text console demonstrably draws on the splash region. Paint that region instead:
+# it is the reserve the ABL/AOP hand over, 3200x2136 at 32 bpp.
+# entry_probe_fb_after = "_PE_create_console"
+# entry_probe_fb_text = "FB PROBE: kernel writes the panel"
 # The bundle of the two unchanged original trust-cache modules (static + SystemOS cryptex) of
 # 21H461, the same bundle sheng accepts; nothing is added to it.
 trust_cache_sha256 = ["7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7"]
 kernel_args = [
-  "-v",
-  "serial=3",
+  # "-v",   # dropped 2026-10-27: console spam buried the panic dump
   "debug=0x14e",
-  # DEVELOPMENT kernels keep kprintf off unless this is set; BraveArk has no wired UART,
+  # DEVELOPMENT kernels keep kprintf off unless this is set; this device has no wired UART,
   # so kprintf then falls back to the framebuffer video console. Graphics boot
   # suppresses text until -bravearktextconsole switches the console to text mode.
-  "-enable_kprintf_spam",
+  # The flag name is fixed by zzzzzz-video-console-text.patch (still the BraveArk
+  # spelling): passing -muyutextconsole here is silently ignored, which is why the
+  # panel stayed empty while the kernel itself was running fine.
+  # "-enable_kprintf_spam",   # dropped 2026-10-27: console spam buried the panic dump
   "-bravearktextconsole",
+  # USB bring-up: adopt the DWC3 the ABL leaves behind and re-attach it. See
+  # UniXNU-muyu/docs/USB-DEBUG-PORT.md. Inert unless the driver is built.
+  # Boot log into the board ramoops record; Android pstore reads it back as
+  # /sys/fs/pstore/console-ramoops-0 after the reboot (no root needed).
+  # NativeUfs adopts the controller the firmware left running and, for probe 9,
+  # leaves the console log in the unused tail of vendor_boot_a.
+  # native-ufs-probe=9 is the read-only GPT survey: it panics on purpose to print the
+  # table. The table was verified on 2026-10-24 (super 33000-2d2fff, userdata
+  # 2d3000-3b147fa), so the probe stays off for normal boots.
+  # "native-ufs-probe=9",
+  # 11 = after the root image is flashed: manifest + each window's GPT (read-only).
+  # "native-ufs-probe=11",
+  # Panic with the full root-publication diagnostics (stage, reason, media text).
+  # NativeUfs is built with --unverified (no NATIVE_VERIFIED_BLOCK), and in that build
+  # root publication refuses to run unless this says so ("signed window identities
+  # rejected" otherwise).
+  "native-ufs-allow-unverified=1",
+  # The firmware UFS driver leaves the SMMU stream mapping in place; repoint it
+  # instead of panicking (NativeUFS.cpp "conflicting UFS stream mapping").
+  "native-ufs-smmu-takeover=1",
+  # Publish the root image (SHNGROOT manifest in userdata) as block devices so the
+  # kernel can mount APFS. Requires the userdata root image to be flashed.
+  "native-ufs-root=1",
+  # Bring-up aid: park the CPU after a panic instead of restarting, so the panic
+  # text stays on the panel long enough to be read or photographed.
+  "braveark-hold-reboot=1",
   "kt_fixed_zones=120",
   "offline-legacy-register=1",
   "offline-legacy-gop=1",
@@ -161,29 +243,185 @@ kernel_args = [
   "offline-legacy-transfer=1",
   "offline-legacy-cpu-present=1",
   "offline-legacy-default-surface=1",
+  # The scanout region is DRAM: map it write-combining instead of Device-nGnRnE (2026-10-25: the device
+  # stores of the frame copy are what cap the compositor at a few frames per second). 0 restores the old
+  # mapping.
+  "offline-legacy-wcomb=1",
+  # Recover a transferred swap that never retires (its latch otherwise stops every later kick and the
+  # client waits in it forever). 0 disables the recovery.
+  "offline-legacy-stall-guard=1",
   "offline-hid-home=1",
   "offline-hid-input=1",
+  # Touch digitizer: NativeHidInput arms its HID digitizer source when this is 1 and reads the finger set
+  # that the muyu frame pump publishes (native_touch_seq seqlock, twelve slots).
+  "sheng-touch-hid=1",
+  # Separate digitizer-only HID service (primary usage Digitizer/Touch Screen, product "Offline touch
+  # digitizer"): with touch-hid alone the digitizer collection rides on the keyboard device, and on
+  # 2026-10-25 20:57 that sent 401 HID reports (k=1 h=401) that iPadOS never turned into touches.
+  # 2026-10-25 21:51: **the split digitizer service never dispatches** - with it on, `disp=0/0` in the drv rows
+  # (2050 reports sent, wrapped dispatchEvent never entered, UI dead). With it OFF the digitizer collection rides
+  # on the keyboard device, exactly as sheng's board.toml does it, and iPadOS reacts to the finger. Keep it off.
+  # "sheng-touch-split=1",
   "offline-legacy-phase=4",
+  # 2026-10-27 pm: the heartbeat measured exactly 60 swaps per minute (1.0 Hz) - one frame per second, and
+  # 1 s is the compositor's swap-wait timeout, i.e. it never gets a vsync. sheng's board sets
+  # sheng-vsync=144; this port never set it at all. Without it the whole UI (and the boot progress
+  # animation, which advances per presented frame) crawls. The GOP scanout has no vblank, so the driver's
+  # work-loop timer sends the family's vsync message instead.
+  "sheng-vsync=60",
   "offline-mobile-graphics-client=1",
   "offline-mobile-graphics-load=1",
   "offline-apfs-load=1",
-  "boot-progress=2",
   "-apfs_shared_datavolume",
   "offline-key-events=1",
   "sheng-log=1",
   "sheng-pmgr=2",
-  "armcpu-diagnostics=1",
+  # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
+  # NativeRamBlock overlay); pairs with [payload.adt] persistent_data = true and a large seed.
+  # 2026-10-27: ephemeral Data (sheng configuration). With AKS published the boot reaches the
+  # progress bar; the persistent store is what leaves it stuck at the end.
+  "sheng-data-persist=2",
+  # 2026-10-26 19:15: experiment 5 (sheng-data-reset=2 + sheng-lite=1) did NOT get past the upgrade gate
+  # ("Swipe up to upgrade" again), and reset=2 erases the persisted Data overlay on every boot - a
+  # landmine for the next session. Back to the working baseline: original seed + persistent store, no
+  # reset, no lite. Re-enable only for a deliberate one-boot experiment.
+  # "sheng-data-reset=2",
+  # "sheng-lite=1",
+  # Owned AppleKeyStore (NativeKeyStoreEvents): answer libaks truthfully - no keybag, no passcode.
+  # Without these two the port has no AppleKeyStore at all and PreBoard asks for a passcode forever.
+  "sheng-aks=1",
+  # sls 3 = MobileKeyBag "no passcode" (PreBoard gone; progress bar then stalls at the very end).
+  # sls 0 = "unlocked" - the state migration's tail may be waiting for.
+  "sheng-aks-sls=0",
   "sheng-disable-watchdogd=1",
+  # -1 disables the Apple ARM watchdog timer kext (the genuine Apple boot argument).
+  # uke: the reset moved later with this set, so the kernel timer is one of two sources;
+  # the other one is watchdogd, handled by CONFIG_XNU_WATCHDOG_POLICY + sheng-disable-watchdogd.
+  "wdt=-1",
   "sheng-smp=1",
+  # Bring-up dump: ten minutes into userland, panic with the display-path counters and the kept kernel
+  # messages. Timed rather than marker-based: the first ReportCrash of a boot can come well before the
+  # lock screen (2026-10-25 09:16: an 82 s marker put the dump at 142 s, before any display client), and
+  # marker+delay then parks the machine before the interesting phase. The dump always starts with one
+  # DISP line (map/val/acc/rej/xfer/ret/cl/stall/fail/last_xfer/last_ret).
+  # Bring-up dump after eight minutes: long enough to see whether the lock screen stays visible now
+  # that the kernel text console is parked once the render server has presented a frame.
+  # 2026-10-25 17:00: at 60 s the panic screen was overpainted by the display client's next frame, so the
+  # dump has to come later (stage 24 measurements are unchanged).
+  # Bring-up: the muyu touch probe (package/TouchProbeMuyu.cpp). Stage 1 only reads GCC/TLMM/wrapper/SE
+  # state and writes nothing; run it first and look at the "MUYU TOUCH" rows in the dump.
+  # 2026-10-25 13:42, UEFI probe: the S4 branch is OFF at BDS (0x52008 bit 26 clear, CBCR 0x183bc bit 31
+  # set), voting bit 26 turns it on, and GENI init writes then succeed in the firmware. Stages 6-9 give
+  # the kernel the same vote and then one more write per stage: 6 = GCC vote only, 7 = + SE4 0x28
+  # write-back, 8 = + SE4 0x618, 9 = + full GENI init and nvt_identify.
+  # 2026-10-25 16:40, stage 22: gpio0 (outside tlmm-vm-gpio-list) vs gpio16 (MISO, inside it) run the
+  # same output/pull sequence with every ctl and io readback printed; then CS is driven from the pin
+  # controller (gpio19 held low) while the engine clocks four different 8-byte patterns.
+  # 2026-10-25 17:05, stage 23: hand-clocked (bit-banged) Novatek id frame, no GENI at all; then the
+  # same frame after releasing each tlmm-vm-gpio-list line that is not an SPI lane or the IRQ (44,45,46,
+  # 47,29,177,128,129,131,77,78) in case the controller's reset or power enable is one of them, and the
+  # ramoops region of the stock DTB for the Android touch driver's own probe lines.
+  # 2026-10-25 17:15, stage 24: pull-up settling at 0.1/1/10/100 ms on the five pads; the engine's own
+  # SPI_CS assert/deassert with the lanes muxed (does the command reach gpio19 at all); all 24 role
+  # assignments of the four pads hand-clocked, in case l0..l3 as the DT names them are permuted.
+  # 2026-10-25 17:20, stage 25: all 24 pin-role permutations with three reads each (signature per
+  # permutation) after stage 24 found one non-zero answer at 0321, then the full vendor identify
+  # sequence (engine reset, bootloader reset, page select, id read) with both chip-select polarities.
+  # 2026-10-25 17:25, stage 26: the single answering role set (MISO 16, MOSI 19, CLK 18, CS 17) with
+  # clock phase, MISO bias and clock rate varied, three reads each, plus the DT's own lanes as control.
+  # 2026-10-25 17:30, stage 27: hold MOSI/CLK/CS at all eight idle combinations and read gpio16 with a
+  # pull-up and a pull-down, to see which pad switches the controller's output; then release each candidate
+  # reset line with chip select asserted and watch that pad.
+  # 2026-10-25 17:35, stage 28: does gpio16 follow gpio17's level without a clock (reset or chip select)
+  # or only under clocks; then clock a full id frame on the DT lanes and count ones on all sixteen
+  # tlmm-vm-gpio-list pads, to find which pad really carries the controller's data.
+  # 2026-10-25 17:40, stage 29: read-only SPMI through the PMIC arbiter (cliffs addresses, same as
+  # SM8550): version, APID count, a known-good SDAM read, and the PERPH_TYPE of the first 64 APIDs.
+  # 2026-10-25 17:45, stage 30: read-only PMIC census over SPMI - every mapped APID's PERPH_TYPE, a
+  # type histogram, and mode/enable/level of every GPIO peripheral. Nothing is written.
+  # 2026-10-25 17:52, stage 31: for every PMIC GPIO that is not enabled, make it a digital output, drive
+  # it high (then a low pulse), wait, and read the Novatek id by hand; restore after each. Stops on the
+  # first non-zero answer.
+  # 2026-10-25 18:10, stage 32: the short five-row check to run right after a stock-Android boot (settle on
+  # MISO/IRQ, id read in the DT lane order twice, in the one order that ever answered twice, and the
+  # engine chip-select on the pad).
+  # 2026-10-25 18:35, stage 33: the mode/rate matrix redone with setSpiPins() first - every earlier
+  # serial-engine test except stage 16 ran with the four SPI pads still in their boot state.
+  # 2026-10-25 19:10, stage 34: after the id, does this part run a firmware of its own? The event buffer and
+  # gpio54 are sampled before anything is written, again after nvt_identify() resets the part into its ROM,
+  # then the three start-scanning steps one at a time and a one-second THP header poll. A ROM bootloader
+  # waiting for a download answers the id and nothing else (reset_state 0xa0..0xaf).
+  # 2026-10-25 19:40, stage 35: hand the part a firmware (sheng's stage 4 flow). The image comes from
+  # .cache/firmware/novatek/<default>.bin via scripts/gen-touch-firmware.py; right now that is the public
+  # NT36532E image (see PROVENANCE.md next to it), because muyu's own vendor firmware is a
+  # request_firmware() file in /vendor/firmware that no unprivileged path on the device can read.
+  # If the download fails in the reset-state handshake the stage retries once with the other event-buffer
+  # map (a ROM answers ENB_CASC with 0, i.e. "cascade", whatever the board really is).
+  # 2026-10-25 20:30: the dump-time probe is OFF and the frame pump runs as a kernel thread instead
+  # (muyu-touch-drv=1, below): the thread brings the part up once at ~45 s, then polls and publishes finger
+  # sets through the whole session, so a touch reaches iPadOS instead of only printing rows at dump time.
+  # Running both would fight over the same part (the probe downloads firmware again), so only one is on.
+  # (no "muyu-touch": its absence keeps the dump-time probe inert; the driver thread below replaces it)
+  "muyu-touch-drv=1",        # the pump waits 45 s by itself (muyu-touch-delay overrides)
+  # 2026-10-26 12:45: the lock-screen diagnosis. The dump buffer is only 2401 bytes, so the touch pump goes
+  # quiet (muyu-touch-quiet) and the filter is narrowed to the processes that decide whether the
+  # "Swipe up to upgrade" / passcode flow can finish.
+  # 2026-10-26 19:40: the live-Data probe (package/MuyuDataProbe.c) prints "MUYU DATA" rows; the touch
+  # pump has its own 30 s cadence, so the filter only needs the MUYU prefix (cmdline is at its limit).
+  "muyu-dump-keep=MUYU",
+  "muyu-data-probe=2",
+  # Keep the pump's rows out of msgbuf so the probe rows survive to the dump.
+  "muyu-touch-quiet=1",
+  # 2026-10-27 pm: the boot stops creating processes at ~75 s, with mediaanalysisd/photolibraryd/
+  # photoanalysisd/softwareupdated among the last ones on an empty photo library and no network.
+  # That is exactly the batch sheng disables for bring-up (see package/BootWatchdogPolicy.c), and
+  # no boot task ever completed past them. Disable the batch and watch the bar.
+  "sheng-lite=1",
+  # 2026-10-27 pm: heartbeat every 60 s, one short line each, so the 2401-byte panic text holds a trend
+  # instead of a single instant: t, process count, launchd/backboardd/SpringBoard states, display swaps
+  # and the uptime of the last one, AKS opens/calls, and the files the setup/migration flow touches.
+  "muyu-data-hb=60",
+  # 2026-10-27 pm: the bar stalls at 80-90% after several minutes now, so the probe has to look at the
+  # machine AFTER that, not 70 s in. Probe at 330 s, dump at 360 s: both land in the stalled state.
+  # 2026-10-27 pm: 5 s before the dump. At 180 s the probe rows were already pushed out of msgbuf by
+  # the touch pump, so the dump showed only the heartbeats.
+  "muyu-data-delay=236",
+  # "muyu-touch-quiet=1",   # dropped 2026-10-27: cmdline budget (touch pump lines are not in the keep list)
+  # 2026-10-26 22:50: the official skip-setup path (this + --skip-setup) did not even reach the boot logo,
+  # so it is disabled again. It needs a profile/browser check before another try.
+  # "sheng-disable-jobs=com.apple.identityservicesd,com.apple.locationd,com.apple.CommCenter,com.apple.iconservices.iconservicesagent",
+  # 2026-10-26 13:07: the touch pin interrupt stays OFF. Two boots measured it: `irq=1/0` (armed, never
+  # fired) and, worse, the panel stopped advancing its frame counter after the arming writes. Polling is
+  # the working configuration; the readback diagnostics stay in the code for a future attempt.
+  # "muyu-touch-irq=1",
+  # 2026-10-27 pm: back on, with the stackshot count-drift panic fixed (patches/xnu/zzzzzzzzzzzzz), so the
+  # dump text actually reaches the panel instead of an assertion. The 360 s dump showed a healthy machine
+  # with the bar half way; at 1200 s the bar was nearly full but the text was painted over within a frame
+  # (see native_legacy_swap_hold). 1500 s: close to the "stuck at the very end" moment, and now stable.
+  # "muyu-dump-at=240",   # off for the sheng-lite run: a dump at 4 min freezes the panel and hides whether
+  #                       # the boot now finishes; the heartbeat is still logging if we need a dump later.
+  # Bring-up: a synthetic Home press resets the idle timer and (on this port) wakes the panel, so the
+  # display does not stay blanked after the first lock screen when no touch exists yet. First press 90 s
+  # after the second presented frame, then every 60 s, six times.
+  # "offline-hid-auto-home=90",   # dropped 2026-10-27: unattended-test automation, cmdline budget for the AKS probe
+  # "offline-hid-auto-home-count=6",   # dropped 2026-10-27: unattended-test automation, cmdline budget for the AKS probe
+  # "offline-hid-auto-home-interval=60",   # dropped 2026-10-27: unattended-test automation, cmdline budget for the AKS probe
   "armcpu-spi-ipi=1",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]
 
 [payload.adt]
-tool = "scripts/make-braveark-adt.py"
+tool = "scripts/make-muyu-adt.py"
 chip_id = "207"
-owned_memory_size = "0x10000000"     # uke's value; BraveArk shares its memory map
+# 256 MiB (uke's value) is not enough: with the Data volume and union SystemOS mounted, launchd's
+# boot tasks push the kernel window to 165 free pages and jetsam kills liveactivitiesd (2026-10-24
+# 19:30, LASTLOG dump). 1 GiB fixed that (10+ minutes up, Apple logo, APFS xid 29170); this is the
+# value umi uses on the same donor image.
+# Boot speed matters more than headroom here: the SystemBoot coalition's boot tasks are killed with
+# SIGTRAP when they overrun their deadline, and the 4.6 GiB window made early boot much slower than
+# the 3 GiB one that actually reached the lock screen (2026-10-25 measurement).
+owned_memory_size = "0x130000000"     # 回到 4.75 GiB：2/3 GiB 都救不了 boot-task 超时（§36.4）
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 # mount(8) phase 1 requires a boot manifest hash to name /private/preboot/<hash>.
 # uke has no Apple personalization manifest, so this is an explicit bring-up
@@ -191,19 +429,20 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 boot_manifest_hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 packed_data_ramdisk = true
+# With sheng-data-persist=2 the Data disk keeps its writes in a window at the end of userdata, so it
+# is not ephemeral storage; the first-boot data migration (datamigrator) then runs and the staged
+# system apps install. Costs the `ephemeral-storage` ADT property (make-muyu-adt.py --persistent-data).
+# 2026-10-26: persistent=false (ephemeral) hangs at the logo on muyu (big seed needs the store-backed
+# path); restored to true. Migration bypass is being pursued without ephemeral.
+persistent_data = true
 ipad_identity = true
 unique_chip_id = "required"          # the platform seed is not stored in any repository
 
 # Image parameters come from the Mu-Silicium device config; [bootimg.image] would override them.
 
 # The stock ABL powers the panel off when the device tree has no splash region, so add it.
-[bootimg.image]
-header_version = 4
-base           = 0x00000000
-kernel_offset  = 0x00008000
-tags_offset    = 0x01e00000
-pagesize       = 4096
 
+# The stock vendor_boot DTB has no splash region; the ABL powers the panel off without one.
 [[bootimg.dtb_node]]
 path = "/reserved-memory/splash_region"
 props = [
@@ -211,9 +450,7 @@ props = [
   { name = "reg", type = "x", value = ["0x0", "0xe3940000", "0x0", "0x2b00000"] },
 ]
 
-# The boot image has no ramdisk. The payload is the vendor_boot vendor ramdisk,
-# which the ABL loads at 0x1000000; UkeBootMemoryDxe publishes this range as
-# the FAT volume the boot manager scans.
+# The ABL loads the vendor_boot vendor ramdisk at 0x1000000; the payload volume is there.
 [[bootimg.dtb_node]]
 path = "/chosen"
 props = [

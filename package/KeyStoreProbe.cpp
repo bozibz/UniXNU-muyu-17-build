@@ -64,6 +64,15 @@ static void aks_publish(void) {
     for (; i < 47; ++i) boot_progress_ext[1][i] = ' ';
     boot_progress_ext[1][47] = 0;
 }
+// Called by the bring-up probe: one row per selector the owned keybag answered, so a stuck migration can
+// be traced to the call it could not complete.
+void native_aks_dump(void) {
+    for (unsigned i = 0; i < 96; ++i) {
+        if (!aks_count[i]) continue;
+        IOLog("MUYU DATA AKS sel=%u n=%u rc=%d\n", i, (unsigned)aks_count[i], (int)aks_rc[i]);
+    }
+}
+
 void native_aks_opened(void) {
     native_aks_opens = native_aks_opens + 1;
     aks_publish();
@@ -88,7 +97,12 @@ static void native_keyevents_probe(void) {
     if (data && data->getLength() == sizeof(ephemeral))
         memcpy(&ephemeral, data->getBytesNoCopy(), sizeof(ephemeral));
     OSSafeReleaseNULL(chosen);
-    if (ephemeral != 1 || original) return;
+    // sheng publishes the owned AppleKeyStore only for an ephemeral Data volume. This port runs a
+    // persistent Data volume (sheng-data-persist=2), and without the service libaks takes the
+    // "device has a passcode" path that PreBoard turns into an unlock prompt nobody can answer.
+    // Publish it for both: the driver answers truthfully (no keybag, no passcode, nothing locked).
+    (void)ephemeral;
+    if (original) return;
     const OSSymbol *name = OSSymbol::withCString("AppleKeyStore");
     bool absent = name && !OSMetaClass::getMetaClassWithName(name);
     OSSafeReleaseNULL(name);

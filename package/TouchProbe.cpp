@@ -44,6 +44,8 @@ static void *native_touch_sink_context;
 void native_touch_set_sink(void (*sink)(void *),void *context) {
     native_touch_sink=sink;native_touch_sink_context=context;
 }
+// Diagnostics for the muyu driver thread: is a consumer registered, and how many HID reports went out.
+int native_touch_sink_ready(void) {return native_touch_sink != nullptr;}
 }
 
 namespace {
@@ -294,6 +296,12 @@ void publish(unsigned count, const nvt_contact *c) {
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_seq = native_touch_seq + 1;
     if (native_touch_sink) native_touch_sink(native_touch_sink_context);
+}
+
+// Same publication path, reachable from the muyu probe (package/TouchProbeMuyu.cpp): that probe owns the
+// working bring-up (TOUCH-PORT §28/§29) while this file keeps the HID-facing globals and the sink.
+extern "C" void native_touch_publish(const struct nvt_contact *contacts, unsigned count) {
+    publish(count, contacts);
 }
 
 bool snapshot(Session &s) {

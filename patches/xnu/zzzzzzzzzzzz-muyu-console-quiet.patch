@@ -1,0 +1,28 @@
+--- a/osfmk/console/video_console.c
++++ b/osfmk/console/video_console.c
+@@ -497,11 +497,25 @@
+ 	}
+ 
+ 	gc_ops.paint_char(xx, yy, ch, attrs, 0, 0);
++}
++
++/* Bring-up: once the render server presents, it owns the scanout. Every character this console draws
++ * lands in the same frame buffer, and a few seconds of kernel logging is enough to scroll the panel's
++ * rows away and replace them with the console background. vc_set_text_quiet(TRUE) parks the text output
++ * without touching the panic path, which turns it back on before it prints. */
++static boolean_t vc_text_quiet = FALSE;
++void
++vc_set_text_quiet(boolean_t quiet)
++{
++	vc_text_quiet = quiet;
+ }
+ 
+ static void
+ gc_putchar(char ch)
+ {
++	if (vc_text_quiet) {
++		return;
++	}
+ 	if (!ch) {
+ 		return; /* ignore null characters */
+ 	}

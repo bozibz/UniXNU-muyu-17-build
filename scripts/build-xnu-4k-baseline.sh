@@ -819,6 +819,9 @@ if not stamp.exists() or stamp.read_text() != identity:
 PY
 EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"
 EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_WATCHDOG_POLICY=$WATCHDOG_POLICY"
+# muyu: DWC3 re-attach probe and (later) the CDC ACM debug console. The code only acts on
+# its boot argument, so the define is unconditional.
+EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_MUYU_USB=1"
 make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iphoneos}" ARCH_CONFIGS=ARM64 \
   MACHINE_CONFIGS=BCM2837 KERNEL_CONFIGS=DEVELOPMENT \
   ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG=arm64 LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY \

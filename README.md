@@ -32,7 +32,9 @@ there: the `sheng-*` and `offline-*` boot arguments, the `uke` branch of
 ## Hardware data
 
 - 12 GB RAM, UFS, Android 16 on a vendor 14 BSP, slot `_a`, unlocked bootloader.
-- `userdata`: `sda12`, 4 KiB LBA `0x24c628`–`0x3a8b7fa` (225 GiB).
+- `userdata`: `sda32`, 4 KiB LBA `0x2d3000`–`0x3b147fa` (225 GiB). Derive from the live GPT: this device's
+  `super` (`sda31`, 4 KiB `0x33000`–`0x2d2fff`) was enlarged once, which moved userdata 2.10 GiB later.
+  The BSP values `0x24c628`–`0x3a8b7fa` now point inside `super` and must not be used as-is.
 - Panel: 1840×2880 video-mode DSC (`Panel_KU1380_1840_2880_dsc.xml`).
 - Touch and pen: Novatek `NVT-ts-spi` on GENI SPI `0xa90000`, IRQ GPIO 129.
 - GPU: Adreno 735 (`qcom,adreno-gpu-gen7-11-0`); the native GPU driver knows only the Adreno 740.

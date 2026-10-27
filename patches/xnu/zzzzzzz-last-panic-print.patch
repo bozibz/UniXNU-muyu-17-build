@@ -1,33 +1,39 @@
 diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
-index 75a0567..bd2c6d4 100644
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
-@@ -3078,6 +3078,8 @@ vcattach(void)
- 	    PE_parse_boot_argn("-bravearktextconsole", &text_console, sizeof(text_console)) &&
- 	    text_console) {
- 		initialize_screen(NULL, kPETextScreen);
+@@ -3123,6 +3123,15 @@
+ 			}
+ 		}
+ 	}
++
++	/* Bring-up: show the log tail the pram writer left behind by the previous boot
++	 * (zzzzzzz-last-panic-print.patch). Placed at the end of vcattach() so the hunks of
++	 * zzzzzz-video-console-text.patch stay untouched: a device patch that is edited by a
++	 * later one no longer reverse-applies, and the kernel build refuses that. */
++	{
 +		extern void pe_print_last_panic(void);
 +		pe_print_last_panic();
- 	}
++	}
+ }
  
- #if defined(CONFIG_VC_PROGRESS_METER_SUPPORT)
+ #if defined(XNU_TARGET_OS_OSX)
 diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
-index f3532cc..8176034 100644
 --- a/pexpert/arm/pe_init.c
 +++ b/pexpert/arm/pe_init.c
-@@ -91,6 +91,11 @@ static unsigned int panic_text_len;
+@@ -91,6 +91,12 @@
  /* Whether a console is standing by for panic logging */
  static boolean_t panic_console_available = FALSE;
  
 +/* Previous boot's embedded panic log, printed after the framebuffer console is up. */
-+#define LAST_PANIC_TEXT_BYTES 2048
++#define LAST_PANIC_TEXT_BYTES 8192
 +static char last_panic_text[LAST_PANIC_TEXT_BYTES];
++static uint32_t last_panic_text_len;
 +static boolean_t last_panic_text_valid = FALSE;
 +
  /* socd trace ram attributes */
  static SECURITY_READ_ONLY_LATE(vm_offset_t) socd_trace_ram_base = 0;
  static SECURITY_READ_ONLY_LATE(vm_size_t) socd_trace_ram_size = 0;
-@@ -175,6 +180,18 @@ check_for_panic_log(void)
+@@ -175,6 +181,19 @@
  #endif
  	panic_info = (struct embedded_panic_header *)gPanicBase;
  
@@ -39,6 +45,7 @@ index f3532cc..8176034 100644
 +			size_t copy = length < (sizeof(last_panic_text) - 1) ? length : (sizeof(last_panic_text) - 1);
 +			memcpy(last_panic_text, (const void *)(gPanicBase + offset + length - copy), copy);
 +			last_panic_text[copy] = '\0';
++			last_panic_text_len = (uint32_t)copy;
 +			last_panic_text_valid = TRUE;
 +		}
 +	}
@@ -46,19 +53,83 @@ index f3532cc..8176034 100644
  	/* Check if a shared memory console is running in the panic buffer */
  	if (panic_info->eph_magic == 'SHMC') {
  		panic_console_available = TRUE;
-@@ -197,6 +214,15 @@ check_for_panic_log(void)
+@@ -197,6 +216,44 @@
  	bzero((void *)gPanicBase, gPanicSize);
  }
  
 +void
 +pe_print_last_panic(void)
 +{
-+	printf("PREVIOUS XNU LOG (pram=%p size=%u valid=%d):\n%s\n",
++	/* The pram ring is only partly written, so the captured block carries NUL holes.
++	 * They are line breaks, not the end of the text: print the whole block so one
++	 * screenshot shows the tail of the previous boot. */
++	if (last_panic_text_valid) {
++		for (uint32_t at = 0; at < last_panic_text_len; at++) {
++			if (last_panic_text[at] == '\0') {
++				last_panic_text[at] = '\n';
++			}
++		}
++	}
++	printf("PREVIOUS XNU LOG (pram=%p size=%u valid=%d bytes=%u):\n%s\n",
 +	    (void *)gPanicBase, gPanicSize, last_panic_text_valid ? 1 : 0,
++	    (unsigned int)last_panic_text_len,
 +	    last_panic_text_valid ? last_panic_text : "(no previous log captured)");
 +	last_panic_text_valid = FALSE;
++}
++
++/* Callable from the critical-exit path, where the panic screen is mapped and can draw. */
++void
++pe_panic_last_log(void)
++{
++	unsigned int render = 0;
++	if (!PE_parse_boot_argn("-muyu-last-log-panic", &render, sizeof(render)) || !render) {
++		return;
++	}
++	const uint32_t tail = 3500;
++	const char *from = last_panic_text + (last_panic_text_len > tail ? last_panic_text_len - tail : 0);
++	uint32_t magic = 0;
++	if (gPanicBase && gPanicSize >= sizeof(struct embedded_panic_header)) {
++		magic = ((const struct embedded_panic_header *)(uintptr_t)gPanicBase)->eph_magic;
++	}
++	panic("LASTLOG pram=%p size=%u magic=%x bytes=%u tail:\n%s",
++	    (void *)gPanicBase, gPanicSize, magic, last_panic_text_len, from);
 +}
 +
  int
  PE_initialize_console(PE_Video * info, int op)
  {
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1834,6 +1834,15 @@
+ 	}
+ #endif /* DEVELOPMENT */
+ 
++	/* Bring-up: -muyu-last-log-panic renders the previous boot's log tail through the
++	 * panic screen instead of the critical-exit message. The panic screen is only
++	 * usable once the frame buffer is mapped, which is why this hook is here and not at
++	 * console attach time (there the cave parks without drawing). */
++	{
++		extern void muyu_panic_with_log(void);
++		muyu_panic_with_log();
++	}
++
+ 	char *exit_reason_desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 
+ 	if (p->p_exit_reason == OS_REASON_NULL) {
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8017,6 +8017,12 @@
+ load_init_program(proc_t p)
+ {
+ 	boot_progress_stage("load_init_program enter");
++	/* Bring-up: a timed msgbuf dump requested with muyu-dump-at starts here, where the clocks are
++	 * calibrated (the EARLY_BOOT variant of the same thread slept 7-9x too long on this board). */
++	{
++		extern void muyu_dump_start_late(void);
++		muyu_dump_start_late();
++	}
+ 	uint32_t i;
+ 	int error;
+ 	vm_map_t map = current_map();

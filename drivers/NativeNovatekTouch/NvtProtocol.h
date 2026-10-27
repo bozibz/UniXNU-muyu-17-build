@@ -91,6 +91,12 @@ int nvt_set_page(struct nvt_chip *c, uint32_t addr);
 int nvt_fw_parse(struct nvt_fw *fw, const uint8_t *data, size_t size);
 // Bootloader reset, read the trim id and select the NT36532 / NT36532E memory map.
 int nvt_identify(struct nvt_chip *c);
+// Bring-up override for the memory map nvt_identify() selected. A part still in its ROM answers the
+// ENB_CASC read with 0, which looks like "cascade" no matter what the board has, and the two maps differ
+// in exactly one place that matters before a download: the event buffer (0x11C400 vs 0x125800), where the
+// download's CRC-enable and reset-state handshake live. Retrying a failed download with the other map is
+// what tells the two apart; nothing else here depends on it.
+void nvt_use_map(struct nvt_chip *c, int nt36532e, int cascade);
 // Full host download with HW CRC and boot-ready handshake; returns 0 once the IC reports reset state >= 0xa0.
 int nvt_download_firmware(struct nvt_chip *c, const struct nvt_fw *fw);
 // Read one THP frame (NVT_THP_FRAME_LEN bytes) from the event buffer.
@@ -115,11 +121,25 @@ int nvt_get_fw_info(struct nvt_chip *c, struct nvt_fw_info *info);
 int nvt_set_custom_cmd(struct nvt_chip *c, uint8_t cmd, uint16_t value);
 int nvt_set_doze_delay(struct nvt_chip *c, uint16_t value);
 int nvt_start_scanning(struct nvt_chip *c, struct nvt_fw_info *info);
-// Header integrity of a THP frame: the CRC/marker words at header+4/+8 and their complements at +12/+16.
-int nvt_frame_header_valid(const uint8_t *frame);
 // A frame is announced by a 32-byte window of its THP header (frame[NVT_THP_HEADER_LEN..+32)): cheap to read, it carries the
 // integrity words, the counter and the type, so the full 5 KB frame is only read when it is new.
 #define NVT_THP_PEEK_LEN 32
+// Read-only picture of what the controller is doing right now (bring-up diagnostics, no side effects).
+// Useful before nvt_identify() as much as after it: a part that runs a firmware of its own has already
+// filled the event buffer with THP frames, while a ROM bootloader waiting for a download shows
+// reset_state[0] in 0xa0..0xaf and nothing else. Before identification the map is unknown, so the
+// NT36532E event buffer is assumed (the part this board reports); nvt_identify() then selects the real one.
+struct nvt_boot_state {
+    uint8_t head[16];          // event+0x00: frame bytes 0..15
+    uint8_t host_cmd[8];       // event+0x50: the first byte is cleared when the firmware takes a command
+    uint8_t reset_state[5];    // event+0x60: 0xa0..0xaf = bootloader ready for a firmware download
+    uint8_t fw_info[16];       // event+0x78: [0]+[1]==0xff once a firmware has filled it in
+    uint8_t hdr[NVT_THP_PEEK_LEN];      // event+0x100: the window nvt_peek_frame_header() reads
+    uint8_t hdr_alt[NVT_THP_PEEK_LEN];  // one byte earlier: frame[0] is the read command's zero offset byte
+};
+int nvt_boot_state(struct nvt_chip *c, struct nvt_boot_state *out);
+// Header integrity of a THP frame: the CRC/marker words at header+4/+8 and their complements at +12/+16.
+int nvt_frame_header_valid(const uint8_t *frame);
 int nvt_peek_frame_header(struct nvt_chip *c, uint8_t *hdr);   // hdr: NVT_THP_PEEK_LEN bytes
 int nvt_peek_valid(const uint8_t *hdr);
 unsigned nvt_peek_counter(const uint8_t *hdr);

@@ -8,21 +8,27 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]          # the kit (UniXNU-muyu)
+REPO = ROOT.parent                                  # the workspace root
+# The GENI SPI host library lives in the main checkout, not in the kit: this script used to assume the sheng
+# layout (drivers/NativeGeniSpi inside the kit) and failed before it reached the touch cases.
+GENI = REPO / 'UniXNU/drivers/NativeGeniSpi'
 FW = ROOT / '.cache/firmware/novatek/novatek_nt36532_n81a_fw_csot.bin'
 CASES = [
-    ('geni-spi', ['drivers/NativeGeniSpi/Test/geni-spi.c', 'drivers/NativeGeniSpi/GeniSpi.c'], []),
-    ('nvt-protocol', ['drivers/NativeNovatekTouch/Test/nvt-protocol.c', 'drivers/NativeNovatekTouch/NvtProtocol.c'],
+    ('geni-spi', [GENI / 'Test/geni-spi.c', GENI / 'GeniSpi.c', '-I', str(GENI)], []),
+    ('nvt-protocol', [ROOT / 'drivers/NativeNovatekTouch/Test/nvt-protocol.c',
+                      ROOT / 'drivers/NativeNovatekTouch/NvtProtocol.c'],
      [str(FW)] if FW.is_file() else []),
-    ('touch-core', ['drivers/NativeNovatekTouch/Test/touch-core.c', 'drivers/NativeNovatekTouch/NvtTouchCore.c'], []),
-    ('touch-board', ['kits/braveark/TouchBoardTests.c'], []),
+    ('touch-core', [ROOT / 'drivers/NativeNovatekTouch/Test/touch-core.c',
+                    ROOT / 'drivers/NativeNovatekTouch/NvtTouchCore.c'], []),
+    ('touch-board', [ROOT / 'package/TouchBoardTests.c'], []),
 ]
 
 with tempfile.TemporaryDirectory() as tmp:
     for name, sources, args in CASES:
         exe = Path(tmp) / name
         subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-O1', '-fsanitize=address,undefined',
-                        *[str(ROOT / s) for s in sources], '-o', str(exe)], check=True)
+                        *[str(s) for s in sources], '-o', str(exe)], check=True)
         out = subprocess.run([str(exe), *args], check=True, capture_output=True, text=True).stdout.strip().splitlines()
         print(f'{name}: {out[-1]}')
 print('PASS: touch host tests (register/chip models only)')

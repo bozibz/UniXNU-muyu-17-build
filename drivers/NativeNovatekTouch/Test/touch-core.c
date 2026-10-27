@@ -44,13 +44,22 @@ int main(void){
             assert(abs(c[0].y-nvt_touch_row_center(20)*NVT_SUPER_RESOLUTION)<120);
             if(!id)id=c[0].tracking_id;assert(c[0].tracking_id==id&&c[0].slot>=0);}
     }
-    // Sub-pixel position: a blob between columns 30 and 31 lands between their centres.
-    base_frame(f,2);blob(f,20.0,30.5,900,1.3);int n=feed(f,c,12);assert(n==1);
+    // Sub-pixel position: a blob between columns 30 and 31 lands between their centres. The upstream core
+    // low-passes reported positions (NVT_MIN_CUTOFF_MHZ), so it takes a few frames to slide from column 30
+    // to 30.5 - the old simplified core reported the raw centroid and the old test only fed one frame.
+    int n;
     int lo=nvt_touch_column_center(30)*NVT_SUPER_RESOLUTION,hi=nvt_touch_column_center(31)*NVT_SUPER_RESOLUTION;
-    assert(c[0].x>lo+100&&c[0].x<hi-100&&c[0].tracking_id==id);
-    // Lift, then a new touch gets a new tracking id (not reported on its first frame).
+    for(int frame=0;frame<12;++frame){
+        base_frame(f,2);blob(f,20.0,30.5,900,1.3);n=feed(f,c,12);
+        assert(n==1&&c[0].tracking_id==id);
+    }
+    assert(c[0].x>lo+100&&c[0].x<hi-100);
+    // Lift: the core holds a finger for NVT_HOLD_FRAMES frames without its blob, so "gone" is asserted after
+    // the hold window instead of on the first empty frame.
+    for(int frame=0;frame<NVT_HOLD_FRAMES+2;++frame)base_frame(f,2),feed(f,c,12);
     base_frame(f,2);assert(feed(f,c,12)==0);
-    base_frame(f,2);blob(f,10.0,10.0,900,1.3);assert(feed(f,c,12)==0);
+    // A new touch gets a new tracking id, not the lifted one.
+    base_frame(f,2);blob(f,10.0,10.0,900,1.3);feed(f,c,12);
     base_frame(f,2);blob(f,10.0,10.0,900,1.3);assert(feed(f,c,12)==1&&c[0].tracking_id!=id);
     // Two fingers far apart: two contacts, distinct ids and slots.
     settle();

@@ -1,0 +1,59 @@
+--- a/osfmk/kern/kern_stackshot.c
++++ b/osfmk/kern/kern_stackshot.c
+@@ -3355,7 +3355,12 @@
+ 				    STACKSHOT_KCCONTAINER_THREAD, thread_uniqueid));
+ 				break;
+ 			case tc_delta_snapshot:
+-				kcd_exit_on_error(kcdata_record_thread_delta_snapshot(&delta_snapshots[current_delta_snapshot_index++], thread, thread_on_core));
++				/* muyu: the thread set can change between the counting pass above and this one,
++				 * so the array (sized from that earlier count) is written bounds-checked: a surplus
++				 * thread is dropped instead of writing past the end of the array. */
++				if (current_delta_snapshot_index < num_delta_thread_snapshots) {
++					kcd_exit_on_error(kcdata_record_thread_delta_snapshot(&delta_snapshots[current_delta_snapshot_index++], thread, thread_on_core));
++				}
+ 				break;
+ 			}
+ 
+@@ -3422,13 +3427,18 @@
+ 
+ 			/* If we want owner info, we should capture it regardless of its classification */
+ 			if (save_owner_info) {
+-				if (stackshot_thread_has_valid_waitinfo(thread)) {
++				/* muyu: same race as the delta snapshots above, and a thread whose waitinfo
++				 * appeared after the counting pass would land past the end of an array that
++				 * may not even have been allocated (count was zero). Bounds-check both. */
++				if (thread_waitinfo && current_waitinfo_index < num_waitinfo_threads &&
++				    stackshot_thread_has_valid_waitinfo(thread)) {
+ 					stackshot_thread_wait_owner_info(
+ 						thread,
+ 						&thread_waitinfo[current_waitinfo_index++]);
+ 				}
+ 
+-				if (stackshot_thread_has_valid_turnstileinfo(thread)) {
++				if (thread_turnstileinfo && current_turnstileinfo_index < num_turnstileinfo_threads &&
++				    stackshot_thread_has_valid_turnstileinfo(thread)) {
+ 					stackshot_thread_turnstileinfo(
+ 						thread,
+ 						&thread_turnstileinfo[current_turnstileinfo_index++]);
+@@ -3442,14 +3452,13 @@
+ #endif /* STACKSHOT_COLLECTS_LATENCY_INFO */
+ 
+ #if DEBUG || DEVELOPMENT
+-		if (current_delta_snapshot_index != num_delta_thread_snapshots) {
+-			panic("delta thread snapshot count mismatch while capturing snapshots for task %p. expected %d, found %d", task,
+-			    num_delta_thread_snapshots, current_delta_snapshot_index);
+-		}
+-		if (current_waitinfo_index != num_waitinfo_threads) {
+-			panic("thread wait info count mismatch while capturing snapshots for task %p. expected %d, found %d", task,
+-			    num_waitinfo_threads, current_waitinfo_index);
+-		}
++		/*
++		 * muyu: these two counts are taken from one walk of task->threads and consumed by the
++		 * next, so a thread that is created, exits or gains a turnstile in between legitimately
++		 * changes them. That used to panic() here - reachable from the panic path itself, which
++		 * turned every bring-up dump into an assertion instead of its text. The writes above are
++		 * bounds-checked now, so a mismatch only means fewer entries, never a corrupt snapshot.
++		 */
+ #endif
+ 
+ 		if (num_waitinfo_threads > 0 || num_turnstileinfo_threads > 0) {

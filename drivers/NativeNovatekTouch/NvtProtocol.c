@@ -203,6 +203,12 @@ int nvt_identify(struct nvt_chip *c) {
     return 0;
 }
 
+void nvt_use_map(struct nvt_chip *c, int nt36532e, int cascade) {
+    if (nt36532e) c->map=cascade?&map_e_cascade:&map_single;
+    else c->map=cascade?&map_cascade:&map_single;
+    c->cascade=cascade!=0;
+}
+
 int nvt_read_bld_crc(struct nvt_chip *c, const struct nvt_fw *fw) {
     if (!c->map || fw->count<2) return NVT_ERR_PARAM;
     uint8_t b[4]={0};int r;
@@ -364,3 +370,23 @@ int nvt_peek_frame_header(struct nvt_chip *c, uint8_t *hdr) {
     // frame[i] = chip byte i-1 (see nvt_read_frame), so frame[NVT_THP_HEADER_LEN] is chip byte NVT_THP_HEADER_LEN-1.
     return nvt_read(c,c->map->event_buf+NVT_THP_HEADER_LEN-1,hdr,NVT_THP_PEEK_LEN);
 }
+
+int nvt_boot_state(struct nvt_chip *c, struct nvt_boot_state *out) {
+    // Before nvt_identify() there is no map yet; every NT36532 map shares one event buffer, and the part this
+    // board reports (id[0]=0x0e) is the E variant, so its map is the right guess. Only reads happen here.
+    const struct nvt_map *m=c->map?c->map:&map_e_cascade;
+    uint8_t win[NVT_THP_PEEK_LEN+1];
+    int r;
+    memset(out,0,sizeof *out);
+    if ((r=nvt_read(c,m->event_buf,out->head,sizeof out->head))) return r;
+    if ((r=nvt_read(c,m->event_buf+EVENT_HOST_CMD,out->host_cmd,sizeof out->host_cmd))) return r;
+    if ((r=nvt_read(c,m->event_buf+EVENT_RESET_COMPLETE,out->reset_state,sizeof out->reset_state))) return r;
+    if ((r=nvt_read(c,m->event_buf+NVT_EVENT_FWINFO,out->fw_info,sizeof out->fw_info))) return r;
+    // One read covers both alignments: the peek window starts at frame[NVT_THP_HEADER_LEN] and nvt_read_frame()
+    // holds the chip's stream from one byte earlier, which is why a header was seen "one byte early" on hardware.
+    if ((r=nvt_read(c,m->event_buf+NVT_THP_HEADER_LEN-1,win,sizeof win))) return r;
+    memcpy(out->hdr_alt,win,NVT_THP_PEEK_LEN);
+    memcpy(out->hdr,win+1,NVT_THP_PEEK_LEN);
+    return 0;
+}
+

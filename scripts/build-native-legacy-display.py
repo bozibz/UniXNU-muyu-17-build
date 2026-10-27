@@ -9,7 +9,10 @@ import sys
 ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'build/native-legacy-display';OUT.mkdir(parents=True,exist_ok=True)
 sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
 from native_prelink import macho,backed_offset,exports
-def run(cmd,**kw):return subprocess.check_output([str(x) for x in cmd],timeout=90,**kw)
+def run(cmd,**kw):
+    c=[str(x) for x in cmd]
+    if c and 'clang' in c[0] and '-Wno-incompatible-sysroot' not in c:c.insert(1,'-Wno-incompatible-sysroot')
+    return subprocess.check_output(c,timeout=90,**kw)
 def require(v,why):
     if not v:raise SystemExit(why)
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -75,6 +78,7 @@ for i in range(168,358):
     elif i==249:header+=' virtual void getDisplayDimensions(uint32_t *,uint32_t *);\n'
     elif i==290:header+=' virtual void kickSwapQueue();\n'
     elif i==296:header+=' virtual bool validateSwap(const OriginalLegacySwapRequest *);\n'
+    elif i==301:header+=' virtual bool getRefreshAttributes(uint64_t *,bool);\n'
     elif i==295:header+=' virtual void completeCurrentSwap();\n'
     elif i==337:header+=' virtual IOReturn collectCompletionReports(uint32_t,void *,uint32_t *,uint32_t)=0;\n'
     elif i==288:header+=' virtual bool startHardware();\n'
@@ -114,17 +118,19 @@ owned=[];native=[]
 for i,name in enumerate(compiled):
     expected=int(methods[i]['address'],16)
     if name.startswith(('__ZN19NativeLegacyDisplay','__ZNK19NativeLegacyDisplay')):
-        owned.append(i);require(i in (0,1,7,14,84,86,87,141,155,184,188,242,288,290,296) or i in pure,'Only qualified own methods and guarded leaves override')
+        owned.append(i);require(i in (0,1,7,14,84,86,87,141,155,184,188,288,290,296,301) or i in pure,'Only qualified own methods and guarded leaves override')
     elif '25IOMobileFramebufferLegacy' in name:
         require(i not in pure,'No unresolved original abstract backend target');bindings[name]=expected
     else:
         require(i<168 and names.get(name)==expected,'Actual inherited native base symbol '+str(i));native.append(i)
-require(owned==sorted([0,1,7,14,84,86,87,141,155,184,188,242,288,290,296]+pure),'Exact owned method set')
+require(owned==sorted([0,1,7,14,84,86,87,141,155,184,188,288,290,296,301]+pure),'Exact owned method set')
 undefined={n for n,_,k in symbols if k==1 and 'IOMobileFramebufferLegacy' in n}
 require(undefined==set(bindings),'All and only actual original-class imports qualified')
 # The default-surface port fallback calls the original slot242 and the original
 # surface -> Mach-port helper. They are not original-class imports, so bind
 # their exact addresses after the class-import assertion.
+bindings['_native_legacy_vsync_notify']=0xfffffff005796720
+bindings['_native_legacy_set_refresh_properties']=0xfffffff00579ebb8
 bindings['_uke_original_default_surface_port']=0xfffffff00578b390
 bindings['_uke_surface_copy_port_name']=0xfffffff004baa90c
 # Exact original IOSurface getters, independently observed through the real
@@ -167,7 +173,7 @@ def code(data,info):
     sec=next(s for g in info['segments'] for s in g['sections'] if s['name']=='__text');return data[sec['fileoff']:sec['fileoff']+sec['size']]
 require(code(raw,image)==code(late.read_bytes(),macho(late.read_bytes())),'Only owned initializer section registration changes')
 r=json.loads((ROOT/'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
-cmd=[];args=r['arguments'];i=0;source=ROOT/'kits/braveark/LegacyDisplayProbe.cpp'
+cmd=[];args=r['arguments'];i=0;source=ROOT/'kits/muyu/LegacyDisplayProbe.cpp'
 while i<len(args):
     value=args[i]
     if value==r['file']:cmd.append(str(source))
@@ -177,18 +183,18 @@ while i<len(args):
     i+=1
 cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list',
       '-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')]
-(ROOT/'kits/braveark-ci').mkdir(parents=True,exist_ok=True)
-cmd+=['-I',str(ROOT/'kits/braveark-ci')]
+(ROOT/'kits/muyu-ci').mkdir(parents=True,exist_ok=True)
+cmd+=['-I',str(ROOT/'kits/muyu-ci')]
 run(cmd,cwd=r['directory'])
-hid_source=ROOT/'kits/braveark/HidInputProbe.cpp'
+hid_source=ROOT/'kits/muyu/HidInputProbe.cpp'
 hid_obj=OUT/'HidInputProbe.o'
 hid_cmd=[str(hid_source) if str(arg)==str(source) else str(hid_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
 run(hid_cmd,cwd=r['directory'])
-keystore_source=ROOT/'kits/braveark/KeyStoreProbe.cpp'
+keystore_source=ROOT/'kits/muyu/KeyStoreProbe.cpp'
 keystore_obj=OUT/'KeyStoreProbe.o'
 keystore_cmd=[str(keystore_source) if str(arg)==str(source) else str(keystore_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
 run(keystore_cmd,cwd=r['directory'])
-process_source=ROOT/'kits/braveark/BootProcessProbe.c'
+process_source=ROOT/'kits/muyu/BootProcessProbe.c'
 process_obj=OUT/'BootProcessProbe.o'
 pr=json.loads((ROOT/'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
 process_cmd=[];pa=pr['arguments'];j=0
@@ -203,23 +209,43 @@ while j<len(pa):
     j+=1
 process_cmd+=['-Wall','-Wextra','-Werror','-mgeneral-regs-only','-I',str(ROOT/'.cache/xnu-work/osfmk')]
 run(process_cmd,cwd=pr['directory'])
-trace_source=ROOT/'kits/braveark/BootUiTraceProbe.c'
+trace_source=ROOT/'kits/muyu/BootUiTraceProbe.c'
 trace_obj=OUT/'BootUiTraceProbe.o'
 trace_cmd=[str(trace_source) if arg==str(process_source) else str(trace_obj) if arg==str(process_obj) else arg for arg in process_cmd]
 run(trace_cmd,cwd=pr['directory'])
-stub_source=ROOT/'kits/braveark/LegacyDisplayStubs.c'
+stub_source=ROOT/'kits/muyu/LegacyDisplayStubs.c'
 stub_obj=OUT/'LegacyDisplayStubs.o'
 run([str(stub_source) if arg==str(process_source) else str(stub_obj) if arg==str(process_obj) else arg for arg in process_cmd],cwd=pr['directory'])
 # Default-off touch bring-up: C++ board probe plus the generic GENI SPI and Novatek protocol/touch libraries, compiled with the
 # kernel C flags, and the firmware object generated from the copy kept outside Git.
 touch_dir=OUT/'touch';touch_dir.mkdir(exist_ok=True)
-touch_cpp=ROOT/'kits/braveark/TouchProbe.cpp';touch_cpp_obj=touch_dir/'TouchProbe.o'
-cpufreq_cpp=ROOT/'kits/braveark/CpuFreqProbe.cpp';cpufreq_obj=touch_dir/'CpuFreqProbe.o'
+touch_cpp=ROOT/'kits/muyu/TouchProbe.cpp';touch_cpp_obj=touch_dir/'TouchProbe.o'
+muyu_touch_cpp=ROOT/'kits/muyu/TouchProbeMuyu.cpp';muyu_touch_obj=touch_dir/'TouchProbeMuyu.o'
+# The production driver: NativeNovatekTouch (IOService). Same archive as the probe, because both need the
+# GENI SPI and Novatek protocol objects; only the driver runs by default (muyu-touch-drv=1).
+nvt_driver_cpp=ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp';nvt_driver_obj=touch_dir/'NativeNovatekTouch.o'
+cpufreq_cpp=ROOT/'kits/muyu/CpuFreqProbe.cpp';cpufreq_obj=touch_dir/'CpuFreqProbe.o'
 # uke first-console: NATIVE_ADRENO is off, so GpuPowerProbe's Adreno and
 # GPU-addon imports would be undefined. It is a default-off probe; omit it
 # from this archive until the Adreno kit is linked.
 run([str(touch_cpp) if str(arg)==str(source) else str(touch_cpp_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
 run([str(cpufreq_cpp) if str(arg)==str(source) else str(cpufreq_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
+run([str(muyu_touch_cpp) if str(arg)==str(source) else str(muyu_touch_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
+# The driver lives in drivers/NativeNovatekTouch but needs the GENI SPI library and the board headers;
+# give it those two include directories explicitly instead of relative paths through symlinked trees.
+nvt_include=['-I',str(ROOT/'drivers/NativeGeniSpi'),'-I',str(ROOT/'kits/muyu')]
+# Live-Data probe (package/MuyuDataProbe.c): asks the kernel's VFS what /private/var really holds, which no
+# host tool can see because the persistent overlay only exists on the tablet.
+data_probe_src=ROOT/'kits/muyu/MuyuDataProbe.c';data_probe_obj=touch_dir/'MuyuDataProbe.o'
+data_cmd=[str(arg) for arg in cmd]
+for i,arg in enumerate(data_cmd):
+    if arg==str(r['file'] if False else source): data_cmd[i]=str(data_probe_src)
+    elif arg==str(OUT/'LegacyDisplayProbe.o'): data_cmd[i]=str(data_probe_obj)
+data_cmd=[arg.replace('--driver-mode=g++','--driver-mode=gcc').replace('-xc++','-xc') for arg in data_cmd]
+data_cmd=[arg for arg in data_cmd if arg not in ('-fapple-kext','-fc++-static-destructors=none','-fsized-deallocation','-std=gnu++2b')]
+data_cmd+=['-std=gnu11']
+run(data_cmd,cwd=r['directory'])
+run([str(nvt_driver_cpp) if str(arg)==str(source) else str(nvt_driver_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+nvt_include,cwd=r['directory'])
 print(run(['python3',ROOT/'scripts/gen-touch-firmware.py'],text=True),end='')
 touch_c=[ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'build/native-touch/NvtFirmware.c']
@@ -239,11 +265,11 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,stub_obj,*touch_objs])
+     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,nvt_driver_obj,data_probe_obj,stub_obj,*touch_objs])
 sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
-         ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/braveark/BootUiTraceCore.h',ROOT/'kits/braveark/BootUiTraceDetails.h',
+         ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
-         ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,ROOT/'kits/braveark/TouchBoard.h',stub_source,
+         ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
          ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h']
 print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeGOPPresenter'],text=True),end='')

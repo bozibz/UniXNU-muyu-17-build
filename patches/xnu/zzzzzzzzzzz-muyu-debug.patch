@@ -1,0 +1,219 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -106,6 +106,8 @@
+ 
+ bsd/dev/memdev.c			standard
+ bsd/dev/mem.c				standard
++bsd/dev/muyu_pstore.c			standard
++bsd/dev/muyu_usb.c			standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+ 
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -533,6 +533,14 @@
+ 	boot_progress_stage("arm_vm_init enter");
+ 	arm_vm_init(xmaxmem, args);
+ 	boot_progress_stage("arm_vm_init returned");
++#if XNU_MUYU_USB
++	{
++		extern void muyu_pstore_init(void);
++		extern void muyu_usb_reattach(void);
++		muyu_pstore_init();
++		muyu_usb_reattach();
++	}
++#endif
+ 
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -280,6 +280,13 @@
+ static inline void
+ _cnputs(char *c, int size, bool poll)
+ {
++#if XNU_MUYU_USB
++	{
++		extern void muyu_pstore_write(const char *, int);
++		/* The console may be silent, but the record still wants the text. */
++		muyu_pstore_write(c, size);
++	}
++#endif
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}
+ 
+diff --git a/bsd/dev/muyu_pstore.c b/bsd/dev/muyu_pstore.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/muyu_pstore.c
+@@ -0,0 +1,85 @@
++/*
++ * muyu boot log via the board's ramoops record.
++ *
++ * The panel stops scanning out right after the UEFI to kernel hand-off (see
++ * HANDOFF.md 13), so the console has nowhere to go and every kprintf was lost.
++ * The device tree reserves 4 MiB at 0xa7000000 for ramoops, split into a 2 MiB
++ * "console" zone and a 2 MiB "pmsg" zone. Android's pstore driver validates
++ * that zone on every boot and exposes a valid record as
++ * /sys/fs/pstore/console-ramoops-0, which is readable over adb without root.
++ *
++ * So: keep the standard PERSISTENT_RAM_SIG header up to date and append the
++ * console text to it. After the next reboot the log can simply be read from
++ * Android, which finally gives kernel-side visibility without the display.
++ *
++ * Record layout (fs/pstore/ram_core.c): u32 sig, u32 start, u32 size, data[].
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <pexpert/pexpert.h>
++
++#if XNU_MUYU_USB
++
++#define MUYU_RAMOOPS_BASE	0xa7000000UL	/* DT: reserved-memory/ramoops_region */
++#define MUYU_RAMOOPS_SIZE	0x200000UL	/* DT: console-size */
++#define MUYU_RAMOOPS_SIG	0x43474244U	/* PERSISTENT_RAM_SIG, "DBGC" */
++#define MUYU_RAMOOPS_HEADER	12		/* sig, start, size */
++#define MUYU_RAMOOPS_DATA	(MUYU_RAMOOPS_SIZE - MUYU_RAMOOPS_HEADER)
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++
++static vm_offset_t muyu_pstore_base;
++static uint32_t muyu_pstore_used;
++
++void
++muyu_pstore_init(void)
++{
++	int enabled = 0;
++	volatile uint32_t *header;
++
++	if (muyu_pstore_base != 0) {
++		return;
++	}
++	if (!PE_parse_boot_argn("muyu_pstore", &enabled, sizeof(enabled)) || enabled != 1) {
++		return;
++	}
++	muyu_pstore_base = ml_io_map(MUYU_RAMOOPS_BASE, MUYU_RAMOOPS_SIZE);
++	if (!muyu_pstore_base) {
++		printf("MUYU PSTORE: ramoops mapping failed\n");
++		return;
++	}
++	header = (volatile uint32_t *)muyu_pstore_base;
++	header[0] = MUYU_RAMOOPS_SIG;
++	header[1] = 0;
++	header[2] = 0;
++	__asm__ volatile("dsb sy" ::: "memory");
++	muyu_pstore_used = 0;
++	printf("MUYU PSTORE: console record at %#lx, %lu bytes\n",
++	    MUYU_RAMOOPS_BASE, (unsigned long)MUYU_RAMOOPS_DATA);
++}
++
++void
++muyu_pstore_write(const char *data, int size)
++{
++	volatile char *out;
++
++	if (!muyu_pstore_base || !data || size <= 0) {
++		return;
++	}
++	if (muyu_pstore_used >= MUYU_RAMOOPS_DATA) {
++		return;
++	}
++	if ((uint32_t)size > MUYU_RAMOOPS_DATA - muyu_pstore_used) {
++		size = (int)(MUYU_RAMOOPS_DATA - muyu_pstore_used);
++	}
++	out = (volatile char *)(muyu_pstore_base + MUYU_RAMOOPS_HEADER + muyu_pstore_used);
++	for (int i = 0; i < size; i++) {
++		out[i] = data[i];
++	}
++	muyu_pstore_used += (uint32_t)size;
++	__asm__ volatile("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(muyu_pstore_base + 8) = muyu_pstore_used;
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++#endif /* XNU_MUYU_USB */
+diff --git a/bsd/dev/muyu_usb.c b/bsd/dev/muyu_usb.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/muyu_usb.c
+@@ -0,0 +1,76 @@
++/*
++ * muyu USB bring-up: adopt the DWC3 controller the ABL leaves behind.
++ *
++ * Reference: ios-vermeer-lab xnu/vermeer/vermeer_usb_debug.c, which shows that
++ * the ABL's PHY and clock setup survives the hand-off and only the controller
++ * has to be programmed again. This first step answers one question with no
++ * risk to PHY, clocks, SMMU or storage: is the controller still there, and does
++ * the host see the device again when the pull-up is re-enabled? It only runs
++ * when -muyu_usb_reattach is on the boot command line, and it is a probe, not
++ * yet a console.
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <pexpert/pexpert.h>
++#include <kern/clock.h>		/* delay() */
++
++#if XNU_MUYU_USB
++
++#define MUYU_DWC3_BASE		0xa600000	/* DT: soc/ssusb@a600000/dwc3@a600000 */
++#define MUYU_DWC3_SIZE		0xe000
++#define MUYU_DWC3_GSNPSID	0xc120
++#define MUYU_DWC3_GHWPARAMS0	0xc140
++#define MUYU_DWC3_GCTL		0xc110
++#define MUYU_DWC3_DCTL		0xc704
++#define MUYU_DWC3_DSTS		0xc70c
++#define MUYU_DWC3_DCTL_RUN	(1u << 31)
++#define MUYU_DWC3_DSTS_HALTED	(1u << 22)
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++
++static uint32_t
++muyu_usb_read(vm_offset_t base, unsigned int offset)
++{
++	uint32_t value = *(volatile uint32_t *)(base + offset);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return value;
++}
++
++void
++muyu_usb_reattach(void)
++{
++	int enabled = 0;
++	vm_offset_t regs;
++	uint32_t dctl, dsts, id;
++
++	if (!PE_parse_boot_argn("muyu_usb_reattach", &enabled, sizeof(enabled)) || enabled != 1) {
++		return;
++	}
++	regs = ml_io_map(MUYU_DWC3_BASE, MUYU_DWC3_SIZE);
++	if (!regs) {
++		printf("MUYU USB: DWC3 mapping failed\n");
++		return;
++	}
++	id = muyu_usb_read(regs, MUYU_DWC3_GSNPSID);
++	printf("MUYU USB: id=%08x hwparams0=%08x gctl=%08x dctl=%08x dsts=%08x\n",
++	    id, muyu_usb_read(regs, MUYU_DWC3_GHWPARAMS0), muyu_usb_read(regs, MUYU_DWC3_GCTL),
++	    muyu_usb_read(regs, MUYU_DWC3_DCTL), muyu_usb_read(regs, MUYU_DWC3_DSTS));
++	if ((id >> 16) != 0x5533 && (id >> 16) != 0x3331) {
++		printf("MUYU USB: unexpected controller id; untouched\n");
++		return;
++	}
++	dctl = muyu_usb_read(regs, MUYU_DWC3_DCTL);
++	*(volatile uint32_t *)(regs + MUYU_DWC3_DCTL) = dctl | MUYU_DWC3_DCTL_RUN;
++	__asm__ volatile("dsb sy" ::: "memory");
++	for (int spin = 0; spin < 100; spin++) {
++		delay(1000);
++		if (!(muyu_usb_read(regs, MUYU_DWC3_DSTS) & MUYU_DWC3_DSTS_HALTED)) {
++			break;
++		}
++	}
++	dsts = muyu_usb_read(regs, MUYU_DWC3_DSTS);
++	printf("MUYU USB: RUN set dctl=%08x dsts=%08x halted=%u\n",
++	    muyu_usb_read(regs, MUYU_DWC3_DCTL), dsts, (dsts & MUYU_DWC3_DSTS_HALTED) ? 1 : 0);
++}
++
++#endif /* XNU_MUYU_USB */

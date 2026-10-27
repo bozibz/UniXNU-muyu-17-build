@@ -9,6 +9,7 @@
 #include <vm/vm_map.h>
 #include <sys/param.h>
 #include <sys/types.h>
+#include <sys/msgbuf.h>
 #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
 #include "verified_root.h"
 #include "VerifiedBlockPolicy.h"
@@ -330,6 +331,28 @@ static void smmuBypassStream (uint16_t stream, OSSharedPtr<IOMemoryMap> &keep, u
   report[2] = sctlr;
 }
 
+// muyu bring-up: the console has no working output (the panel stops scanning out after the
+// hand-off and there is no UART), so the only persistent channel is storage. Copy the tail of
+// the kernel log buffer into one block on the medium.
+static unsigned muyuLogCopy (uint8_t *out, unsigned max)
+{
+  extern struct msgbuf *msgbufp;
+  if (!msgbufp || !msgbufp->msg_bufc || msgbufp->msg_size <= 0) {
+    return 0;
+  }
+  unsigned size = static_cast<unsigned> (msgbufp->msg_size);
+  unsigned total = static_cast<unsigned> (msgbufp->msg_bufx);
+  unsigned begin = total > size ? total - size : 0;
+  if (total - begin > max) {
+    begin = total - max;
+  }
+  unsigned count = total - begin;
+  for (unsigned index = 0; index < count; index++) {
+    out[index] = msgbufp->msg_bufc[(begin + index) % size];
+  }
+  return count;
+}
+
 void NativeUfs::adoptAndRead (unsigned level)
 {
   OSSharedPtr<IOMemoryMap> hcMap;
@@ -391,12 +414,18 @@ void NativeUfs::adoptAndRead (unsigned level)
            read32 (hc, 0x60), read32 (hc, 0x50), read32 (hc, 0x54), read32 (hc, 0x24));
   }
 
-  auto command = [&] (uint8_t lun, const uint8_t *cdb, unsigned cdbLength, bool toHost, uint32_t length) -> UfsResult {
+  auto command = [&] (uint8_t lun, const uint8_t *cdb, unsigned cdbLength, bool toHost, uint32_t length,
+                      const uint8_t *payload = nullptr) -> UfsResult {
     uint8_t *utrd = virt;
     uint8_t *ucd = virt + ucdOffset;
     zero32 (utrd, 32);
     zero32 (ucd, 1024 + 16);
     zero32 (virt + dataOffset, 8192);
+    if (payload && !toHost && length && length <= 8192) {
+      for (uint32_t index = 0; index < length; index++) {
+        virt[dataOffset + index] = payload[index];
+      }
+    }
     ucd[0] = 0x01;                  // COMMAND UPIU
     ucd[1] = toHost ? 0x40 : 0x00;  // flags: read
     ucd[2] = lun;
@@ -556,6 +585,24 @@ void NativeUfs::adoptAndRead (unsigned level)
     }
   }
   if (level == 9) {
+    // muyu: leave the console log where it survives a reboot, then continue with the survey.
+    // The target is the unused tail of vendor_boot_a: LUN 4, 80 MiB into the partition. The
+    // boot image is about 69 MiB, so nothing that the bootloader reads lives there. Read it
+    // back from Android with `dd if=/dev/block/sde21 bs=4096 skip=20480 count=1`.
+    {
+      static uint8_t logBlock[4096];
+      const char magic[] = "MUYU UFS LOG v1\n";
+      unsigned used = 0;
+      while (magic[used]) {
+        logBlock[used] = static_cast<uint8_t> (magic[used]);
+        used++;
+      }
+      unsigned copied = muyuLogCopy (logBlock + used, sizeof (logBlock) - used);
+      uint8_t wr[10] = { 0x2a, 0, 0x00, 0x02, 0x24, 0x66, 0, 0x00, 0x01, 0 };
+      UfsResult w = command (4, wr, 10, false, sizeof (logBlock), logBlock);
+      (void)copied;
+      (void)w;
+    }
     // Read-only GPT survey of LUN 0 (4096-byte blocks): header fields and CRCs for before/after
     // comparison, then every non-empty entry among the first 64. Nothing is written.
     if (blockSize[0] != 4096) {

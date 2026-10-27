@@ -132,6 +132,45 @@ _start:
   b 1b
 """
 
+# Draw one line straight on the kernel's frame buffer through the panic screen
+# renderer (it owns the font and the vinfo/VA handling), then park. Unlike the
+# video console this bypasses gc_enabled/gc_desire_text, so it answers "can the
+# kernel write the panel at all?" without depending on the console state.
+FB_PROBE = """.text
+.global _start
+_start:
+  ldr x0, =1f
+  bl {panic}
+2:
+  wfe
+  b 2b
+1:
+  .asciz "{text}"
+.ltorg
+"""
+
+# Paint the whole frame buffer at kernel entry (MMU off, x0 = boot_args, so the
+# GOP physical base from Video[0] is used directly) and park. The strongest
+# available answer to "does the kernel run at all, and can it reach the panel?":
+# it needs no mapping, no vinfo and no console.
+FB_FILL = """.text
+.global _start
+_start:
+{prologue}
+  bic x2, x2, #7
+  movz w6, #{lo}
+  movk w6, #{hi}, lsl #16
+1:
+  stp w6, w6, [x1], #8
+  subs x2, x2, #8
+  b.hi 1b
+  dsb sy
+2:
+  wfe
+  b 2b
+.ltorg
+"""
+
 
 def kernel_symbols(kernel):
     """Address -> name for the kernel's symbols, from llvm-nm."""
@@ -362,11 +401,27 @@ def main():
     parser.add_argument('--reset-before', action='store_true', help='reset at the call site before invoking SYMBOL (requires --reset-after)')
     parser.add_argument('--panic-screen', action='store_true', help='draw panic() messages on the screen')
     parser.add_argument('--no-reset', action='store_true', help='no reset probe at all')
+    parser.add_argument('--fb-probe-after', metavar='SYMBOL',
+                        help='after this call in --in, draw --fb-probe-text through the panic screen renderer and park (needs --panic-screen)')
+    parser.add_argument('--fb-probe-text', default='FB PROBE: kernel writes the panel',
+                        help='the line the --fb-probe-after probe draws (printable ASCII)')
+    parser.add_argument('--fill-screen', type=lambda value: int(value, 0),
+                        help='paint the whole frame buffer with this 0xAARRGGBB colour at kernel entry and park')
+    parser.add_argument('--fill-base', type=lambda value: int(value, 0),
+                        help='with --fill-screen: paint this physical address instead of boot_args Video[0]')
+    parser.add_argument('--fill-size', metavar='WxH', type=lambda value: tuple(int(part, 0) for part in value.lower().split('x')),
+                        help='with --fill-screen: paint this many pixels instead of the handed-over geometry')
     parser.add_argument('--occurrence', type=int, default=1, help='which call to SYMBOL (1 = first)')
     parser.add_argument('--in', dest='function', default='_arm_init', help='function that makes the call (default _arm_init)')
     args = parser.parse_args()
     if args.reset_before and not args.reset_after:
         raise SystemExit('--reset-before requires --reset-after')
+    if args.fb_probe_after and (args.reset_after or not args.panic_screen):
+        raise SystemExit('--fb-probe-after takes the stage 4 cave from --reset-after and needs --panic-screen')
+    if args.fill_screen is not None and (args.fb_probe_after or args.reset_after):
+        raise SystemExit('--fill-screen replaces every other probe')
+    if any(c in args.fb_probe_text for c in '"\\\n') or not args.fb_probe_text.isascii():
+        raise SystemExit('--fb-probe-text must be one line of printable ASCII without quotes')
     data = bytearray(args.kernel.read_bytes())
     load_segments(data)
     kernel_names = rebase(args.kernel, data)
@@ -383,9 +438,31 @@ def main():
             raise SystemExit(f'Padding at {va:#x} is not empty')
 
     # (site, cave stage, symbols the cave is linked with)
-    sites = [(ENTRY_VA, 1, {'target': START_FIRST_CPU}),
-             (MMU_ENABLE_VA, 2, {'target': MMU_ENABLE_VA + 4})]
-    if args.no_reset:
+    # The frame-buffer probe parks right after PE_create_console, so the entry bars
+    # would only be overwritten; dropping them leaves room for the panic screen.
+    sites = [] if (args.fb_probe_after or args.fill_screen is not None) else [
+        (ENTRY_VA, 1, {'target': START_FIRST_CPU}),
+        (MMU_ENABLE_VA, 2, {'target': MMU_ENABLE_VA + 4})]
+    sources = {}
+    if args.fill_screen is not None:
+        colour = args.fill_screen & 0xFFFFFFFF
+        prologue = []
+        if args.fill_base is not None:
+            prologue.append(f'  ldr x1, ={args.fill_base:#x}')
+        else:
+            prologue.append('  ldr x1, [x0, #0x28]')
+        if args.fill_size:
+            width, height = args.fill_size
+            prologue.append(f'  ldr x2, ={width * height * 4}')
+            geometry = f'{width}x{height}'
+        else:
+            prologue += ['  ldr x2, [x0, #0x38]', '  ldr x3, [x0, #0x48]', '  mul x2, x2, x3']
+            geometry = 'at the handed-over geometry'
+        sites.append((ENTRY_VA, 1, {'target': START_FIRST_CPU}))
+        sources[1] = FB_FILL.format(prologue='\n'.join(prologue), lo=colour & 0xFFFF, hi=(colour >> 16) & 0xFFFF)
+        where = f'from {args.fill_base:#x}' if args.fill_base is not None else 'from boot_args Video[0]'
+        description = f'whole-screen fill {colour:#010x} at kernel entry {where} {geometry}, then park'
+    elif args.no_reset:
         description = 'no reset probe'
     elif args.reset_after:
         symbols = kernel_symbols(args.kernel)
@@ -395,10 +472,22 @@ def main():
     else:
         sites.append((AFTER_MMU_VA, 3, {'target': AFTER_MMU_VA + 4}))
         description = f'stage 3 reset {args.reset_delay} s after the MMU is on'
+    if args.fb_probe_after:
+        symbols = kernel_symbols(args.kernel)
+        call_va, callee = find_call(data, symbols, args.function, args.fb_probe_after, args.occurrence)
+        # Take the lowest free cave: the panic screen is placed right behind the last
+        # cave in use and its own code needs the remaining padding.
+        stage = next(s for s in (1, 2, 3, 4) if s not in {used for _, used, _ in sites})
+        sites.append((call_va, stage, {'panic': PANIC_VA, 'target': call_va + 4}))
+        sources[stage] = FB_PROBE.format(panic='panic', text=args.fb_probe_text)
+        description += (f'; frame-buffer probe after call #{args.occurrence} to {args.fb_probe_after} in {args.function}'
+                        f' (at {call_va:#x}): draws {args.fb_probe_text!r} through the panic screen and parks')
 
     with tempfile.TemporaryDirectory() as tmp:
         for site, stage, symbols in sites:
-            source = RESET_BEFORE if (stage == 4 and args.reset_before) else SOURCES[stage].format(ticks=TIMEBASE * args.reset_delay)
+            source = (sources[stage] if stage in sources else
+                      RESET_BEFORE if (stage == 4 and args.reset_before) else
+                      SOURCES[stage].format(ticks=TIMEBASE * args.reset_delay))
             code = assemble(source, CAVES[stage], symbols, Path(tmp))
             if len(code) > CAVE_SIZE:
                 raise SystemExit(f'Stage {stage} code is too large')

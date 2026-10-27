@@ -1,104 +1,96 @@
 #!/usr/bin/env python3
-"""Restore the DriverKit and TrustCache headers newer xnu omits, without the API.
-
-This overrides UniXNU's `scripts/prepare-xnu-source.py`. The original asks
-api.github.com for a directory listing and then downloads every header from
-raw.githubusercontent.com. Both are unreliable from CI and from the tablet:
-
-  - on the tablet raw.githubusercontent.com resets every connection;
-  - on GitHub Actions the unauthenticated API returns HTTP 403 "rate limit
-    exceeded", because the runner's address is shared.
-
-The header set is derivable from the pinned source itself, so this version uses
-git only: it fetches the two older tags named by feeds.toml into the xnu feed
-checkout, lists the files with `git ls-tree`, and writes each one out with
-`git show`. Same inputs, same outputs, no network beyond github.com.
-
-The destination paths and the tag defaults are the ones the original uses, so
-nothing else in the build has to change.
-"""
-from pathlib import Path
+"""Restore omitted DriverKit headers from Apple's earlier Darwin 23 source."""
+import concurrent.futures
 import hashlib
 import json
 import os
-import subprocess
-import sys
+from pathlib import Path
+import urllib.parse
+import urllib.request
 
-# feeds.toml sets these for the driver; keep the same defaults.
-DRIVERKIT_TAG = os.environ.get('UNIXNU_DRIVERKIT_TAG', 'xnu-10063.121.3')
-TRUSTCACHE_TAG = os.environ.get('UNIXNU_TRUSTCACHE_TAG', 'xnu-8796.101.5')
-
-# (tag, directory inside the repository, destination inside .cache/xnu-work)
-RESTORES = [
-    (DRIVERKIT_TAG, 'iokit/DriverKit', '.cache/xnu-work/iokit/DriverKit'),
-    (DRIVERKIT_TAG, 'iokit/DriverKit/crypto', '.cache/xnu-work/iokit/DriverKit/crypto'),
-    (TRUSTCACHE_TAG, 'EXTERNAL_HEADERS/TrustCache', '.cache/xnu-work/EXTERNAL_HEADERS/TrustCache'),
-]
-MANIFEST = Path('.cache/sources/xnu-header-restore.json')
-
-
-def find_feed():
-    """The xnu feed checkout: out/feeds/xnu-<hash>, two levels above the tree."""
-    if not Path('.cache/xnu-work').is_dir():
-        sys.exit('Create the local XNU work source before preparing headers')
-    for candidate in ('../../feeds', 'out/feeds', 'feeds'):
-        feeds = sorted(Path(candidate).glob('xnu-*'))
-        if feeds:
-            return feeds[0]
-    sys.exit('no xnu feed checkout found')
+# Tags of the Apple sources that still carry the headers newer xnu omits; feeds.toml sets them for the unixnu driver.
+TAG = os.environ.get('UNIXNU_DRIVERKIT_TAG', 'xnu-10063.121.3')
+TRUST_TAG = os.environ.get('UNIXNU_TRUSTCACHE_TAG', 'xnu-8796.101.5')
+DESTINATION = Path('.cache/xnu-work/iokit/DriverKit')
+CACHE = Path(f'.cache/sources/xnu-driverkit-{TAG.removeprefix("xnu-")}.json')
+URL = f'https://api.github.com/repos/apple-oss-distributions/xnu/contents/iokit/DriverKit?ref={TAG}'
+# Anonymous GitHub API calls share a small per-address quota that hosted CI runners exhaust (HTTP 403);
+# a token in GITHUB_TOKEN or GH_TOKEN is sent to GitHub hosts only.
+TOKEN = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
 
 
-def git(repo, *arguments, check=True):
-    result = subprocess.run(['git', '-C', str(repo), *arguments], capture_output=True)
-    if check and result.returncode != 0:
-        sys.exit(f'git {" ".join(arguments)} failed: {result.stderr.decode()[:300]}')
-    return result
+# Direct raw.githubusercontent.com is 20-30 KB/s here and frequently times out mid-handshake;
+# the public mirror in ghfast.top answers in the same format. Try direct first, then the mirror.
+MIRROR = 'https://ghfast.top/'
+RETRIES = 3
 
 
-def ensure_tag(repo, tag):
-    if git(repo, 'rev-parse', '--verify', '-q', f'{tag}^{{commit}}', check=False).returncode == 0:
-        return
-    print(f'  fetching tag {tag}')
-    git(repo, 'fetch', '-q', '--depth', '1', 'origin', 'tag', tag)
+def _fetch_once(url, timeout):
+    request = urllib.request.Request(url, headers={'User-Agent': 'unixnu-prepare-xnu-source'})
+    host = urllib.parse.urlsplit(url).hostname
+    if TOKEN and host in ('api.github.com', 'raw.githubusercontent.com'):
+        request.add_header('Authorization', f'Bearer {TOKEN}')
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
 
 
-def list_headers(repo, tag, directory):
-    names = git(repo, 'ls-tree', '-r', '--name-only', tag, directory).stdout.decode().splitlines()
-    return [name for name in names if name.endswith('.h')]
+def fetch(url):
+    last = None
+    for attempt in range(RETRIES):
+        for candidate in (url, MIRROR + url):
+            try:
+                return _fetch_once(candidate, 30 if attempt == 0 else 90)
+            except Exception as error:                                  # noqa: BLE001 - report the last one
+                last = error
+    raise last
 
 
-def main():
-    repo = find_feed()
-    print(f'prepare-xnu-source: feed {repo}')
-    restored = []
-    for tag, directory, destination in RESTORES:
-        ensure_tag(repo, tag)
-        headers = list_headers(repo, tag, directory)
-        target_dir = Path(destination)
-        written = 0
-        for path in headers:
-            name = path[len(directory) + 1:]
-            target = target_dir / name
-            if target.exists():
-                continue
-            data = git(repo, 'show', f'{tag}:{path}').stdout
-            if not data:
-                sys.exit(f'{tag}:{path} is empty')
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-            written += 1
-            restored.append({
-                'path': str(target),
-                'source': f'{tag}:{path}',
-                'sha256': hashlib.sha256(data).hexdigest(),
-            })
-        print(f'  {directory} @ {tag}: {len(headers)} headers, {written} written')
-
-    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST.write_text(json.dumps({'headers': restored}, indent=2) + '\n')
-    print(f'prepare-xnu-source: {len(restored)} headers restored, manifest {MANIFEST}')
-    return 0
+def restore(entry, destination=DESTINATION, tag=TAG):
+    if entry['type'] != 'file' or not entry['name'].endswith('.h'):
+        return None
+    name = entry.get('relative', entry['name'])
+    target = destination / name
+    if target.exists():
+        return None
+    data = fetch(entry['download_url'])
+    digest = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+    if digest != entry['sha']:
+        raise ValueError(f'Git blob hash mismatch: {entry["name"]}')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return {'name': name, 'source_tag': tag, 'git_blob': digest,
+            'sha256': hashlib.sha256(data).hexdigest()}
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    if not DESTINATION.is_dir():
+        raise SystemExit('Create the local XNU work source before preparing headers')
+    if not CACHE.exists():
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE.write_bytes(fetch(URL))
+    entries = json.loads(CACHE.read_text())
+    crypto_cache = CACHE.with_name(f'xnu-driverkit-crypto-{TAG.removeprefix("xnu-")}.json')
+    if not crypto_cache.exists():
+        crypto_url = URL.replace('/DriverKit?', '/DriverKit/crypto?')
+        crypto_cache.write_bytes(fetch(crypto_url))
+    for entry in json.loads(crypto_cache.read_text()):
+        entry['relative'] = 'crypto/' + entry['name']
+        entries.append(entry)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        restored = [entry for entry in executor.map(restore, entries) if entry]
+        trust_tag = TRUST_TAG
+        trust_cache = CACHE.with_name(f'xnu-trustcache-{TRUST_TAG.removeprefix("xnu-")}.json')
+        if not trust_cache.exists():
+            url = ('https://api.github.com/repos/apple-oss-distributions/xnu/'
+                   f'contents/EXTERNAL_HEADERS/TrustCache?ref={trust_tag}')
+            trust_cache.write_bytes(fetch(url))
+        trust_destination = Path('.cache/xnu-work/EXTERNAL_HEADERS/TrustCache')
+        def restore_trust(entry):
+            return restore(entry, trust_destination, trust_tag)
+        restored.extend(entry for entry in executor.map(
+            restore_trust, json.loads(trust_cache.read_text())) if entry)
+    previous = Path('.cache/sources/xnu-restored-headers.json')
+    existing = json.loads(previous.read_text()) if previous.exists() else []
+    by_name = {entry['name']: entry for entry in existing + restored}
+    previous.write_text(json.dumps(list(by_name.values()), indent=2) + '\n')
+    print(f'Restored {len(restored)} omitted public headers from Apple; blob hashes verified')

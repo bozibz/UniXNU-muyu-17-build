@@ -44,7 +44,9 @@ for i in range(177, 340):
 header += '};\nstatic_assert(sizeof(ApplePMGR)==0x4b8a8,"Original provider storage");\n'
 (OUT / 'OriginalPMGRABI.h').write_text(header)
 (OUT / 'GuardedPMGRSlots.inc').write_text(guards)
-source = ROOT / 'kits/braveark/ShengPlatformPower.cpp'
+# The kit directory is the board's: this repository is derived from braveark but
+# ships kits/<board> (muyu here).
+source = ROOT / 'kits/muyu/ShengPlatformPower.cpp'
 obj = OUT / 'ShengPlatformPower.o'
 record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
 command, i = [], 0
@@ -63,7 +65,10 @@ while i < len(arguments):
     i += 1
 command += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-c99-designator',
             '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
-            '-Wno-unnecessary-virtual-specifier', '-I', OUT, '-I', ROOT / '.cache/xnu-work/osfmk']
+            '-Wno-unnecessary-virtual-specifier',
+            # Xcode 27 reports the macOS sysroot as an error while targeting iOS.
+            '-Wno-incompatible-sysroot',
+            '-I', OUT, '-I', ROOT / '.cache/xnu-work/osfmk']
 run(command, cwd=record['directory'])
 raw = obj.read_bytes()
 info = macho(raw)
