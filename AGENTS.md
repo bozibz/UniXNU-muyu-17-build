@@ -114,6 +114,10 @@ fastboot boot UniXNU/out/muyu/boot/boot.img
    常驻约 40% 一个核。长时间测试要间歇、且**不要无人值守地挂着**。
 7. **长时间 panic/dump 之前先确认通道可用** —— panic 路径会抓 stackshot，历史上会被断言顶掉；
    详见 `HANDOFF-2026-10-27.md` §C / §G。
+8. **清理空间时不要删 `UniXNU/out/ipsw`** —— 它是全工作区**唯一需要联网才能恢复**的缓存（IPSW 解包，
+   kernelcache 与根镜像都在里面）。要清就清 `fw/` 下被取代的镜像和 `logs/` 里的历史录像。
+9. **删任何东西之前先确认它不是唯一副本** —— 已知唯一副本：`fw/userdata-backup/userdata-root.sparse`、
+   `fw/vendor_boot_lite.img`、`UniXNU` 仓库里那 193 个未提交改动、全部 `*.md`。
 
 ---
 
