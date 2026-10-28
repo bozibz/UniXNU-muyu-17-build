@@ -423,6 +423,9 @@ void native_legacy_display_late_probe(void);
 extern void native_hid_input_probe(void);
 extern void native_keystore_probe(void);
 extern void native_touch_probe(void);
+// Physical buttons (package/ButtonProbeMuyu.cpp): power/resin on the PMK8550 PON and volume-up on the
+// PMXR2230 GPIO expander, reported as HID Consumer bits through the sink NativeHidInput registered above.
+extern void muyu_buttons_probe(void);
 // The touch driver (drivers/NativeNovatekTouch): an IOService that owns the panel, brought up here because
 // this is where the boot is settled enough for the SPI/DMA bring-up. Weak, so a build without it still links.
 extern void native_novatek_touch_start(void) __attribute__((weak_import));
@@ -444,6 +447,7 @@ void native_legacy_display_late_probe(void) {
     if (&native_novatek_touch_start) native_novatek_touch_start();
     if (&muyu_data_probe_start) muyu_data_probe_start();
     native_hid_input_probe();
+    muyu_buttons_probe();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     OSDictionary *matching=IOService::nameMatching("IOCoreSurfaceRoot");

@@ -52,6 +52,20 @@ static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
  return 0;
 }
 
+// sheng-lite-mask=<hex>: same list, but only the entries whose bit is set (bit 0 = identityservicesd,
+// in lite_jobs order). One kernel keeps every bisect subset a boot argument, so a round costs a payload
+// build instead of a kernel build.
+static int append_job_masked(const char **cursor,unsigned index,unsigned mask) {
+ const char *c=*cursor,*e=c;while(*e && *e!=',')++e;
+ if(e>c && index<32 && (mask&(1u<<index))) {
+  if(strlcat(policy,"<key>",sizeof(policy))>=sizeof(policy))return EINVAL;
+  size_t at=strlen(policy);if(at+(size_t)(e-c)+1>=sizeof(policy))return EINVAL;
+  memcpy(policy+at,c,(size_t)(e-c));policy[at+(size_t)(e-c)]=0;
+  if(strlcat(policy,"</key><true/>",sizeof(policy))>=sizeof(policy))return EINVAL;
+ }
+ *cursor=*e?e+1:e;return 0;
+}
+
 // One comma-separated label at *c into the policy as a disabled key; advances *c past it.
 static int append_job(const char **cursor) {
  const char *c=*cursor,*e=c;while(*e && *e!=',')++e;
@@ -70,6 +84,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  PE_parse_boot_argn("sheng-disable-watchdogd",&enabled,sizeof(enabled));
  if(!PE_parse_boot_argn("sheng-disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
  int lite=0;PE_parse_boot_argn("sheng-lite",&lite,sizeof(lite));if(lite!=1)lite=0;
+ unsigned lite_mask=0;int have_mask=PE_parse_boot_argn("sheng-lite-mask",&lite_mask,sizeof(lite_mask));
  if(enabled!=1)enabled=0;
  for(const char *c=jobs;*c;++c)if(!((*c>='a'&&*c<='z')||(*c>='A'&&*c<='Z')||(*c>='0'&&*c<='9')||*c=='.'||*c=='-'||*c==','))return EINVAL;
  int setup=0,reset=0;
@@ -82,10 +97,15 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   return error;
  }
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
- if(!enabled && !jobs[0] && !lite)return 0;
+ if(!enabled && !jobs[0] && !lite && !have_mask)return 0;
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
+ if(have_mask) {
+  unsigned index=0;
+  printf("sheng lite mask: 0x%x\n",lite_mask);
+  for(const char *c=lite_jobs;*c;) {if((error=append_job_masked(&c,index++,lite_mask)))return error;}
+ }
  for(const char *c=jobs;*c;) {if((error=append_job(&c)))return error;}
  strlcat(policy,policy_tail,sizeof(policy));
  const char *directory="/private/var/db/com.apple.xpc.launchd";

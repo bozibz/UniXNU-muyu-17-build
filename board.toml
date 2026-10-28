@@ -274,6 +274,7 @@ kernel_args = [
   "offline-apfs-load=1",
   "-apfs_shared_datavolume",
   "offline-key-events=1",
+  "muyu-buttons=1",          # physical power/vol-down/vol-up as HID Consumer (package/ButtonProbeMuyu.cpp); first boot: PON only, vol-up skipped until PPID known
   "sheng-log=1",
   "sheng-pmgr=2",
   # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
@@ -376,7 +377,12 @@ kernel_args = [
   # photoanalysisd/softwareupdated among the last ones on an empty photo library and no network.
   # That is exactly the batch sheng disables for bring-up (see package/BootWatchdogPolicy.c), and
   # no boot task ever completed past them. Disable the batch and watch the bar.
+  # "sheng-lite=1",
+  # 2026-10-27 18:20 bisect: sheng-lite-mask selects entries of lite_jobs by bit (bit 0 = identityservicesd,
+  # same order as the table in package/BootWatchdogPolicy.c). 0x1fffff = all 21 = the known-good sheng-lite
+  # baseline; each later round only changes this number, so a round costs a payload build, not a kernel build.
   "sheng-lite=1",
+  "sheng-lite-mask=0x1fffff",   # buttons build: replicate the proven-stable 21-stop lite baseline (vendor_boot_lite c58ad307); the only new variable is the button driver
   # 2026-10-27 pm: heartbeat every 60 s, one short line each, so the 2401-byte panic text holds a trend
   # instead of a single instant: t, process count, launchd/backboardd/SpringBoard states, display swaps
   # and the uptime of the last one, AKS opens/calls, and the files the setup/migration flow touches.

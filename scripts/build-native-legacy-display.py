@@ -194,6 +194,12 @@ keystore_source=ROOT/'kits/muyu/KeyStoreProbe.cpp'
 keystore_obj=OUT/'KeyStoreProbe.o'
 keystore_cmd=[str(keystore_source) if str(arg)==str(source) else str(keystore_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
 run(keystore_cmd,cwd=r['directory'])
+# Physical buttons (package/ButtonProbeMuyu.cpp): power/resin on the PMK8550 PON and volume-up on the
+# PMXR2230 GPIO expander, reported as HID Consumer bits. Compiled into this archive so it links with the
+# probe entry point (LegacyDisplayProbe.cpp) that calls muyu_buttons_probe().
+button_cpp=ROOT/'kits/muyu/ButtonProbeMuyu.cpp';button_obj=OUT/'ButtonProbeMuyu.o'
+button_cmd=[str(button_cpp) if str(arg)==str(source) else str(button_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
+run(button_cmd,cwd=r['directory'])
 process_source=ROOT/'kits/muyu/BootProcessProbe.c'
 process_obj=OUT/'BootProcessProbe.o'
 pr=json.loads((ROOT/'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
@@ -265,7 +271,7 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,nvt_driver_obj,data_probe_obj,stub_obj,*touch_objs])
+     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs])
 sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
          ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
