@@ -287,6 +287,12 @@ kernel_args = [
   # starts so the survey can be photographed; always leave this off for normal boots.
   # "muyu-usb-panic-at=60",
   "sheng-log=1",
+  # 2026-10-28: official persistent-log WRITER (bsd/dev/muyu_pstore.c, already patched into XNU).
+  # The console text goes into the device tree's ramoops_region @0xa7000000; after a warm reset the
+  # stock Android recovery kernel validates that record and exposes it as
+  # /sys/fs/pstore/console-ramoops-0, which stock recovery's unauthenticated adbd can pull. That is
+  # the official "recovery reader" path from unixnu.com/porting/log-capture (stage 4).
+  "muyu_pstore=1",
   "sheng-pmgr=2",
   # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
   # NativeRamBlock overlay); pairs with [payload.adt] persistent_data = true and a large seed.
