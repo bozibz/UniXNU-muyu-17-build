@@ -13,8 +13,9 @@
 | --- | --- |
 | 工作目录 | `/Users/diannao/pad7pro-xnu`（记作 `$W`） |
 | 设备 serial | `a20248f7`（bootloader 已解锁，`verifiedbootstate=orange`） |
-| 当前状态 | **能启动到真正的 iPadOS 桌面**（2026-10-27）|
+| 当前状态 | **能进 iOS 系统，电源/音量下两键实测可用**（2026-10-28 晚）|
 | 保底镜像 | `fw/vendor_boot_lite.img` = `c58ad307…`；git tag `muyu-desktop-works` |
+| 按键基线 | `fw/vendor_boot_btn2.img` = `534125e3…`；git tag `muyu-buttons-work`（lite + data 种子 + 按键驱动）|
 | iPad 根镜像 | `fw/userdata-backup/userdata-root.sparse`（`4c90d7a7…`，8.9 GB）|
 
 ---
@@ -73,16 +74,28 @@ cd $W/UniXNU && $P unixnu build kernel -D ../UniXNU-muyu \
    --kernelcache out/ipsw/21H461/kernelcache.decompressed
 
 # payload + vendor_boot（只改 board.toml 时只需这两步，约 1 分钟）
+# ★★ --data-ramdisk 不能省：没有它 native_owner_data_prepare() 返回 ENOENT(2)，
+#    load_init_program 立刻 panic("offline scratch Data mount failed: 2")，镜像永远到不了系统。
+#    2026-10-28 的 buttons/diag 镜像全部栽在这里（HANDOFF-2026-10-28 §11）。
 $P unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
    --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
    --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr
-$P ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/stock/vendor_boot.img \
+# --base 用 lite（已验证可用的 vendor_boot），不是 stock：
+#   patch-vendor-boot.py 只从 base 取 header/DTB/fragment 表/bootconfig，
+#   真正的内核参数来自 payload 里的 ADT，所以 boot-arg 改动走 payload 即可。
+$P ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
    --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_<名字>.img
 
-# 上机
+# 上机（★ 永远 fastboot boot，绝不 fastboot reboot）
 cd $W && fastboot --set-active=a
 fastboot flash vendor_boot fw/vendor_boot_<名字>.img
 fastboot boot UniXNU/out/muyu/boot/boot.img
+```
+
+**回原厂安卓**（会毁掉 iPadOS 根，见 §5 第 10 条）：
+```bash
+fastboot flash vendor_boot fw/stock/vendor_boot.img   # 换回安卓的 vendor_boot
+# 然后进 recovery：Wipe data/factory reset（fastboot erase userdata 不会建 f2fs）
 ```
 
 `board.toml` 的 boot-args 有**约 1000 字节上限**，加参数前先数长度。
@@ -116,16 +129,26 @@ fastboot boot UniXNU/out/muyu/boot/boot.img
    详见 `HANDOFF-2026-10-27.md` §C / §G。
 8. **清理空间时不要删 `UniXNU/out/ipsw`** —— 它是全工作区**唯一需要联网才能恢复**的缓存（IPSW 解包，
    kernelcache 与根镜像都在里面）。要清就清 `fw/` 下被取代的镜像和 `logs/` 里的历史录像。
-9. **删任何东西之前先确认它不是唯一副本** —— 已知唯一副本：`fw/userdata-backup/userdata-root.sparse`、
+9. **`userdata` 一旦被原厂安卓格式化，iPadOS 就起不来** —— 报
+   `Failed to mount root device @IOKitBSDInit.cpp:984`。回到安卓再测 XNU 之前，
+   必须先 `fastboot flash userdata fw/userdata-backup/userdata-root.sparse`（8.9 GB，约 3.5 分钟）。
+10. **删任何东西之前先确认它不是唯一副本** —— 已知唯一副本：`fw/userdata-backup/userdata-root.sparse`、
    `fw/vendor_boot_lite.img`、`UniXNU` 仓库里那 193 个未提交改动、全部 `*.md`。
 
 ---
 
-## 6. 当前的下一步（按顺序）
+## 6. 当前的下一步（按顺序，2026-10-28 晚更新）
 
-1. **提交遗留工作**（已完成 2026-10-27：`f701029` + tag `muyu-desktop-works`）；
-2. 列"本地补丁 vs 上游对应物"（如 `braveark-hold-reboot`），标出可直接删除的；
-3. **迁格式 2**（`schema_version = 2` + 共用 SoC/OS profile + 规范组件）：分支上做，
-   `vendor_boot_lite.img` 当保底，每步验证"还能进桌面"；
-4. 之后才做 **USB 调试串口 / 日志闭环 → 热与电源 → GPU（`Adreno740`+`AdrenoMetal`）→ 音频**；
-5. Wi-Fi / 蓝牙是硬墙（固件 + iOS 网络栈期望 Apple 自家芯片），**不要优先啃**。
+1. **USB 调试串口 / 日志闭环 —— 最高优先级**。
+   理由：本 port 目前**没有任何机读通道**。冻屏 dump 在图形客户端接管后会被缩小并旋转 90°，
+   只有 panic 渲染是大字，所以"启动到底停在哪"只能靠人眼——2026-10-27 的二分实验就是被这个坑毁掉的
+   （判据是看一条假的进度条）。把官方 `package/BootLog.c` + `BootReset.c` + `package/linux-log/` +
+   `scripts/read-sheng-log.py` 接进来（网站 `/porting/log-capture`）。**在这之前不要再做基于人眼的二分。**
+2. **音量上键的 PPID**：从 stock DTB 的 `gpio-keys` 节点读，不要用 `muyu-buttons-scan=1`
+   （那个会遍历所有 APID 读 obsrvr，可能同步外部中止 panic）。
+3. **电源键偶发要按两下**：核对 PON `pwrkey` 的边沿/去抖配置。
+4. **sheng-lite 二分的重做**：等第 1 项完成后，用机读判据（进程数/交换计数是否在 t>120 s 后仍增长）
+   连续 boot ≥3 次取多数。**现有 D1–D7 结论已作废，不要引用。**
+5. **迁格式 2**（`schema_version = 2` + 共用 SoC/OS profile + 规范组件）：分支上做，`vendor_boot_btn2.img`
+   当保底，每步验证"还能进系统"。
+6. 之后才是 **热与电源 → GPU（`Adreno740`+`AdrenoMetal`）→ 音频**；Wi-Fi/蓝牙是硬墙，不要优先啃。
