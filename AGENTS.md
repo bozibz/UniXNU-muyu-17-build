@@ -86,10 +86,15 @@ $P unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho 
 $P ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
    --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_<名字>.img
 
-# 上机（★ 永远 fastboot boot，绝不 fastboot reboot）
-cd $W && fastboot --set-active=a
-fastboot flash vendor_boot fw/vendor_boot_<名字>.img
-fastboot boot UniXNU/out/muyu/boot/boot.img
+# 上机：★ 只用这个脚本，不要手敲 fastboot。
+#   它负责 preflight（槽位/电量/镜像校验）、分区白名单、自动 --set-active、写台账，
+#   并且从不使用 fastboot reboot。
+$W/tools/muyu-flash-mode.sh status                      # 看本地镜像 + 设备 + 槽位
+$W/tools/muyu-flash-mode.sh preflight                   # 实验前检查并修复 slot-unbootable
+$W/tools/muyu-flash-mode.sh xnu fw/vendor_boot_<名字>.img
+$W/tools/muyu-flash-mode.sh stock                       # 只充电模式（原厂 vendor_boot）
+$W/tools/muyu-flash-mode.sh restore-stock --yes         # boot/vendor_boot/recovery 全部回原厂
+$W/tools/muyu-flash-mode.sh ledger                      # 这一台刷过什么
 ```
 
 **回原厂安卓**（会毁掉 iPadOS 根，见 §5 第 10 条）：
@@ -129,26 +134,38 @@ fastboot flash vendor_boot fw/stock/vendor_boot.img   # 换回安卓的 vendor_b
    详见 `HANDOFF-2026-10-27.md` §C / §G。
 8. **清理空间时不要删 `UniXNU/out/ipsw`** —— 它是全工作区**唯一需要联网才能恢复**的缓存（IPSW 解包，
    kernelcache 与根镜像都在里面）。要清就清 `fw/` 下被取代的镜像和 `logs/` 里的历史录像。
-9. **`userdata` 一旦被原厂安卓格式化，iPadOS 就起不来** —— 报
+9. **不要手敲 `fastboot flash boot` / `fastboot flash recovery` / `fastboot reboot`**。
+   2026-10-28 两次把设备弄到需要全量线刷，都是这三条。上机一律走
+   `tools/muyu-flash-mode.sh`；只有 `restore-stock --yes` 才允许写 boot/recovery。
+10. **不要把 vendor_boot 做得明显小于 48 MiB**。能用的 payload 镜像都是 **61.81 MiB**；
+   把 vendor ramdisk 缩小是 2026-10-28 设备失联的直接前因（脚本会拦）。
+11. **`userdata` 一旦被原厂安卓格式化，iPadOS 就起不来** —— 报
    `Failed to mount root device @IOKitBSDInit.cpp:984`。回到安卓再测 XNU 之前，
    必须先 `fastboot flash userdata fw/userdata-backup/userdata-root.sparse`（8.9 GB，约 3.5 分钟）。
-10. **删任何东西之前先确认它不是唯一副本** —— 已知唯一副本：`fw/userdata-backup/userdata-root.sparse`、
+12. **删任何东西之前先确认它不是唯一副本** —— 已知唯一副本：`fw/userdata-backup/userdata-root.sparse`、
    `fw/vendor_boot_lite.img`、`UniXNU` 仓库里那 193 个未提交改动、全部 `*.md`。
 
 ---
 
-## 6. 当前的下一步（按顺序，2026-10-28 晚更新）
+## 6. 当前的下一步（按顺序，2026-10-28 深夜更新）
 
-1. **USB 调试串口 / 日志闭环 —— 最高优先级**。
-   理由：本 port 目前**没有任何机读通道**。冻屏 dump 在图形客户端接管后会被缩小并旋转 90°，
-   只有 panic 渲染是大字，所以"启动到底停在哪"只能靠人眼——2026-10-27 的二分实验就是被这个坑毁掉的
-   （判据是看一条假的进度条）。把官方 `package/BootLog.c` + `BootReset.c` + `package/linux-log/` +
-   `scripts/read-sheng-log.py` 接进来（网站 `/porting/log-capture`）。**在这之前不要再做基于人眼的二分。**
-2. **音量上键的 PPID**：从 stock DTB 的 `gpio-keys` 节点读，不要用 `muyu-buttons-scan=1`
-   （那个会遍历所有 APID 读 obsrvr，可能同步外部中止 panic）。
-3. **电源键偶发要按两下**：核对 PON `pwrkey` 的边沿/去抖配置。
-4. **sheng-lite 二分的重做**：等第 1 项完成后，用机读判据（进程数/交换计数是否在 t>120 s 后仍增长）
-   连续 boot ≥3 次取多数。**现有 D1–D7 结论已作废，不要引用。**
-5. **迁格式 2**（`schema_version = 2` + 共用 SoC/OS profile + 规范组件）：分支上做，`vendor_boot_btn2.img`
-   当保底，每步验证"还能进系统"。
-6. 之后才是 **热与电源 → GPU（`Adreno740`+`AdrenoMetal`）→ 音频**；Wi-Fi/蓝牙是硬墙，不要优先啃。
+1. ~~上机流程硬化~~ —— **本场已完成**：`tools/muyu-flash-mode.sh` 重写为唯一入口
+   （preflight、分区白名单、自动 `--set-active`、镜像 `<48 MiB` 拦截、`logs/flash-ledger.tsv` 台账），
+   §5 新增第 9/10 条禁令。**以后上机一律用它，不要手敲 fastboot。**
+2. **显示 / GPU（1.4 fps）—— 现在的主线**。CPU 逐帧拷贝把合成器压到 ~1.4 fps，
+   所有 UI 判断因此不可信（10-27 的二分就是被那条假进度条毁掉的）。
+   官方组件：`GopFramebuffer`（显示）、`Adreno740` + `AdrenoMetal`（加速），见网站 `/porting/gpu`。
+3. **启动确定性**：同一镜像既进过桌面也卡过（HANDOFF-2026-10-27 §K.7），至今没解释。
+   这是所有实验的地基；在能机读日志前，至少要用固定判据 + 多次采样。
+4. **热与电源**：无 thermal zone、无 DVFS、`wdt=-1`（§5 第 6 条）。这是**安全**问题，不是体验问题。
+5. **音量上键的 PPID**：从 stock DTB 的 `gpio-keys` 节点读，不要用 `muyu-buttons-scan=1`
+   （会遍历所有 APID 读 obsrvr，可能同步外部中止 panic）。电源键偶发两下同理核对去抖。
+6. **格式 2 迁移**：`schema_version = 2` + 共用 SoC/OS profile + 规范组件，分支上做，
+   `fw/vendor_boot_btn2.img` 当保底。
+7. **日志通道（暂停）**：10-28 晚把三条路都试到底了（HANDOFF-2026-10-28 §14–§18）：
+   XNU 内 USB 控制台卡在 USB3 PHY；DDR ramoops 过 bootloader 就丢；
+   官方 UFS writer 已移植进内核、但**没有 reader**（stock recovery 的 adbd 无 root，
+   TWRP/OrangeFox 是 ramdisk-only 镜像起不来）。要继续需要 **muyu 的 mainline Linux 内核**
+   来跑官方 Linux reader；组件（`package/linux-log/init` + `scripts/build-muyu-log-reader.py` +
+   静态 busybox）都已就绪。
+
