@@ -89,7 +89,14 @@ extern void IOSleep(unsigned milliseconds);   /* not declared by the headers the
 #define MUYU_GCC_USB30_GDSC 0x39004u
 #define MUYU_GCC_USB3PHY_GDSC 0x50018u
 static const uint32_t gcc_usb_branches[]={0x39018,0x39024,0x39028,0x39060,0x39064,0x39068,0x39088,0x3908c};
-static const uint32_t gcc_usb_probe[]={0x39004,0x39018,0x39024,0x39028,0x3902c,0x39060,0x39068,0x39088,0x3908c,0x50018};
+/* Every register the mainline gcc-sm8650 driver names in the USB30/USB3 PHY block, in address order, so a
+ * single dump shows both the branch enables and the RCG/mux state they depend on. */
+static const uint32_t gcc_usb_probe[]={
+    0x39000,0x39004,0x39008,0x3900c,0x39010,0x39014,0x39018,0x3901c,
+    0x39020,0x39024,0x39028,0x3902c,0x39030,0x39034,0x39038,0x3903c,
+    0x39040,0x39044,0x39048,0x3904c,0x39050,0x39054,0x39058,0x3905c,
+    0x39060,0x39064,0x39068,0x3906c,0x39070,0x39088,0x3908c,0x50018};
+#define GCC_USB_PROBE_COUNT (sizeof(gcc_usb_probe)/sizeof(gcc_usb_probe[0]))
 #define MUYU_USB_SMMU_SIZE 0x100000u
 
 static const unsigned trb_off[6]={0x1000,0x1040,0x1080,0x10c0,0x1100,0x1140};
@@ -118,7 +125,7 @@ static struct {
     const char *why;
     bool dma_low;
     uint32_t reset_wb, csf_wb;
-    uint32_t gcc_before[10], gcc_after[10];
+    uint32_t gcc_before[32], gcc_after[32];
     int gdsc30, gdscphy;
     uint32_t step_rc[8];
     int replay_pending;
@@ -448,7 +455,7 @@ static void usb_thread(void *arg __unused,wait_result_t result __unused)
  * two power domains never report POWER_ON, so the caller can say so instead of guessing. */
 static int gcc_usb_up(vm_offset_t gcc)
 {
-    for (unsigned i=0;i<10;i++) u.gcc_before[i]=read_reg(gcc,gcc_usb_probe[i]);
+    for (unsigned i=0;i<GCC_USB_PROBE_COUNT;i++) u.gcc_before[i]=read_reg(gcc,gcc_usb_probe[i]);
     u.gdsc30=-1; u.gdscphy=-1;
     if (!gcc) return -1;
     uint32_t v=read_reg(gcc,MUYU_GCC_USB30_GDSC);
@@ -465,7 +472,7 @@ static int gcc_usb_up(vm_offset_t gcc)
     }
     __asm__ volatile("dsb sy" ::: "memory");
     for (unsigned i=0;i<100;i++) delay(1000);
-    for (unsigned i=0;i<10;i++) u.gcc_after[i]=read_reg(gcc,gcc_usb_probe[i]);
+    for (unsigned i=0;i<GCC_USB_PROBE_COUNT;i++) u.gcc_after[i]=read_reg(gcc,gcc_usb_probe[i]);
     return 0;
 }
 
@@ -525,15 +532,30 @@ static void panic_thread(void *arg,wait_result_t result __unused)
           "gcc=%08x/%08x/%08x/%08x\n"
           "dwc3 id=%08x hwparams=%08x awidth=%u gctl=%08x dctl=%08x dsts=%08x\n"
           "smmu=%08x/%08x/%08x/%08x matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n"
-          "gdsc30=%d gdscphy=%d gdscr=%08x phygdscr=%08x br18=%08x br60=%08x br88=%08x br8c=%08x\n"
+          "gdsc30=%d gdscphy=%d\n"
+          "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_after  %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_after  %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_after  %08x %08x %08x %08x %08x %08x %08x %08x\n"
+          "gcc_after  %08x %08x %08x %08x %08x %08x %08x %08x\n"
           "dma=%llx low=%d reset_wb=%08x csf_wb=%08x ev=%u setups=%u tx=%llu rx=%llu ep0=%x/%x/%x/%x/%x\n",
         u.stage?u.stage:"off",(int)u.failed,u.why?u.why:"none",
         u.gcc[0],u.gcc[1],u.gcc[2],u.gcc[3],
         u.id,u.hwparams,u.awidth,u.gctl,u.dctl,u.dsts,
         u.smmu_base[0],u.smmu_base[1],u.smmu_base[2],u.smmu_base[3],
         u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1],
-        u.gdsc30,u.gdscphy,u.gcc_after[0],u.gcc_after[9],
-        u.gcc_after[1],u.gcc_after[5],u.gcc_after[8],u.gcc_after[7],
+        u.gdsc30,u.gdscphy,
+        u.gcc_before[0],u.gcc_before[1],u.gcc_before[2],u.gcc_before[3],u.gcc_before[4],u.gcc_before[5],u.gcc_before[6],u.gcc_before[7],
+        u.gcc_before[8],u.gcc_before[9],u.gcc_before[10],u.gcc_before[11],u.gcc_before[12],u.gcc_before[13],u.gcc_before[14],u.gcc_before[15],
+        u.gcc_before[16],u.gcc_before[17],u.gcc_before[18],u.gcc_before[19],u.gcc_before[20],u.gcc_before[21],u.gcc_before[22],u.gcc_before[23],
+        u.gcc_before[24],u.gcc_before[25],u.gcc_before[26],u.gcc_before[27],u.gcc_before[28],u.gcc_before[29],u.gcc_before[30],u.gcc_before[31],
+        u.gcc_after[0],u.gcc_after[1],u.gcc_after[2],u.gcc_after[3],u.gcc_after[4],u.gcc_after[5],u.gcc_after[6],u.gcc_after[7],
+        u.gcc_after[8],u.gcc_after[9],u.gcc_after[10],u.gcc_after[11],u.gcc_after[12],u.gcc_after[13],u.gcc_after[14],u.gcc_after[15],
+        u.gcc_after[16],u.gcc_after[17],u.gcc_after[18],u.gcc_after[19],u.gcc_after[20],u.gcc_after[21],u.gcc_after[22],u.gcc_after[23],
+        u.gcc_after[24],u.gcc_after[25],u.gcc_after[26],u.gcc_after[27],u.gcc_after[28],u.gcc_after[29],u.gcc_after[30],u.gcc_after[31],
         u.pa,(int)u.dma_low,u.reset_wb,u.csf_wb,u.events,u.setups,u.tx_bytes,u.rx_bytes,
         u.step_rc[0],u.step_rc[1],u.step_rc[2],u.step_rc[3],u.step_rc[4]);
 }
