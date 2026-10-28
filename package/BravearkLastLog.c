@@ -557,9 +557,45 @@ muyu_dump_later(void *arg, wait_result_t result)
 		}
 	}
 	muyu_build_dump(out, sizeof(out));
-	for (;;) {
-		printf("LASTLOG %u bytes (filtered):\n%s\n", (unsigned)strlen(out), out);
+	printf("LASTLOG %u bytes (filtered):\n%s\n", (unsigned)strlen(out), out);
+	/* Bring-up measurement: after the one-shot snapshot, one short line every five seconds. This page is
+	 * the instrument for the physical buttons. native_buttons_stats[] is otherwise only visible as the
+	 * "MUYU BTN:" lines printed during the first seconds of the boot, which have scrolled out of the
+	 * framebuffer console long before anyone can read them, so a driver that armed nothing and a driver
+	 * that works both looked like "no reaction". Pressing a button must move irq/rep and t must keep
+	 * climbing, so one photo of this screen is evidence either way.
+	 * Rebuilding the whole dump inside this loop was tried and rejected: it appends ~30 lines per pass and
+	 * the console scrolls the page off faster than it can be photographed, so the passes are one line. */
+	for (unsigned pass = 1;; ++pass) {
+		extern volatile int native_buttons_stats[10] __attribute__((weak_import));
+		extern unsigned native_legacy_uptime_seconds(void) __attribute__((weak_import));
+		extern void muyu_proc_census(char *, size_t) __attribute__((weak_import));
+		unsigned now = 0, irq = 0, rep = 0, msk = 0, oth = 0, pdc = 0, sp = 0;
+		int st = 0, pon = -1, gpio = -1, err = 0;
+
 		IOSleep(5000);
+		if (&native_legacy_uptime_seconds != NULL) {
+			now = native_legacy_uptime_seconds();
+		}
+		if (&native_buttons_stats != NULL) {
+			st = native_buttons_stats[0];
+			irq = (unsigned)native_buttons_stats[1];
+			rep = (unsigned)native_buttons_stats[2];
+			msk = (unsigned)native_buttons_stats[3];
+			pon = native_buttons_stats[4];
+			gpio = native_buttons_stats[5];
+			oth = (unsigned)native_buttons_stats[6];
+			pdc = (unsigned)native_buttons_stats[7];
+			err = native_buttons_stats[8];
+			sp = (unsigned)native_buttons_stats[9];
+		}
+		printf("MUYU LIVE p=%u t=%u btn st=%d irq=%u rep=%u msk=0x%x pon=%d gpio=%d pdc=0x%x err=%d sp=%u oth=%u\n",
+		    pass, now, st, irq, rep, msk, pon, gpio, pdc, err, sp, oth);
+		if ((pass % 12) == 0 && &muyu_proc_census != NULL) {
+			char census[160];
+			muyu_proc_census(census, sizeof(census));
+			printf("%s", census);
+		}
 	}
 }
 
@@ -568,10 +604,18 @@ muyu_dump_start(void)
 {
 	uint32_t at = 0;
 	thread_t thread;
+	/* First caller wins: the display probe calls this at ~t+10 s (early enough to take the panel before the
+	 * graphics client rotates and shrinks the console) and load_init_program calls it again later. Without
+	 * the guard the second call would start a second ticker on the same panel. */
+	static int started;
 
+	if (started) {
+		return;
+	}
 	if (!PE_parse_boot_argn("muyu-dump-at", &at, (int)sizeof(at)) || at < 5) {
 		return;
 	}
+	started = 1;
 	if (kernel_thread_start_priority(muyu_dump_later, (void *)(uintptr_t)at, BASEPRI_KERNEL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}

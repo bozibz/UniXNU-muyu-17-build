@@ -432,6 +432,7 @@ extern void native_novatek_touch_start(void) __attribute__((weak_import));
 // Live-Data probe (package/MuyuDataProbe.c): muyu-data-probe=<n> lists what the running system actually
 // sees under /private/var (keybags, migration/Setup prefs) - the overlay is invisible from the host.
 extern void muyu_data_probe_start(void) __attribute__((weak_import));
+extern void muyu_dump_start_late(void) __attribute__((weak_import));
 extern void native_touch_muyu_start(void) __attribute__((weak_import));
 extern void sheng_cpufreq_probe(void);
 extern void sheng_gpu_power_probe(void);
@@ -446,6 +447,12 @@ void native_legacy_display_late_probe(void) {
     native_touch_probe();
     if (&native_novatek_touch_start) native_novatek_touch_start();
     if (&muyu_data_probe_start) muyu_data_probe_start();
+    /* 2026-10-28: the msgbuf dump has to take the panel BEFORE the graphics client switches the display
+     * mode. After that switch the kernel text console is drawn rotated 90 degrees and much smaller, so a
+     * dump photographed then is an unreadable wall of vertical columns (logs/2026-10-28-18-11-01-730.jpg).
+     * Starting the muyu-dump-at timer here instead of in load_init_program moves the freeze to ~t+20 s,
+     * well before backboardd presents its first frame. The system keeps booting headless. */
+    if (&muyu_dump_start_late) muyu_dump_start_late();
     native_hid_input_probe();
     muyu_buttons_probe();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;

@@ -382,16 +382,19 @@ kernel_args = [
   # same order as the table in package/BootWatchdogPolicy.c). 0x1fffff = all 21 = the known-good sheng-lite
   # baseline; each later round only changes this number, so a round costs a payload build, not a kernel build.
   "sheng-lite=1",
-  "sheng-lite-mask=0x1fffff",   # buttons build: replicate the proven-stable 21-stop lite baseline (vendor_boot_lite c58ad307); the only new variable is the button driver
+  # 2026-10-28: the mask is redundant while sheng-lite=1 already stops all 21 (lite appends the whole
+  # list, the mask appends its subset again). Dropped so the instrumented build spends its last
+  # cmdline bytes on muyu-dump-at instead: 979 -> 971 B of the ~1000 B budget.
+  # "sheng-lite-mask=0x1fffff",
   # 2026-10-27 pm: heartbeat every 60 s, one short line each, so the 2401-byte panic text holds a trend
   # instead of a single instant: t, process count, launchd/backboardd/SpringBoard states, display swaps
   # and the uptime of the last one, AKS opens/calls, and the files the setup/migration flow touches.
-  "muyu-data-hb=60",
+  "muyu-data-hb=20",
   # 2026-10-27 pm: the bar stalls at 80-90% after several minutes now, so the probe has to look at the
   # machine AFTER that, not 70 s in. Probe at 330 s, dump at 360 s: both land in the stalled state.
   # 2026-10-27 pm: 5 s before the dump. At 180 s the probe rows were already pushed out of msgbuf by
   # the touch pump, so the dump showed only the heartbeats.
-  "muyu-data-delay=236",
+  "muyu-data-delay=100",
   # "muyu-touch-quiet=1",   # dropped 2026-10-27: cmdline budget (touch pump lines are not in the keep list)
   # 2026-10-26 22:50: the official skip-setup path (this + --skip-setup) did not even reach the boot logo,
   # so it is disabled again. It needs a profile/browser check before another try.
@@ -404,8 +407,19 @@ kernel_args = [
   # dump text actually reaches the panel instead of an assertion. The 360 s dump showed a healthy machine
   # with the bar half way; at 1200 s the bar was nearly full but the text was painted over within a frame
   # (see native_legacy_swap_hold). 1500 s: close to the "stuck at the very end" moment, and now stable.
-  # "muyu-dump-at=240",   # off for the sheng-lite run: a dump at 4 min freezes the panel and hides whether
-  #                       # the boot now finishes; the heartbeat is still logging if we need a dump later.
+  # 2026-10-28 evening, third try: the timer now starts in the display probe (LegacyDisplayProbe.cpp), not in
+  # load_init_program, so 20 s lands at ~t+30 s -- before backboardd presents its first frame. Earlier
+  # value 150 s was too late. Once the mobile-graphics client owns the scanout
+  # the kernel text console is drawn through a 90-degree rotation, so every line becomes a vertical
+  # column and the page is unreadable (photo logs/2026-10-28-18-11-01-730.jpg). Freezing at 5 s takes the
+  # panel before that client starts, which is the orientation the console renders correctly in (see the
+  # 17:58/17:59 photos of the failed boot: horizontal, readable). Costs the UI view, keeps the
+  # measurement: the ticker's t=/irq=/rep= and the heartbeat's n=/sb= still say what the machine does.
+  # 2026-10-28: OFF for the UI run. Freezing the panel is useless here: after the display probe the kernel
+  # console is already drawn shrunk + rotated 90 degrees, so the dump is an unreadable wall of columns
+  # (photos logs/2026-10-28-18-11-01-730.jpg, shot1814.jpg). The acceptance test for the buttons is the
+  # system UI itself: power -> power menu, volume-down -> volume HUD.
+  # "muyu-dump-at=20",
   # Bring-up: a synthetic Home press resets the idle timer and (on this port) wakes the panel, so the
   # display does not stay blanked after the first lock screen when no touch exists yet. First press 90 s
   # after the second presented frame, then every 60 s, six times.
