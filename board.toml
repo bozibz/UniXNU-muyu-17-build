@@ -282,10 +282,10 @@ kernel_args = [
   # enumerate yet (DWC3 reset never self-clears, see HANDOFF-2026-10-28 §14) and it writes GCC's USB
   # power/branch registers, which should not happen on every normal boot until that is understood.
   # Enable together with muyu-usb-panic-at=<s> when working on it.
-  "muyu_usb=1",
+  # "muyu_usb=1",
   # 2026-10-28: diagnostic readout for the USB work only. Panics this many seconds after the driver
   # starts so the survey can be photographed; always leave this off for normal boots.
-  "muyu-usb-panic-at=60",
+  # "muyu-usb-panic-at=60",
   "sheng-log=1",
   "sheng-pmgr=2",
   # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
