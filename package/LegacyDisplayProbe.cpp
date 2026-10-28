@@ -433,6 +433,7 @@ extern void native_novatek_touch_start(void) __attribute__((weak_import));
 // sees under /private/var (keybags, migration/Setup prefs) - the overlay is invisible from the host.
 extern void muyu_data_probe_start(void) __attribute__((weak_import));
 extern void muyu_dump_start_late(void) __attribute__((weak_import));
+extern void muyu_usb_debug_start(void) __attribute__((weak_import));
 extern void native_touch_muyu_start(void) __attribute__((weak_import));
 extern void sheng_cpufreq_probe(void);
 extern void sheng_gpu_power_probe(void);
@@ -455,6 +456,9 @@ void native_legacy_display_late_probe(void) {
     if (&muyu_dump_start_late) muyu_dump_start_late();
     native_hid_input_probe();
     muyu_buttons_probe();
+    /* USB debug console: after the HID service exists (it registers the button sink) and before the
+     * graphics client starts, so a serial capture sees the whole user-space boot. */
+    if (&muyu_usb_debug_start) muyu_usb_debug_start();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     OSDictionary *matching=IOService::nameMatching("IOCoreSurfaceRoot");

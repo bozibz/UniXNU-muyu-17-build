@@ -785,6 +785,14 @@ PY_BINDINGS
       KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $LAST_LOG_ARCHIVE"
     fi
   fi
+  # muyu USB CDC ACM debug console (package/MuyuUsbDebug.c). Only linked when the archive exists: the
+  # bootstrap pass links before the archive builders run, exactly like the pram writer above. Inert
+  # unless the muyu_usb=1 boot argument is present.
+  USB_DEBUG_ARCHIVE=$ROOT/build/muyu-usb-debug/libMuyuUsbDebug.a
+  if [ -f "$USB_DEBUG_ARCHIVE" ]; then
+    KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$USB_DEBUG_ARCHIVE"
+    KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $USB_DEBUG_ARCHIVE"
+  fi
   KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES ${XNU_EXTRA_LD_ARCHIVES:-}"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$KERNEL_EXTRA_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$KERNEL_ARCHIVE_DEPENDENCIES")

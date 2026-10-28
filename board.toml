@@ -84,6 +84,7 @@ archives = [
   # prints "PREVIOUS XNU LOG") and the launchd policy that disables com.apple.watchdogd,
   # so a missing boot-task check-in no longer resets the board.
   "build-boot-log.py",
+  "build-muyu-usb-debug.py",
 ]
 
 # GPU: BraveArk reports Adreno735 (compatible qcom,adreno-gpu-gen7-11-0, the same family as uke's A732).
@@ -274,7 +275,17 @@ kernel_args = [
   "offline-apfs-load=1",
   "-apfs_shared_datavolume",
   "offline-key-events=1",
-  "muyu-buttons=1",          # physical power/vol-down/vol-up as HID Consumer (package/ButtonProbeMuyu.cpp); first boot: PON only, vol-up skipped until PPID known
+  # physical power/vol-down/vol-up as HID Consumer (package/ButtonProbeMuyu.cpp); first boot: PON only,
+  # vol-up skipped until PPID known.
+  "muyu-buttons=1",
+  # 2026-10-28: CDC ACM debug console over USB (package/MuyuUsbDebug.c). Off by default: it does not
+  # enumerate yet (DWC3 reset never self-clears, see HANDOFF-2026-10-28 §14) and it writes GCC's USB
+  # power/branch registers, which should not happen on every normal boot until that is understood.
+  # Enable together with muyu-usb-panic-at=<s> when working on it.
+  # "muyu_usb=1",
+  # 2026-10-28: diagnostic readout for the USB work only. Panics this many seconds after the driver
+  # starts so the survey can be photographed; always leave this off for normal boots.
+  # "muyu-usb-panic-at=60",
   "sheng-log=1",
   "sheng-pmgr=2",
   # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +

@@ -339,6 +339,16 @@ muyu_build_dump(char *out, size_t cap)
 				used += length;
 			}
 		}
+		extern void muyu_usb_state_line(char *, size_t) __attribute__((weak_import));
+		if (&muyu_usb_state_line != NULL) {
+			muyu_usb_state_line(line, sizeof(line));
+			length = strlen(line);
+			if (length > 0 && length + used < cap) {
+				memmove(out + length, out, used + 1);
+				memcpy(out, line, length);
+				used += length;
+			}
+		}
 		if (&native_legacy_state_line != NULL) {
 			native_legacy_state_line(line, (unsigned)sizeof(line));
 			length = strlen(line);
