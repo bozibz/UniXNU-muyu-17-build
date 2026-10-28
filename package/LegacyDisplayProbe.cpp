@@ -434,6 +434,7 @@ extern void native_novatek_touch_start(void) __attribute__((weak_import));
 extern void muyu_data_probe_start(void) __attribute__((weak_import));
 extern void muyu_dump_start_late(void) __attribute__((weak_import));
 extern void muyu_usb_debug_start(void) __attribute__((weak_import));
+extern void boot_log_tick(unsigned) __attribute__((weak_import));
 extern void native_touch_muyu_start(void) __attribute__((weak_import));
 extern void sheng_cpufreq_probe(void);
 extern void sheng_gpu_power_probe(void);
@@ -459,6 +460,10 @@ void native_legacy_display_late_probe(void) {
     /* USB debug console: after the HID service exists (it registers the button sink) and before the
      * graphics client starts, so a serial capture sees the whole user-space boot. */
     if (&muyu_usb_debug_start) muyu_usb_debug_start();
+    /* UFS diagnostic log (kits/muyu/BootLog.c, sheng-log=1): the writer waits for NativeUfs to publish the root
+     * layout, so starting it here only arms it. This is the official log path: the window is readable afterwards
+     * from stock recovery with dd + scripts/read-sheng-log.py --decode. */
+    if (&boot_log_tick) boot_log_tick(0);
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     OSDictionary *matching=IOService::nameMatching("IOCoreSurfaceRoot");
