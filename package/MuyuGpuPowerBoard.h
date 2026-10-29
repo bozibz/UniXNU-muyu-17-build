@@ -71,6 +71,10 @@
 #define MGB_CC_SMMU_VOTE_CLK 0x7000        // same as sheng
 #define MGB_CC_MX_CBCR 0x900c              // demet clock lives here on sheng; present but unused here
 
+#define MGB_GDSC_RETAIN_MEM (1u << 14)
+#define MGB_GDSC_RETAIN_PERIPH (1u << 13)
+#define MGB_GDSC_RETAIN_FF (1u << 11)
+#define MGB_GDSC_POLL_US 2000
 #define MGB_GDSC_PWR_ON (1u << 31)
 #define MGB_GDSC_SW_COLLAPSE (1u << 0)
 #define MGB_GDSC_POWER_UP_COMPLETE (1u << 16)
@@ -197,6 +201,225 @@ static inline void mgb_run(const struct mgb_io *io, unsigned mode, unsigned have
     // Stage 4: the GPU window needs both CX and GX on (RBBM_STATUS is in the GX-gated space on gen7).
     if (!(have & (1u << MGB_WIN_GPU))) r->gpu = MGB_NOMAP;
     else if (r->cc != MGB_DONE || !mgb_gdsc_on(r->cx_gdscr) || !mgb_gdsc_on(r->gx_gdscr)) r->gpu = MGB_SKIPPED_PREREQ;
+    else {
+        mgb_rd(io, r, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &r->rbbm_status);
+        r->gpu = MGB_DONE;
+    }
+}
+
+// ---- Clock bring-up (mode 4): what gpucc_cliffs_probe + a6xx_gmu_resume do, in Linux order, with no
+// power-domain change. Each step is independent so a failure names itself instead of leaving the block
+// half-configured. Only the registers this board actually has are touched; there is no CXO_AON or DEMET
+// branch on cliffs, and the GPU's gx_gfx3d clock is GMU-gated (gx_clkctl_gx_gdsc @0x3d68024), not here.
+#define MGB_PLL_LOCK_DET (1u << 31)
+#define MGB_PLL_OUTCTRL (1u << 0)
+#define MGB_PLL_OUT_MASK 0x7u
+#define MGB_PLL_RESET_N (1u << 2)
+#define MGB_PLL_RUN 1u
+#define MGB_RCG_UPDATE (1u << 0)
+#define MGB_RCG_ROOT_EN (1u << 1)
+#define MGB_RCG_CFG_CLEAR (0x1fu | (7u << 8) | (3u << 12) | (1u << 20))
+#define MGB_GMU_SRC_SEL 3u               // GPU_CC_PLL1_OUT_MAIN; 440/2 = 220 MHz, so the div field is 1
+#define MGB_GMU_DIV_FIELD 1u
+#define MGB_HUB_SRC_SEL 5u               // GPLL0_OUT_MAIN; 600/3 = 200 MHz, so the div field is 2
+#define MGB_HUB_DIV_FIELD 2u
+
+struct mgb_clock_result {
+    unsigned step;                       // last step started: 1 GPLL0, 2 PLL0, 3 PLL1, 4 hub, 5 gmu, 6 branches
+    int failed;                          // 1 timeout/refusal, 2 I/O error, 3 prerequisite
+    unsigned lock_polls, hub_polls, gmu_polls, branch_polls;
+    uint32_t pll1_mode, pll1_opmode, gmu_cfg, hub_cfg, cx_gmu, gpll0, gpll0_after;
+};
+
+static inline int mgb_write(const struct mgb_io *io, struct mgb_result *r, unsigned w, uint32_t off, uint32_t v) {
+    if (io->write32(io->cookie, w, off, v)) { r->io_error = 1; return -1; }
+    return 0;
+}
+
+// lucid_ole configuration registers, as gpucc-cliffs.c writes them. L_VAL carries cal_l/cal_l_ringosc in
+// its upper halves; the zero test_ctl value is skipped exactly like clk_alpha_pll_write_config does.
+static inline int mgb_pll_configure(const struct mgb_io *io, struct mgb_result *r, uint32_t base,
+                                    uint32_t l, uint32_t alpha) {
+    static const uint32_t offsets[] = {0x10, 0x14, 0x20, 0x24, 0x28, 0x18, 0x1c, 0x2c, 0x30, 0x34, 0x38};
+    const uint32_t values[] = {l | (0x44u << 16) | (0x44u << 24), alpha, 0x20485699u, 0x00182261u, 0x82aa299cu,
+                               0, 5, 0, 3, 0x9000, 0x34};
+    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; ++i)
+        if (values[i] && mgb_write(io, r, MGB_WIN_GPUCC, base + offsets[i], values[i])) return -1;
+    uint32_t mode = 0, opmode = 0;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, base + MGB_CC_PLL_MODE, &mode)) return -1;
+    if (mgb_write(io, r, MGB_WIN_GPUCC, base + MGB_CC_PLL_MODE, mode & ~MGB_PLL_OUTCTRL)) return -1;
+    if (mgb_write(io, r, MGB_WIN_GPUCC, base + MGB_CC_PLL_OPMODE, 0)) return -1;    // standby
+    (void)opmode;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, base + MGB_CC_PLL_MODE, &mode)) return -1;
+    return mgb_write(io, r, MGB_WIN_GPUCC, base + MGB_CC_PLL_MODE, mode | MGB_PLL_RESET_N);
+}
+
+static inline int mgb_pll_running(uint32_t mode, uint32_t opmode) {
+    return (opmode & MGB_PLL_RUN) && (mode & MGB_PLL_OUTCTRL);
+}
+
+// 0 done, 1 timeout, -1 I/O. Mirrors clk_rcg2_shared_force_enable_clear: ROOT_EN, wait ROOT_OFF clear,
+// program CFG, CMD_UPDATE until clear, ROOT_EN off.
+static inline int mgb_rcg_set(const struct mgb_io *io, struct mgb_result *r, uint32_t rcgr, uint32_t sel,
+                              uint32_t div_field, uint32_t *cfg_after, unsigned *polls) {
+    uint32_t cmd = 0, cfg = 0;
+    int timeout = 1;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, rcgr, &cmd) || mgb_write(io, r, MGB_WIN_GPUCC, rcgr, cmd | MGB_RCG_ROOT_EN)) return -1;
+    for (unsigned i = 0; i < 500; ++i) {
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, rcgr, &cmd)) return -1;
+        if (!(cmd & MGB_RCG_ROOT_OFF)) { timeout = 0; break; }
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (timeout) return 1;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, rcgr + 4, &cfg) ||
+        mgb_write(io, r, MGB_WIN_GPUCC, rcgr + 4, (cfg & ~MGB_RCG_CFG_CLEAR) | (sel << 8) | div_field)) return -1;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, rcgr, &cmd) || mgb_write(io, r, MGB_WIN_GPUCC, rcgr, cmd | MGB_RCG_UPDATE)) return -1;
+    timeout = 1;
+    for (unsigned i = 0; i < 500; ++i) {
+        ++*polls;
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, rcgr, &cmd)) return -1;
+        if (!(cmd & MGB_RCG_UPDATE)) { timeout = 0; break; }
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (timeout) return 1;
+    if (mgb_write(io, r, MGB_WIN_GPUCC, rcgr, cmd & ~MGB_RCG_ROOT_EN)) return -1;
+    return mgb_rd(io, r, MGB_WIN_GPUCC, rcgr + 4, cfg_after) ? -1 : 0;
+}
+
+// Enable one branch if its bit 0 is clear. Returns -1 on I/O error, 1 if the bit was already set, 0 if the
+// probe set it.
+static inline int mgb_set_branch(const struct mgb_io *io, struct mgb_result *r, unsigned w, uint32_t off) {
+    uint32_t v = 0;
+    if (mgb_rd(io, r, w, off, &v)) return -1;
+    if (v & MGB_CBCR_ENABLE) return 1;
+    return mgb_write(io, r, w, off, v | MGB_CBCR_ENABLE) ? -1 : 0;
+}
+
+// Mode 4: the clock half of gpucc probe + a6xx_gmu_resume, no GDSC writes. Requires the GCC stage to have
+// passed and the GPUCC window mapped. Leaves the result in clock, even on failure (the caller prints it).
+static inline void mgb_gmu_clocks_on(const struct mgb_io *io, struct mgb_result *r, unsigned have,
+                                     struct mgb_clock_result *c) {
+    // All locals are declared up front: this header is also compiled as C++, where a goto may not jump
+    // over a variable initialization.
+    uint32_t m0 = 0, op0 = 0, v = 0;
+    int locked = 0, e = 0, running = 0;
+    __builtin_memset(c, 0, sizeof *c);
+    c->step = 1;
+    if (r->gcc != MGB_DONE || r->cc != MGB_DONE || !mgb_branch_enabled(r->cfg_ahb_after) ||
+        !(have & (1u << MGB_WIN_GPUCC))) {
+        c->failed = 3;
+        return;
+    }
+    // 1. GPLL0 GPU votes (BRANCH_HALT_DELAY: Linux sleeps 10 us after raising them).
+    if (mgb_rd(io, r, MGB_WIN_GCC_VOTE, MGB_GCC_PLL_VOTE, &c->gpll0)) { c->failed = 2; return; }
+    if ((c->gpll0 & MGB_GPLL0_VOTES) != MGB_GPLL0_VOTES) {
+        if (mgb_write(io, r, MGB_WIN_GCC_VOTE, MGB_GCC_PLL_VOTE, c->gpll0 | MGB_GPLL0_VOTES)) { c->failed = 2; return; }
+        if (io->delay_us) io->delay_us(io->cookie, 10);
+        mgb_rd(io, r, MGB_WIN_GCC_VOTE, MGB_GCC_PLL_VOTE, &c->gpll0_after);   // did the vote stick?
+    } else c->gpll0_after = c->gpll0;
+    // 2. PLL0 and PLL1 configuration (a running PLL is left alone, as Linux does in its probe).
+    c->step = 2;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL0 + MGB_CC_PLL_MODE, &m0) ||
+        mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL0 + MGB_CC_PLL_OPMODE, &op0)) { c->failed = 2; return; }
+    if (!mgb_pll_running(m0, op0)) {
+        if (mgb_pll_configure(io, r, MGB_CC_PLL0, 0x1a, 0x9000)) { c->failed = 2; return; }   // 510 MHz
+    }
+    // 3. PLL1: configure, release reset, run, wait for lock, then turn its outputs on.
+    c->step = 3;
+    if (mgb_pll_configure(io, r, MGB_CC_PLL1, 0x16, 0xeaaa)) { c->failed = 2; return; }        // 440 MHz
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, &v) ||
+        mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, v | MGB_PLL_RESET_N) ||
+        mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_OPMODE, MGB_PLL_RUN)) { c->failed = 2; return; }
+    for (unsigned i = 0; i < 1500; ++i) {
+        ++c->lock_polls;
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, &v)) { c->failed = 2; return; }
+        if (v & MGB_PLL_LOCK_DET) { locked = 1; break; }
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (!locked) { c->failed = 1; goto out; }
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_USER_CTL, &v) ||
+        mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_USER_CTL, v | MGB_PLL_OUT_MASK) ||
+        mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, &v) ||
+        mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, v | MGB_PLL_OUTCTRL)) { c->failed = 2; return; }
+    // 4./5. hub and gmu clock sources.
+    c->step = 4;
+    e = mgb_rcg_set(io, r, MGB_CC_HUB_CLK_SRC, MGB_HUB_SRC_SEL, MGB_HUB_DIV_FIELD, &c->hub_cfg, &c->hub_polls);
+    if (e) { c->failed = e < 0 ? 2 : 1; goto out; }
+    c->step = 5;
+    e = mgb_rcg_set(io, r, MGB_CC_GMU_CLK_SRC, MGB_GMU_SRC_SEL, MGB_GMU_DIV_FIELD, &c->gmu_cfg, &c->gmu_polls);
+    if (e) { c->failed = e < 0 ? 2 : 1; goto out; }
+    // 6. Branches the GMU needs; wait for cx_gmu to report its clock running.
+    c->step = 6;
+    if (mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_AHB_CLK) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_CXO_CLK) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_HUB_CX_INT_CLK) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GMU_CLK) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_SMMU_VOTE_CLK) < 0 ||   // what adreno-smmu takes
+        mgb_set_branch(io, r, MGB_WIN_GPUCC, MGB_CC_MEMNOC_GFX_CLK) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GCC_GPU, MGB_GCC_GPU_MEMNOC_GFX) < 0 ||
+        mgb_set_branch(io, r, MGB_WIN_GCC_GPU, MGB_GCC_DDRSS_GPU_AXI) < 0) { c->failed = 2; return; }
+    for (unsigned i = 0; i < 500; ++i) {
+        ++c->branch_polls;
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GMU_CLK, &c->cx_gmu)) { c->failed = 2; return; }
+        if (mgb_branch_running(c->cx_gmu)) { running = 1; break; }
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (!running) { c->failed = 1; goto out; }
+    c->step = 7;
+    goto out;
+out:
+    mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_MODE, &c->pll1_mode);
+    mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_PLL1 + MGB_CC_PLL_OPMODE, &c->pll1_opmode);
+}
+
+// Power the GPU CX domain: the gdsc.c enable sequence for gpu_cc_cx_gdsc, then its retention bits, the same
+// steps Linux takes before any GPU clock is used. GX is left alone (the GMU owns it).
+// 0 already on, 1 turned on, 2 did not report PWR_ON, -1 I/O error.
+static inline int mgb_power_cx(const struct mgb_io *io, struct mgb_result *r, uint32_t *gdscr_after,
+                               uint32_t *hwctrl_after, unsigned *polls) {
+    uint32_t v = 0, st = 0;
+    *polls = 0;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, &v)) return -1;
+    if (mgb_gdsc_on(v)) { *gdscr_after = v; *hwctrl_after = 0; return 0; }
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, v & ~MGB_GDSC_SW_COLLAPSE)) return -1;
+    if (io->delay_us) io->delay_us(io->cookie, 1);
+    for (unsigned waited = 0;; waited += 10) {
+        ++*polls;
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDS_HW_CTRL, &st)) return -1;
+        if (mgb_gdsc_on(st) || waited >= MGB_GDSC_POLL_US) break;
+        if (io->delay_us) io->delay_us(io->cookie, 10);
+    }
+    *hwctrl_after = st;
+    if (!mgb_gdsc_on(st)) { mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, gdscr_after); return 2; }
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, &v)) return -1;
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR,
+                  v | MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH)) return -1;
+    if (io->delay_us) io->delay_us(io->cookie, 1);
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR,
+                  v | MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH | MGB_GDSC_RETAIN_FF)) return -1;
+    if (io->delay_us) io->delay_us(io->cookie, 1);
+    return mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, gdscr_after) ? -1 : 1;
+}
+
+// Re-run the SMMU and GPU stages after power/clock bring-up: mgb_run evaluates them before CX exists, so
+// mode 5's report still says "skip". This re-reads the three gating words and then the protected blocks.
+static inline void mgb_observe_powered(const struct mgb_io *io, struct mgb_result *r, unsigned have) {
+    if (!(have & (1u << MGB_WIN_GPUCC))) { r->smmu = r->gpu = MGB_NOMAP; return; }
+    mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, &r->cx_gdscr);
+    mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &r->gx_gdscr);
+    mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_SMMU_VOTE_CLK, &r->cc_smmu);
+    if (!(have & (1u << MGB_WIN_SMMU))) r->smmu = MGB_NOMAP;
+    else if (!mgb_gdsc_on(r->cx_gdscr) || !mgb_branch_running(r->cc_smmu)) r->smmu = MGB_SKIPPED_PREREQ;
+    else {
+        mgb_rd(io, r, MGB_WIN_SMMU, MGB_SMMU_SCR0, &r->scr0);
+        mgb_rd(io, r, MGB_WIN_SMMU, MGB_SMMU_ID0, &r->id0);
+        mgb_rd(io, r, MGB_WIN_SMMU, MGB_SMMU_ID1, &r->id1);
+        mgb_rd(io, r, MGB_WIN_SMMU, MGB_SMMU_ID2, &r->id2);
+        mgb_rd(io, r, MGB_WIN_SMMU, MGB_SMMU_GFSR, &r->gfsr);
+        r->smmu = MGB_DONE;
+    }
+    if (!(have & (1u << MGB_WIN_GPU))) r->gpu = MGB_NOMAP;
+    else if (!mgb_gdsc_on(r->cx_gdscr) || !mgb_gdsc_on(r->gx_gdscr)) r->gpu = MGB_SKIPPED_PREREQ;
     else {
         mgb_rd(io, r, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &r->rbbm_status);
         r->gpu = MGB_DONE;

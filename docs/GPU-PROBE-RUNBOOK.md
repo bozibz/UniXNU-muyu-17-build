@@ -145,3 +145,36 @@ python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_
 **结论**：只读通道打通；cliffs 的 GPUCC 在 XNU 下"可读但未配置"。
 下一步是**写**：PLL0/PLL1 → GPLL0 投票 → hub/gmu RCG → 分支 → CX GDSC（轮询 0x90a0 的 PWR_ON），
 每步一次 panic 摘要。**注意：`muyu_pstore=1` 会让启动停在苹果 logo，已从 board.toml 注释掉**（§11.4）。
+
+## 9. mode 4：只配时钟、不碰电源域（下一枪）
+
+`muyu-gpu-power=4` = mode 1 的只读快照 **＋** 时钟 bring-up（照 Linux 的顺序）**＋** panic 摘要：
+
+1. **GPLL0 的 GPU 投票**（GCC `0x52000` bit15/16，Linux 投完等 10 µs）；
+2. **PLL0 配置**（`l=0x1a, α=0x9000`，510 MHz；已经在跑就不重配）；
+3. **PLL1 配置 + 使能**（`l=0x16, α=0xeaaa`，440 MHz）：写配置 → 清 OUTCTRL → OPMODE=0 →
+   MODE|=RESET_N → 等 `LOCK_DET`（最多 1500 次）→ USER_CTL|=0x7 → MODE|=OUTCTRL；
+4. **hub 时钟源**：`0x919c`，`src=5 (GPLL0)`、`div=3`（200 MHz）；
+5. **gmu 时钟源**：`0x9168`，`src=3 (PLL1)`、`div=2`（220 MHz）；
+6. **分支**：`gpu_cc_ahb`、`gpu_cc_cxo`、`gpu_cc_hub_cx_int`、`gpu_cc_cx_gmu`、`gpu_cc_memnoc_gfx`、
+   GCC `gcc_gpu_memnoc_gfx`、`gcc_ddrss_gpu_axi`，最后轮询 `cx_gmu` 的 `CLK_OFF` 清掉。
+
+**不写 GDSC**（CX/GX 仍是关的）。新增两行输出：
+
+```
+MUYU GPU POWER clk step=… failed=… lock_polls=… hub_polls=… gmu_polls=… branch_polls=…
+MUYU GPU POWER clk pll1=…/… gpll0=… gmucfg=… hubcfg=… cx_gmu=… cx=…
+```
+
+判定：
+
+| 现象 | 含义 / 下一步 |
+| --- | --- |
+| `step=7 failed=0`，`gmu src=3 div=2`、`hub src=5 div=3`、`gmu_running=Y` | 时钟树完全起来，可以进下一步（CX GDSC） |
+| `step=3 failed=1`，`lock_polls=1500` | PLL1 不锁定：查 PLL0/PLL1 的配置值或父时钟（CXO）是否在跑 |
+| `step=4/5 failed=1` | RCG 的 `ROOT_OFF` 不清：`src` 选到了没跑的父时钟 |
+| `step=6 failed=1` | 分支使能后 `cx_gmu` 的 `CLK_OFF` 不清：父时钟/门控问题 |
+| `failed=2` | I/O 失败（`ioerr`），先看是哪一行 |
+
+**风险**：这是第一次真的"写" GPUCC 的时钟。若挂板，回滚 `fw/vendor_boot_btn2.img`，
+并把 `step` 号照片留下（panic 摘要里有）。
