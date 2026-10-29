@@ -241,7 +241,21 @@ run([str(muyu_touch_cpp) if str(arg)==str(source) else str(muyu_touch_obj) if st
 # sheng GpuPowerProbe below it has no Adreno imports, so it links without the Adreno kit; it only maps the
 # windows and runs the host-tested sequence from MuyuGpuPowerBoard.h.
 gpupower_cpp=ROOT/'kits/muyu/MuyuGpuPowerProbe.cpp';gpupower_obj=touch_dir/'MuyuGpuPowerProbe.o'
-run([str(gpupower_cpp) if str(arg)==str(source) else str(gpupower_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
+# GMU cold-start inputs for the probe: the generator emits the A735 image as a C object (from fw/), and
+# AdrenoFirmware.c is the same planner ShengGmu.c uses. Both are C; the process_cmd template compiles C.
+_W=ROOT.parents[3]
+run([sys.executable,str(ROOT/'scripts/gen-muyu-gmu-source.py'),'--out',str(ROOT/'build/gpu'),
+     '--dtb',str(_W/'fw/stock/dtb_3.dtb'),'--regs',str(_W/'fw/android-harvest/msm-regs'),
+     '--driver',str(_W/'fw/android-harvest/msm-drv/a6xx_gmu.c'),
+     '--firmware',str(_W/'fw/gpu-firmware/gen71100_gmu.bin')])
+gmu_fw_c=ROOT/'build/gpu/MuyuGmuFirmware.c';gmu_fw_obj=touch_dir/'MuyuGmuFirmware.o'
+adreno_fw_c=ROOT/'kits/AdrenoFirmware/AdrenoFirmware.c';adreno_fw_obj=touch_dir/'AdrenoFirmware.o'
+for _src,_obj in ((gmu_fw_c,gmu_fw_obj),(adreno_fw_c,adreno_fw_obj)):
+    run([str(_src) if arg==str(process_source) else str(_obj) if arg==str(process_obj) else arg for arg in process_cmd],
+        cwd=pr['directory'])
+# The probe includes AdrenoFirmware.h for the GMU planner, so it needs that kit's header directory.
+gmu_include=['-I',str(ROOT/'kits/AdrenoFirmware')]
+run([str(gpupower_cpp) if str(arg)==str(source) else str(gpupower_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+gmu_include,cwd=r['directory'])
 # The driver lives in drivers/NativeNovatekTouch but needs the GENI SPI library and the board headers;
 # give it those two include directories explicitly instead of relative paths through symlinked trees.
 nvt_include=['-I',str(ROOT/'drivers/NativeGeniSpi'),'-I',str(ROOT/'kits/muyu')]
@@ -276,11 +290,11 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs])
+     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs])
 sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
          ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
-         ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
+         ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
          ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h']
 print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeGOPPresenter'],text=True),end='')
