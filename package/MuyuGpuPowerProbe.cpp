@@ -7,9 +7,10 @@
 //                      Nothing is written.
 //   muyu-gpu-power=2   as 1, plus the single write Linux's gcc_cliffs probe makes: enable
 //                      gcc_gpu_cfg_ahb_clk (0x71004 bit 0) if it is clear.
-//   muyu-gpu-power-panic=1
-//                      after the run, panic with the whole summary, so the numbers can be photographed
-//                      on the panic screen (this board has no persistent kernel log).
+//   muyu-gpu-power=3   as 2, then panic with the whole summary, so the numbers can be photographed on
+//                      the panic screen (this board has no persistent kernel log). Folded into the mode
+//                      number on purpose: the kernel command line is already at 1008/1000 bytes, so a
+//                      second boot argument does not fit.
 //
 // Why so careful: the GPUCC, the GPU SMMU and the GPU window sit behind clocks and power domains Darwin
 // has no driver for, and touching a register in a block whose clock is off hangs the bus instead of
@@ -80,9 +81,9 @@ const char *yesNo(int v) { return v ? "Y" : "N"; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 2) mode = 2;
-    unsigned panicDump = 0;
-    PE_parse_boot_argn("muyu-gpu-power-panic", &panicDump, sizeof panicDump);
+    if (mode > 3) mode = 3;
+    unsigned panicDump = (mode == 3);
+    unsigned runMode = panicDump ? 2 : mode;
 
     unsigned have = 0;
     for (unsigned i = 0; i < 5; ++i)
@@ -94,7 +95,7 @@ extern "C" void muyu_gpu_power_probe(void) {
 
     struct mgb_io io = { nullptr, read32, write32, delayUs };
     struct mgb_result r;
-    mgb_run(&io, mode, have, &r);
+    mgb_run(&io, runMode, have, &r);
 
     IOLog("MUYU GPU POWER gcc %s ahb=%08x/%08x enabled=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n",
           mgb_state_text(r.gcc), r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi,
