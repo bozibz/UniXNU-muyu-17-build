@@ -125,3 +125,23 @@ python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_
 > `--data-ramdisk` 必须是 `fw/data-seed/muyu-data-200g.dbr`：这是从能进系统的
 > `fw/vendor_boot_btn2.img` 里按 `DBRDISK1` 魔数逐字节比对出来的（HANDOFF-2026-10-29 §10.3），
 > 不是猜的。漏掉它 → `offline scratch Data mount failed`，永远到不了系统。
+
+## 8. 首次实跑结果（2026-10-29 20:30，已完成）
+
+`muyu-gpu-power=3` 的 panic 屏（照片 `logs/2026-10-29-20-30-54-132.jpg`）读数，与清单预期对照：
+
+| 字段 | 实测 | 与预期 |
+| --- | --- | --- |
+| `gcc` | `ok`，`ahb=80000001/80000001 en=0` | ✅ 固件已使能 AHB，mode 3 不需要写 |
+| `cc` | **`ok`**，`ioerr=0` | ✅ 22 个 GPUCC 寄存器全部读到，板子没挂 |
+| `cx` / `gx` | `0022f801` / `0022f801`（bit31=0） | 两个域都关着（预期）|
+| `hwctrl` | `2800010a` | ✅ 与 Android 逐位一致 |
+| `ccahb` | `00000000`（CLK_OFF=0） | GPUCC 的 AHB 没被门控 —— 这就是读得通的原因 |
+| `pll1` | `00000000/00000000 l=00000000` | ⚠ **PLL1 完全没配**（Android 是 440 MHz）|
+| `gmucfg` / `hubcfg` | `00000000` / `00000000` | ⚠ RCG 没配（Android 是 `src=3 div=2` / `src=5 div=3`）|
+| `gpll0` | `0065257f`（bit15/16=0） | ⚠ GPLL0 的 GPU 投票没投 |
+| `smmu` / `gpu` | `skip` | ✅ 正确门控（CX 没开，不去读）|
+
+**结论**：只读通道打通；cliffs 的 GPUCC 在 XNU 下"可读但未配置"。
+下一步是**写**：PLL0/PLL1 → GPLL0 投票 → hub/gmu RCG → 分支 → CX GDSC（轮询 0x90a0 的 PWR_ON），
+每步一次 panic 摘要。**注意：`muyu_pstore=1` 会让启动停在苹果 logo，已从 board.toml 注释掉**（§11.4）。

@@ -292,7 +292,11 @@ kernel_args = [
   # stock Android recovery kernel validates that record and exposes it as
   # /sys/fs/pstore/console-ramoops-0, which stock recovery's unauthenticated adbd can pull. That is
   # the official "recovery reader" path from unixnu.com/porting/log-capture (stage 4).
-  "muyu_pstore=1",
+  # 2026-10-29: DISABLED. The known-good image fw/vendor_boot_btn2.img does not carry this argument,
+  # and every image built after this line was enabled (fa179e5, 2026-10-28) stopped at the Apple logo.
+  # The pstore writer itself never worked on this board (HANDOFF-2026-10-27 section 28.5: magic=0
+  # bytes=0), so re-enable it only together with a working reader experiment.
+  # "muyu_pstore=1",
   "sheng-pmgr=2",
   # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
   # NativeRamBlock overlay); pairs with [payload.adt] persistent_data = true and a large seed.
