@@ -88,6 +88,15 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
   与加载器要求一致 ⇒ 固件加载/TCM 回读逻辑可复用，只换固件本体/chip id/寄存器常量。
   复核：`tools/gmu-firmware-plan.c`（host，不碰设备）。
 
+- **阶段 1 的输入已经生成并可编译**：`scripts/gen-muyu-gmu-source.py` 产出
+  `build/gpu/ShengGmuSource.h`（与 sheng 同名同结构，`ShengGmu.c` 直接可用）：
+  37 个寄存器偏移来自 `a6xx.xml`/`a6xx_gmu.xml`；19 条 RSC/PDC 写入从 `a6xx_gmu.c`
+  的 `a6xx_gmu_rpmh_init` 按 A735（a7xx、非 A740 family、`pdc_in_aop`）这条分支求值；
+  窗口/`CORE_GPU_DELTA=0x68000` 来自 DT；固件 80,680 B + sha256 来自 `fw/gpu-firmware/`。
+  **假设项只有一个**：GMU firmware chip id，按 Linux 对无 `.gmu_chipid` 芯片的打包公式
+  从 `qcom,chipid=0x43030b00` 算出 **0x4303b000**（若错，会在 `FW_INIT_RESULT` 轮询阶段
+  干净地失败，不会误写别处）。
+
 **仍缺（按阻塞顺序）**
 1. ~~A735 固件~~ —— **已取得，见上表**。
 2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
