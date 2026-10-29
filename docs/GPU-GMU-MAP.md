@@ -36,11 +36,28 @@ mboxes       aop（qcom,ipc-core）
 `kgsl-3d0` 侧另有 `gcc_gpu_memnoc_gfx` / `gcc_gpu_snoc_dvm_gfx` / `gpu_cc_ahb` / `apb_pclk`，
 以及 interconnect `gpu_icc_path`（DDR/CNOC 带宽投票）。
 
-## 4. GPU SMMU
+## 4. GPU SMMU（已解析，phandle `0x1c1`）
 
-`gmu` 节点的 `iommus = <0x1c1 0x5 0x0>` ⇒ **stream 5**，由 phandle `0x1c1` 指向的 SMMU 实例负责。
-注意这与 USB 用的 `apps-smmu@15000000`（phandle `0x129`）**不是同一个**，接手时要先把
-`0x1c1` 解析成具体节点，别拿 apps-smmu 的 SID 去配 GPU。
+`gmu` 节点的 `iommus = <0x1c1 0x5 0x0>` ⇒ **stream 5**，phandle `0x1c1` 解析为：
+
+```
+/soc/kgsl-smmu@3da0000
+  compatible  "qcom,qsmmu-v500" "qcom,adreno-smmu"
+  reg         "base"     0x03da0000  0x40000
+              "tcu-base" 0x03de6000  0x40
+  #iommu-cells            2
+  #global-interrupts      1
+  qcom,actlr              <0x0 0x3ff 0x32b>
+  interrupts              26 个（3 cells 一组），SPI 列表：
+                          673, 677–687, 422, 476, 574–577, 659, 661,
+                          664, 665, 666, 668, 669, 699
+```
+
+**这是独立于 `apps-smmu@15000000`（phandle `0x129`，USB 用）的第二个 SMMU 实例**，
+两者都是 `qsmmu-v500` 但地址、中断、stream 空间都不同。拿 apps-smmu 的 SID 去配 GPU 会一路失败。
+
+`ArmSmmu4K` kit 就是给 GPU 侧用的（`qsmmu-v500` + owned stream/context 生命周期），
+所以这一层**不需要新写驱动**，需要的是把这组参数喂给它。
 
 ## 5. 与 sheng 的差异（必须逐条核对，不能照抄）
 
@@ -53,7 +70,8 @@ mboxes       aop（qcom,ipc-core）
 
 ## 6. 阶段 1 剩余工作
 
-1. 解析 phandle `0x1c1` 找到 GPU SMMU 节点，取出它的 base 与 stream 配置；
-2. 把上表填进 muyu 的 `NativeAdrenoGmuPlatform` 调用点（窗口映射 + 时钟/电源回调）；
+1. ~~解析 phandle `0x1c1`~~ —— **已完成**：`/soc/kgsl-smmu@3da0000`，见 §4；
+2. 把五窗口表 + 时钟/电源回调填进 muyu 的 `NativeAdrenoGmuPlatform` 调用点；
 3. `prepare-sheng-gmu.py` 改成读 `fw/gpu-firmware/gen71100_*`；
-4. **完成标准**：boot log 出现 GMU 启动 + HFI 响应。
+4. 把 §4 的参数喂给 `ArmSmmu4K`（它已支持 `qsmmu-v500`，不需要新驱动）；
+5. **完成标准**：boot log 出现 GMU 启动 + HFI 响应。
