@@ -96,3 +96,30 @@ JSON 里同时带 GPU/GMU 的时钟名、regulator 名、三个固件的 sha256�
    从 DTB 生成平台 JSON（含固件 sha256），不再依赖 sheng 的 pinned Linux 源码；
 4. 把 §4 的参数喂给 `ArmSmmu4K`（它已支持 `qsmmu-v500`，不需要新驱动）；
 5. **完成标准**：boot log 出现 GMU 启动 + HFI 响应。
+
+## 7. GPUCC / GCC 电源与时钟偏移核对（阶段 1b）
+
+`package/GpuPowerBoard.h` 里的常量原本是 **sheng (SM8550)** 的。用 Linux 上游驱动逐条对了一遍：
+`gpucc-sm8650.c`（SM8650，同为 GPU gen7 系列）与 `gcc-sm8650.c`。
+
+| 用途 | `GpuPowerBoard.h` 里的值 | sm8650 上游 | 结论 |
+| --- | --- | --- | --- |
+| `gpu_cc_ahb_clk` | `0x911c` | `0x911c` | ✅ 一致 |
+| `gpu_cc_cx_gmu_clk` | `0x913c` | `0x913c` | ✅ 一致 |
+| `gpu_cc_hlos1_vote_gpu_smmu_clk` | `0x7000` | `0x7000` | ✅ 一致 |
+| `gpu_cx_gdsc` gdscr | `0x9108` | `0x9108` | ✅ 一致 |
+| `gpu_gx_gdsc` gdscr | `0x905c` | `0x905c` | ✅ 一致 |
+| `gcc_gpu_memnoc_gfx_clk` | `0x71010` | `0x71010` | ✅ 一致 |
+| `gcc_gpu_snoc_dvm_gfx_clk` | `0x71018` | `0x71018` | ✅ 一致 |
+| `gcc_gpu_cfg_ahb_clk` | `0x71004` | 未在 sm8650 直接匹配到 | ⚠️ 待确认 |
+
+含义：**这 7 个里 7 个与下游另一代 SoC 完全一致**，所以 sheng 的值很可能在 cliffs 上也能用；
+但「很可能」不是证据。设备上有 `gpucc-cliffs.ko`，说明 muyu 用的是 cliffs 变体，
+**真正的确认方式是在真机上读这几个寄存器**（`GpuPowerBoard.h` 的注释已经警告过：
+读一个时钟关着的块会挂总线而不是报错，所以必须分级、先确认前置条件）。
+
+### 1b 的收敛判断
+- GMU 五窗口 / 三中断 / GPU SMMU：**已由 DTB 生成**（§4.1），不用手抄也不需要 Linux 源码；
+- GPUCC/GCC 电源时钟：**7/8 与上游 sm8650 一致**，只剩 `gcc_gpu_cfg_ahb_clk` 待确认；
+- 因此 1b 剩下的不是「找参数」，而是「把参数接进 `NativeAdrenoGmuPlatform` 与 `ArmSmmu4K` 的调用点」，
+  以及**在真机分级读一次**确认 cliffs 上这些偏移成立。
