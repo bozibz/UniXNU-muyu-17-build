@@ -133,6 +133,54 @@ static ArmSmmu4KStatus validate(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *pl
     return ArmSmmu4KSuccess;
 }
 
+/* The ID registers this QSMMU v500 reports to non-secure software carry only their low
+ * byte: IDR0=0x18 (24 SMR groups, but no stage-1/AArch64 capability bits), IDR1=0x16
+ * (22 banks, 4 KiB stride, but the context-bank page count field reads 0 = 2 pages) and
+ * IDR2=0x02 (no 4 KiB page-table bit, no VA/OAS width). ArmSmmu4K refuses that identity,
+ * and its 2-page derivation would put context bank 2 at 0x4000 -- which is the QSMMU's
+ * IMPL_DEF page on this board and takes a synchronous external abort (measured 2026-10-29:
+ * panic at the `ldr` for window+0x4000, logs/2026-10-29-21-17-49-960.jpg). The bank space
+ * is really at 0x20000: the DT maps 0x3DA0000+0x40000 for 22 banks, and window+0x22000
+ * reads back. So the library is shown the capability fields the hardware omits and
+ * nothing else: 10-bit stream IDs (DT qcom,stream-id-range 0x00..0x400), 32 bank pages,
+ * stage-1 AArch64, 4 KiB tables, 40-bit VA and PA. The raw
+ * values stay what the probe reads; this view never reaches a register (all IDR registers
+ * are read-only) and is deterministic, so the library's own re-read consistency checks
+ * still hold. */
+typedef struct {
+    const ArmSmmu4KIo *real;
+} MuyuGmuSmmuIdView;
+
+static int view_read32(void *cookie, size_t at, uint32_t *v)
+{
+    const MuyuGmuSmmuIdView *view = cookie;
+    if (view->real->read32(view->real->cookie, at, v)) return 1;
+    if (at == 0x20) *v |= MUYU_GMU_ID0_VIEW;
+    else if (at == 0x24) *v = (*v & ~MUYU_GMU_ID1_PAGE_MASK) | MUYU_GMU_ID1_PAGES;
+    else if (at == 0x28) *v = MUYU_GMU_ID2_VIEW | (*v & 0xfu);
+    return 0;
+}
+
+static int view_read64(void *cookie, size_t at, uint64_t *v)
+{
+    return ((const MuyuGmuSmmuIdView *)cookie)->real->read64(((const MuyuGmuSmmuIdView *)cookie)->real->cookie, at, v);
+}
+
+static int view_write32(void *cookie, size_t at, uint32_t v)
+{
+    return ((const MuyuGmuSmmuIdView *)cookie)->real->write32(((const MuyuGmuSmmuIdView *)cookie)->real->cookie, at, v);
+}
+
+static int view_write64(void *cookie, size_t at, uint64_t v)
+{
+    return ((const MuyuGmuSmmuIdView *)cookie)->real->write64(((const MuyuGmuSmmuIdView *)cookie)->real->cookie, at, v);
+}
+
+static int view_barrier(void *cookie)
+{
+    return ((const MuyuGmuSmmuIdView *)cookie)->real->barrier(((const MuyuGmuSmmuIdView *)cookie)->real->cookie);
+}
+
 static int publish_page(void *cookie, volatile uint64_t *page, size_t bytes)
 {
     MuyuGmuSmmu *state = cookie;
@@ -167,6 +215,15 @@ MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *
         return MuyuGmuSmmuArgument;
     }
     state->plan = *plan;
+
+    MuyuGmuSmmuIdView id_view = { io };
+    ArmSmmu4KIo shim = *io;
+    shim.cookie = &id_view;
+    shim.read32 = view_read32;
+    shim.read64 = view_read64;
+    shim.write32 = view_write32;
+    shim.write64 = view_write64;
+    shim.barrier = view_barrier;
 
     ArmSmmu4KRange ranges[MUYU_GMU_EXTENTS];
     const size_t count = MuyuGmuSmmuRanges(&state->plan, ranges, MUYU_GMU_EXTENTS);
@@ -233,7 +290,7 @@ MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *
     };
     state->summary.phase = 3;
     unsigned slots[1] = { state->plan.slot };
-    status = ShengGpuSmmuStartLive(io, SHENG_GPU_SMMU_BASE, ShengGpuSmmuGmu, state->plan.bank,
+    status = ShengGpuSmmuStartLive(&shim, SHENG_GPU_SMMU_BASE, ShengGpuSmmuGmu, state->plan.bank,
         slots, 1, &state->context, &state->arena, &state->state, state->plan.poll_budget,
         &state->session, &state->started);
     state->summary.start_status = status;
@@ -262,7 +319,7 @@ MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *
     ArmSmmu4KRange before[MUYU_GMU_EXTENTS];
     for (size_t i = 0; i < count; ++i) {
         state->mapping = (ArmSmmu4KLiveResult){0};
-        status = ArmSmmu4KLiveUpdate(&state->arena, &state->state, io, state->plan.bank,
+        status = ArmSmmu4KLiveUpdate(&state->arena, &state->state, &shim, state->plan.bank,
             &state->context, &state->visibility, i ? before : 0, i, &state->ranges[i], 1,
             state->plan.poll_budget, &state->mapping);
         state->summary.map_status = status;
@@ -280,7 +337,7 @@ MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *
 
     /* 5. Context, streams and every mapped extent again. */
     state->summary.phase = 5;
-    status = ShengGpuSmmuObserveLive(io, SHENG_GPU_SMMU_BASE, &state->session,
+    status = ShengGpuSmmuObserveLive(&shim, SHENG_GPU_SMMU_BASE, &state->session,
         state->ranges, count, &state->observed);
     state->summary.observe_status = status;
     if (status != ArmSmmu4KSuccess) {

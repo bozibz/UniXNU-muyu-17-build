@@ -221,7 +221,52 @@ gmu io id0=00000018 id1=... id2=... scr0=00000406>00000406 ...
 | `leaf` | 4111 | 4092(icache)+4+7+4+4 个 4K 叶子 |
 | `ctx` | `00022000` | `(32+bank)*0x1000`（IDR1[30:28]=4 时）|
 
-### 10.3 ⚠ 第一次上机前就知道的两个"可能被拒"
+### 10.3 ★ 第一次上机的实测结果（2026-10-29 21:17）：0x4000 **不是** context bank
+
+`fw/vendor_boot_gpupower9.img` 刷入后 **panic 在 data abort**（照片
+`logs/2026-10-29-21-17-49-960.jpg`）：
+
+```
+Kernel data abort, at pc 0xfffffff0079f3094, lr 0xfffffff0079f2844
+x18: 0x00000000c435c7bac        ← mode 8 的固件 sha 摘要 ⇒ 模式 8 已经跑完，挂在 mode 9
+esr: 0x95000010                 ← EC=0x25 同 EL data abort，DFSC=0x10 同步外部中止
+```
+
+反汇编（`llvm-objdump` 同一份 `kernel.macho`）把 PC 精确对到两条相邻的读：
+
+```
+79f307c: add x11, x8, #0x22, lsl #12   ; SMMU 窗口 + 0x22000
+79f3080: ldr w11, [x11]                ; ✅ 读通
+79f3090: add x11, x8, #0x4, lsl #12    ; SMMU 窗口 + 0x4000
+79f3094: ldr w11, [x11]                ; ❌ 外部中止（就是这里）
+```
+
+判读：**+0x4000 不是 context bank**。读通的 `+0x22000` 才是 —— 它正是
+`0x20000 + bank*0x1000`（bank 2）。DT 的节点是 `qcom,qsmmu-v500`，`reg = <0x3da0000 0x40000>`，
+22 个 bank 正好占 `0x20000..0x36000`；而厂商 `arm-smmu-qcom.c` 里的 `ARM_SMMU_IMPL_DEF4` 页
+（micro-MMU halt / `CLK_ON_STATUS` 那套 QSMMU 扩展）就落在 `0x2000..0x6fff` 这一段，属于
+**不该按 bank 去碰**的区域。
+
+按 `ArmSmmu4K` 的模型，`IDR1[30:28]=0 ⇒ pages=2 ⇒ bank2 = (2+2)*0x1000 = 0x4000`，
+**正好撞在 IMPL_DEF 页上**。所以这不是"我们猜错了 CB 基址"，而是 **这块 QSMMU 的 IDR1 高位读出来是 0**。
+
+### 10.3.1 这台 QSMMU 的 ID 寄存器只报低字节
+
+mode 6/9 的现场值：`id0=0x18`、`id1=0x16`、`id2=0x02`。低字节与 Android dmesg 的
+"24 register groups / 22 context banks" 完全对得上，但**能力位全为 0**：
+IDR0 没有 stage-1/AArch64 位、IDR0 的 SID 宽度字段为 0、IDR1 的 bank 页数字段为 0、
+IDR2 没有 4 KiB 页表位也没有 VA/OAS 宽度。`ArmSmmu4K` 会因此拒绝（Unsupported），
+而它的 2 页推导又会去碰 0x4000。
+
+**处理**（`package/MuyuGmuSmmu.c` 的 `MuyuGmuSmmuIdView`）：只在这几个 ID 寄存器上，
+给库一个**能力视图**——`IDR0 |= stage-1|AArch64|10-bit SID`（DT 的 `qcom,stream-id-range` 是
+`0x00..0x400`）、`IDR1[30:28]=4`（32 个 bank 页 ⇒ CB0=0x20000）、`IDR2 |= 4 KiB|VA40|PA40`。
+其余位一个不改；IDR 是只读寄存器，这个视图不会落到任何寄存器上，而且读值是确定性的，
+库自己的"前后重读一致"检查仍然成立。**原始的 `id0/id1/id2` 由探针直接读、原样打印**，
+所以记录里两种值都在。主机测试（`check-muyu-gmu-smmu.py`）现在就用
+`0x18/0x16/0x02` 跑，并断言 context 落在 `0x22000`、且**任何一次访问都不许碰 0x4000**。
+
+### 10.3.2 旧的预判（保留作对照）
 
 mode 6 读到的现场值是 `id0=00000018 id1=00000016 id2=00000002 scr0=00220465`。按 `ArmSmmu4K` 的模型：
 
@@ -230,7 +275,8 @@ mode 6 读到的现场值是 `id0=00000018 id1=00000016 id2=00000002 scr0=002204
 - `id1=0x00000016`：库把 `IDR1[30:28]` 当"上下文页数指数"，`pages = 1<<(((id1>>28)&7)+1)` = **2**，
   而 `banks = id1&0xff` = 22 ⇒ `banks > pages` ⇒ **Unsupported**。
 - `id2=0x00000002`：`bit12`（4 KiB 页表支持）为 0，`[11:8]`/`[7:4]` 的 VA/OAS 编码为 0 ⇒
-  `ArmSmmu4KEncodeContext` 也会 **Unsupported**。
+  `ArmSmmu4KEncodeContext` 也会 **Unsupported**。（实测见 §10.3：真实的根因是"只报低字节"，
+  而且 0x4000 是 IMPL_DEF 页，不是 bank。）
 
 这三个值都是**裸的低位**，与 Android dmesg 的 "24 register groups / 22 context banks" 只对上了低字节。
 所以 mode 9 的 panic 摘要同时打印 **两个候选 CB 基址**（`cbA=0x22000`、`cbB=0x4000`）与 `id0..id7`：

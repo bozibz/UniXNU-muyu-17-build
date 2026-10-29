@@ -28,6 +28,7 @@ static int event(void) { return ++f.calls == f.fail_call; }
 static int read32(void *cookie, size_t at, uint32_t *v)
 {
     CHECK(cookie == &f && at % 4 == 0 && at + 4 <= sizeof regs);
+    CHECK(at != 0x4000);   /* the QSMMU IMPL_DEF page: an external abort on the board */
     if (event()) return 1;
     *v = (at == g_cb + 0x7f4 && f.timeout) ? 1 : regs[at / 4];
     return 0;
@@ -44,6 +45,7 @@ static int read64(void *cookie, size_t at, uint64_t *v)
 static int write32(void *cookie, size_t at, uint32_t v)
 {
     CHECK(cookie == &f && at % 4 == 0 && at + 4 <= sizeof regs);
+    CHECK(at != 0x4000);
     ++f.writes;
     int fail = event();
     if (fail && !f.after) return 1;
@@ -90,12 +92,14 @@ static void reset_peer(void)
     g_cb = 0x20000 + g_bank * 4096;
     publish_calls = publish_count = 0;
     io = (ArmSmmu4KIo){ &f, sizeof regs, read32, read64, write32, write64, barrier };
-    /* sCR0: M|GFRE|GFIE|USFCFG, clients enabled; IDR0: 24 SMR, EXIDS=0, stage-1 capable;
-     * IDR1: 22 context banks; IDR2: 4 KiB tables, 48-bit input and output. */
-    regs[0] = 0x436;
-    regs[0x20 / 4] = (1u << 30) | (1u << 27) | (4u << 9) | 24u;
-    regs[0x24 / 4] = (4u << 28) | 22u;   /* 32 context pages, 22 banks, 4K stride */
-    regs[0x28 / 4] = 0x1555;
+    /* The real muyu readings (2026-10-29): sCR0 needs the four-bit enable, and IDR0/1/2
+     * carry only their low byte. MuyuGmuSmmuRun must still build a 0x22000 context from
+     * them; the peer fails on any access to 0x4000, the address the unstripped IDR1 would
+     * derive (and the QSMMU page that aborts on the device). */
+    regs[0] = 0x406;   /* the state the probe's four-bit write establishes */
+    regs[0x20 / 4] = 24u;
+    regs[0x24 / 4] = 22u;
+    regs[0x28 / 4] = 0x02;
     for (unsigned i = 0; i < 24; ++i) regs[(0xc00 + 4 * i) / 4] = 0x20000;   /* all FAULT */
 }
 
@@ -156,9 +160,12 @@ int main(void)
     CHECK(state.summary.phase == 5 && state.summary.outcome == MuyuGmuSmmuDone);
     CHECK(state.summary.table_pages == expected_tables);
     CHECK(state.summary.leaf_pages == 4111);   /* 4092 icache + 4 dummy + 7 debug + 4 log + 4 hfi */
-    CHECK(state.summary.context_offset == g_cb);
-    CHECK(state.summary.id0 == regs[0x20 / 4] && state.summary.id1 == ((4u << 28) | 22u));
-    CHECK(state.summary.id2 == regs[0x28 / 4] && state.summary.scr0 == 0x436);
+    CHECK(state.summary.context_offset == 0x22000u && g_cb == 0x22000u);
+    /* The library saw the capability view, not the stripped raw registers. */
+    CHECK(state.summary.id0 == (regs[0x20 / 4] | MUYU_GMU_ID0_VIEW));
+    CHECK(state.summary.id1 == ((4u << 28) | 22u));
+    CHECK(state.summary.id2 == (MUYU_GMU_ID2_VIEW | 0x2u));
+    CHECK(state.summary.scr0 == 0x406);
     CHECK(state.summary.streams_bank == SHENG_GPU_SMMU_GMU_BANK_MIN);
     CHECK(state.summary.streams_count == 1);
     CHECK(state.session.streams.streams[0].sid == SHENG_GPU_SMMU_GMU_SID);

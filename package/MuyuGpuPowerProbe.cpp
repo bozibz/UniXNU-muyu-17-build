@@ -288,8 +288,9 @@ extern "C" void muyu_gpu_power_probe(void) {
         gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x48, &r.gfsr);
         gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x800, &smr0);
         gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0xc00, &s2cr0);
-        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x22000, &gmuRaw[0]);   // CB2 at 0x20000+bank*0x1000
-        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x4000, &gmuRaw[1]);    // CB2 if GR0 is 2 pages
+        // CB2 at 0x20000+bank*0x1000. Never 0x4000: that is the QSMMU's IMPL_DEF page and a
+        // read there takes a synchronous external abort (2026-10-29 21:17, logs/...-21-17-49-960.jpg).
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x22000, &gmuRaw[0]);
         gmuRaw[2] = smr0;
         gmuRaw[3] = s2cr0;
         gmuId[0] = id0;
@@ -382,7 +383,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu memory digest %08x/%08x plan_sha/copied (mode 8)\n"
               "gmu smmu %s ph=%u prep=%u start=%u map=%u obs=%u tbl=%u leaf=%u cap=%u ctx=%08x\n"
               "gmu io id0=%08x id1=%08x id2=%08x id7=%08x scr0=%08x>%08x gfsr=%08x smr=%u slot=%u mapped=%u pub=%u berr=%u\n"
-              "gmu raw cbA=%08x cbB=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x",
+              "gmu raw cb2=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
               r.io_error, r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi, r.pll_vote,
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
@@ -400,7 +401,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               (uint32_t)gmuSummary.context_offset,
               gmuId[0], gmuId[1], gmuId[2], gmuId[3], gmuRaw[6], gmuRaw[5], r.gfsr,
               gmuSmrValid, gmuSlot, gmuSummary.mapped, gmuSummary.map_published, gmuSmmuError,
-              gmuRaw[0], gmuRaw[1], gmuRaw[2], gmuRaw[3], gmuRaw[4],
+              gmuRaw[0], gmuRaw[2], gmuRaw[3], gmuRaw[4],
               (uint32_t)gmuPoolPhysical, (uint32_t)(gmuPoolPhysical >> 32));
     }
 }

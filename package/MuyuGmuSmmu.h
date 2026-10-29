@@ -57,6 +57,15 @@ enum {
 #define MUYU_GMU_LOG_BYTES    0x00004000u
 #define MUYU_GMU_HFI_BYTES    0x00004000u
 
+/* The ID view this QSMMU v500 must present to ArmSmmu4K (see MuyuGmuSmmu.c):
+ * 10-bit stream IDs (the DT's qcom,stream-id-range is 0x00..0x400), stage-1 AArch64,
+ * 32 context-bank pages (context bank 0 at 0x20000), 4 KiB tables, 40-bit VA and PA.
+ * The probe prints the raw register values unchanged. */
+#define MUYU_GMU_ID0_VIEW   ((1u << 27) | (1u << 30) | (10u << 9))
+#define MUYU_GMU_ID1_PAGES  (4u << 28)
+#define MUYU_GMU_ID1_PAGE_MASK (7u << 28)
+#define MUYU_GMU_ID2_VIEW   ((1u << 12) | (2u << 8) | (2u << 4))
+
 /* 32-bit input addresses (the GMU's view) and 40-bit output addresses (this board's
  * RAM), matching the vendor's gmu_vm size of 0x80000000. */
 #define MUYU_GMU_INPUT_BITS  32u
