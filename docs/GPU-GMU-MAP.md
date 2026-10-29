@@ -97,29 +97,20 @@ JSON 里同时带 GPU/GMU 的时钟名、regulator 名、三个固件的 sha256�
 4. 把 §4 的参数喂给 `ArmSmmu4K`（它已支持 `qsmmu-v500`，不需要新驱动）；
 5. **完成标准**：boot log 出现 GMU 启动 + HFI 响应。
 
-## 7. GPUCC / GCC 电源与时钟偏移核对（阶段 1b）
+## 7. GPUCC / GCC 电源与时钟偏移（阶段 1b）—— **已推翻，见 `GPU-CLIFFS-MMIO.md`**
 
-`package/GpuPowerBoard.h` 里的常量原本是 **sheng (SM8550)** 的。用 Linux 上游驱动逐条对了一遍：
-`gpucc-sm8650.c`（SM8650，同为 GPU gen7 系列）与 `gcc-sm8650.c`。
-
-| 用途 | `GpuPowerBoard.h` 里的值 | sm8650 上游 | 结论 |
-| --- | --- | --- | --- |
-| `gpu_cc_ahb_clk` | `0x911c` | `0x911c` | ✅ 一致 |
-| `gpu_cc_cx_gmu_clk` | `0x913c` | `0x913c` | ✅ 一致 |
-| `gpu_cc_hlos1_vote_gpu_smmu_clk` | `0x7000` | `0x7000` | ✅ 一致 |
-| `gpu_cx_gdsc` gdscr | `0x9108` | `0x9108` | ✅ 一致 |
-| `gpu_gx_gdsc` gdscr | `0x905c` | `0x905c` | ✅ 一致 |
-| `gcc_gpu_memnoc_gfx_clk` | `0x71010` | `0x71010` | ✅ 一致 |
-| `gcc_gpu_snoc_dvm_gfx_clk` | `0x71018` | `0x71018` | ✅ 一致 |
-| `gcc_gpu_cfg_ahb_clk` | `0x71004` | 未在 sm8650 直接匹配到 | ⚠️ 待确认 |
-
-含义：**这 7 个里 7 个与下游另一代 SoC 完全一致**，所以 sheng 的值很可能在 cliffs 上也能用；
-但「很可能」不是证据。设备上有 `gpucc-cliffs.ko`，说明 muyu 用的是 cliffs 变体，
-**真正的确认方式是在真机上读这几个寄存器**（`GpuPowerBoard.h` 的注释已经警告过：
-读一个时钟关着的块会挂总线而不是报错，所以必须分级、先确认前置条件）。
-
-### 1b 的收敛判断
-- GMU 五窗口 / 三中断 / GPU SMMU：**已由 DTB 生成**（§4.1），不用手抄也不需要 Linux 源码；
-- GPUCC/GCC 电源时钟：**7/8 与上游 sm8650 一致**，只剩 `gcc_gpu_cfg_ahb_clk` 待确认；
-- 因此 1b 剩下的不是「找参数」，而是「把参数接进 `NativeAdrenoGmuPlatform` 与 `ArmSmmu4K` 的调用点」，
-  以及**在真机分级读一次**确认 cliffs 上这些偏移成立。
+> ⚠ **2026-10-29 晚更正**：本节原来写「8 个偏移里 7 个与上游 `gpucc-sm8650.c`/`gcc-sm8650.c`
+> 一致，所以 sheng 的值很可能能用」。这个推理**不成立**：cliffs（SM8635）的 GPUCC 与 SM8650
+> 不是同一套寄存器布局。用设备上实际加载的 `gpucc-cliffs.ko`（未 strip、带 BTF）与 Xiaomi 公布的
+> `muyu-v-oss` 内核源码逐条核对，**8 项里只有 3 项相同**，例如 `gpu_cc_ahb_clk` 在 cliffs 是
+> **0x90c8**（SM8650 是 0x911c）、`gpu_cc_cx_gmu_clk` 是 **0x90e4**（SM8650 是 0x913c）。
+> 另外 DT 的 `qcom,gdsc@…` **节点名是 SM8650 的残留**，真地址在 `reg` 里（`gpu_cc_cx_gdsc`
+> 的实际 reg 是 `0x3d9908c` 而不是节点名暗示的 `0x3d99108`）。
+>
+> **权威表、逐条差异、复现脚本**：`docs/GPU-CLIFFS-MMIO.md`
+> （断言脚本 `scripts/check-muyu-gpu-mmio.py`，对着厂商源码 + DT 校验，漂移即非零退出）。
+>
+> 结论：**1b 的「找参数」已经结束**；剩下的确实只有「把参数接进 `NativeAdrenoGmuPlatform` /
+> `ArmSmmu4K` 的调用点」。原计划的「分级读寄存器确认偏移」也不必再做了 —— 偏移已有三个独立
+> 第一方来源互证，且 Android 正在用同一套值跑 GPU；上机要验证的是**语义**（CX GDSC 轮询、
+> SMMU vote 的 CLK_OFF、GMU/HFI 响应），见 `GPU-CLIFFS-MMIO.md` §6。

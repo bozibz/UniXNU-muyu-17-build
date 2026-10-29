@@ -72,6 +72,17 @@ A735 固件已从设备上抽出，落在 `fw/gpu-firmware/`：
 SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm/firmware/gen71100_zap.mbn /sdcard/...'`
 再 `adb pull`。本机用 Magisk 刷 `init_boot` 取 root（原厂镜像在 `fw/stock/init_boot.img`）。
 
+**已取得（2026-10-29 晚，阶段 1b 收尾）**
+- **GPUCC/GCC/GDSC 的权威寄存器表**：`docs/GPU-CLIFFS-MMIO.md`。cliffs 的 GPUCC 与 SM8650
+  **不同布局**（`gpu_cc_ahb_clk=0x90c8`、`gpu_cc_cx_gmu_clk=0x90e4`、`gmu_clk_src=0x9168`…），
+  由厂商 `muyu-v-oss` 源码 + 设备上加载的 `gpucc-cliffs.ko`（BTF）+ DT 的 `reg` 三方互证，
+  断言脚本 `scripts/check-muyu-gpu-mmio.py`。
+- **DT 陷阱**：`qcom,gdsc@3d99108` 这类**节点名是 SM8650 的残留**，真地址在 `reg`
+  （实际 `0x3d9908c`）。旧文档里按节点名推出的 `0x9108/0x905c` 是错的。
+- **运行中 Android 的实测**：11 档频率 255–1100 MHz、GMU clk 220 MHz、hub 200 MHz、
+  A735 chip id `0x43030b00`、GPU SMMU：24 SMR 组 / 22 context bank / 48-bit VA→36-bit IPA /
+  26 个中断、AOP cmd-db 在 `0x81c60000`+`0x20000`。
+
 **仍缺（按阻塞顺序）**
 1. ~~A735 固件~~ —— **已取得，见上表**。
 2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
