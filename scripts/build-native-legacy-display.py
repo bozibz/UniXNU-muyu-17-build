@@ -254,7 +254,25 @@ for _src,_obj in ((gmu_fw_c,gmu_fw_obj),(adreno_fw_c,adreno_fw_obj)):
     run([str(_src) if arg==str(process_source) else str(_obj) if arg==str(process_obj) else arg for arg in process_cmd],
         cwd=pr['directory'])
 # The probe includes AdrenoFirmware.h for the GMU planner, so it needs that kit's header directory.
-gmu_include=['-I',str(ROOT/'kits/AdrenoFirmware')]
+# The GPU SMMU binding for muyu (base/size, GMU stream 5, "GPU owns banks 0 and 1 so the GMU
+# needs bank >= 2"), generated from the same DTB and vendor arm-smmu-qcom.c as the GMU header.
+print(run([sys.executable,str(_W/'UniXNU-muyu/scripts/gen-muyu-gpu-smmu-source.py'),
+           '--out',str(ROOT/'build/gpu'),'--dtb',str(_W/'fw/stock/dtb_3.dtb'),
+           '--vendor-source',str(_W/'fw/android-harvest/vendor-source')],text=True),end='')
+# mode 9's board unit and the libraries it drives: ArmSmmu4K (native4K tables/context/streams),
+# ShengGpuSmmu (the bank/stream lifecycle) and MuyuGmuSmmu (this board's plan). All plain C,
+# compiled with the kernel's C recipe like MuyuDataProbe.c above.
+smmu_dir=OUT/'gmu-smmu';smmu_dir.mkdir(exist_ok=True)
+smmu_sources=[ROOT/'kits/ArmSmmu4K'/name for name in
+              ('ArmSmmu4K.c','ArmSmmu4KContext.c','ArmSmmu4KProgram.c','ArmSmmu4KStreams.c',
+               'ArmSmmu4KMmio.c','ArmSmmu4KAudit.c','ArmSmmu4KTableMemory.c','ArmSmmu4KLive.c')]
+smmu_sources+=[ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.c']
+smmu_include=['-I',str(ROOT/'kits/ArmSmmu4K'),'-I',str(ROOT/'build/gpu')]
+smmu_objs=[]
+for _src in smmu_sources:
+    _obj=smmu_dir/(_src.stem+'.o');smmu_objs.append(_obj)
+    run([str(_src) if str(arg)==str(process_source) else str(_obj) if str(arg)==str(process_obj) else arg for arg in process_cmd]+smmu_include,cwd=pr['directory'])
+gmu_include=['-I',str(ROOT/'kits/AdrenoFirmware'),'-I',str(ROOT/'kits/ArmSmmu4K'),'-I',str(ROOT/'build/gpu')]
 run([str(gpupower_cpp) if str(arg)==str(source) else str(gpupower_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+gmu_include,cwd=r['directory'])
 # The driver lives in drivers/NativeNovatekTouch but needs the GENI SPI library and the board headers;
 # give it those two include directories explicitly instead of relative paths through symlinked trees.
@@ -290,13 +308,14 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs])
+     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs])
 sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
          ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
          ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
          ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
-         ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h']
+         ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h',
+         ROOT/'kits/muyu/MuyuGmuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.h',ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/ShengGpuSmmu.h',*smmu_sources]
 print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeGOPPresenter'],text=True),end='')
 gop=ROOT/'build/native-gop-presenter';gop_late=gop/'NativeGOPPresenter.late.o'
 run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func','--globalize-symbol=__GLOBAL__sub_I_NativeGOPPresenter.cpp',

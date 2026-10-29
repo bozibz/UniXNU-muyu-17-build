@@ -82,7 +82,7 @@ static void reset_live(unsigned role,unsigned exid)
 {
     reset(role,exid);live_state=(ArmSmmu4KLiveState){0};
     live_arena=(ArmSmmu4KLiveArena){{role?32:40,40,0x12000000,8},
-        role?UINT64_C(0x1ff000):UINT64_C(0xffffff00001ff000),8192,!role,live_tables,8};
+        role?UINT64_C(0x1ff000):UINT64_C(0xffffff00001ff000),8192,!role,live_tables,8,NULL,0};
     CHECK(!ArmSmmu4KLivePrepare(&live_arena,&live_state));
     context.lower=role?&live_arena.config:NULL;context.lower_tables=role?&live_state.tables:NULL;
     context.upper=role?NULL:&live_arena.config;context.upper_tables=role?NULL:&live_state.tables;

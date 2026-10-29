@@ -7,6 +7,10 @@
 //                      Nothing is written.
 //   muyu-gpu-power=2   as 1, plus the single write Linux's gcc_cliffs probe makes: enable
 //                      gcc_gpu_cfg_ahb_clk (0x71004 bit 0) if it is clear.
+//   muyu-gpu-power=9   mode 8, then the GMU's own stage-1 SMMU: read the identity, enable the
+//                      global policy ArmSmmu4K requires, lease a free SMR slot for SID 5, build a
+//                      4 MiB native4K table pool, start context bank 2 and map the five GMU
+//                      extents (package/MuyuGmuSmmu.c). The GMU itself is still not started.
 //   muyu-gpu-power=8   mode 7, then stage the A735 GMU image into those buffers with the same planner
 //                      ShengGmu.c uses and check its SHA-256; still no SMMU mapping and no GMU start.
 //   muyu-gpu-power=7   mode 6, then allocate the five GMU memory blocks the cold start needs (icache,
@@ -34,6 +38,7 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
 #include <libkern/crypto/sha2.h>
+#include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
 #include "AdrenoFirmware.h"
@@ -43,6 +48,9 @@ extern "C" const size_t muyu_gmu_firmware_size;
 extern "C" {
 #include "MuyuGpuPowerBoard.h"
 }
+// mode 9: the board half of the GMU SMMU bring-up (package/MuyuGmuSmmu.c), host-tested by
+// scripts/check-muyu-gmu-smmu.py. It needs the whole 0x40000 SMMU window, not just GR0.
+#include "MuyuGmuSmmu.h"
 
 namespace {
 
@@ -54,11 +62,15 @@ struct Window {
     volatile uint8_t *base;
 };
 
+// The device tree's kgsl-smmu reg is 0x3da0000+0x40000; the board sequence only reads GR0,
+// but a context bank lives at 0x20000+bank*0x1000, so mode 9 maps the whole aperture.
+constexpr uint64_t kSmmuWindow = 0x40000;
+
 Window gWindows[5] = {
     {MGB_GCC_GPU_PAGE, 0x1000, nullptr, nullptr, nullptr},
     {MGB_GCC_VOTE_PAGE, 0x1000, nullptr, nullptr, nullptr},
     {MGB_GPUCC_BASE, MGB_GPUCC_SIZE, nullptr, nullptr, nullptr},
-    {MGB_SMMU_BASE, MGB_SMMU_GR0_SIZE, nullptr, nullptr, nullptr},
+    {MGB_SMMU_BASE, kSmmuWindow, nullptr, nullptr, nullptr},
     {MGB_GPU_BASE, MGB_GPU_WINDOW, nullptr, nullptr, nullptr},
 };
 
@@ -94,12 +106,46 @@ void delayUs(void *, unsigned us) { IODelay(us); }
 
 const char *yesNo(int v) { return v ? "Y" : "N"; }
 
+// ArmSmmu4KIo peer over window 3 (the full SMMU aperture). Offsets are the SMMU's own,
+// relative to MGB_SMMU_BASE, exactly as ArmSmmu4KProgram expects them.
+int smmuRead32(void *, size_t at, uint32_t *out) {
+    if (!out || (at & 3) || at + 4 > kSmmuWindow) return 1;
+    *out = *reinterpret_cast<volatile uint32_t *>(gWindows[MGB_WIN_SMMU].base + at);
+    return 0;
+}
+int smmuRead64(void *, size_t at, uint64_t *out) {
+    uint32_t low = 0, high = 0;
+    if (!out || (at & 7) || at + 8 > kSmmuWindow) return 1;
+    if (smmuRead32(nullptr, at, &low) || smmuRead32(nullptr, at + 4, &high)) return 1;
+    *out = ((uint64_t)high << 32) | low;
+    return 0;
+}
+int smmuWrite32(void *, size_t at, uint32_t v) {
+    if ((at & 3) || at + 4 > kSmmuWindow) return 1;
+    *reinterpret_cast<volatile uint32_t *>(gWindows[MGB_WIN_SMMU].base + at) = v;
+    return 0;
+}
+int smmuWrite64(void *, size_t at, uint64_t v) {
+    if ((at & 7) || at + 8 > kSmmuWindow) return 1;
+    return smmuWrite32(nullptr, at, (uint32_t)v) | smmuWrite32(nullptr, at + 4, (uint32_t)(v >> 32));
+}
+int smmuBarrier(void *) { __asm__ volatile("dsb sy" ::: "memory"); return 0; }
+
+// Clean the range to the point of coherency before the SMMU walks it and before the GMU
+// reads the staged image. A barrier alone is not a cache clean (ArmSmmu4KLiveVisibility).
+int publishCache(void *, uint64_t physical, size_t bytes) {
+    if (!physical || !bytes || (bytes & 4095) || (physical & 4095)) return 1;
+    flush_dcache64((addr64_t)physical, (unsigned)bytes, TRUE);
+    __asm__ volatile("dsb sy" ::: "memory");
+    return 0;
+}
+
 } // namespace
 
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 8) mode = 8;
+    if (mode > 9) mode = 9;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -169,6 +215,7 @@ extern "C" void muyu_gpu_power_probe(void) {
     // (icache 0xffc000, dummy 0x4000, debug 0x7000, log 0x4000, hfi 0x4000); the kgsl globals dump
     // (fw/android-harvest/sysfs/kgsl-globals.txt) is the vendor's own layout for comparison.
     static IOBufferMemoryDescriptor *gmuMem[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    static uint64_t gmuMemPhysical[5] = {0, 0, 0, 0, 0};
     if (mode >= 7) {
         static const uint32_t sizes[5] = {0xffc000u, 0x4000u, 0x7000u, 0x4000u, 0x4000u};
         static const char *names[5] = {"icache", "dummy", "debug", "log", "hfi"};
@@ -182,12 +229,13 @@ extern "C" void muyu_gpu_power_probe(void) {
             memset((void *)desc->getBytesNoCopy(), 0, sizes[i]);
             IOLog("MUYU GPU POWER mem %s bytes=%u phys=%08llx seg=%llu\n", names[i], sizes[i],
                   (unsigned long long)phys, (unsigned long long)seg);
+            gmuMemPhysical[i] = phys;
             panics[0] ^= (uint32_t)phys;
             panics[1] ^= (uint32_t)(phys >> 32);
         }
         IOLog("MUYU GPU POWER mem physmix=%08x/%08x\n", panics[0], panics[1]);
 
-        if (mode == 8 && gmuMem[0]) {
+        if (mode >= 8 && gmuMem[0]) {
             const AdrenoFirmwareRegion regions[3] = {{0, 0x4000, 1}, {0x4000, 0xffc000, 2}, {0x10004000, 0x4000, 3}};
             AdrenoFirmwareBlock blocks[32];
             size_t count = 0;
@@ -217,6 +265,111 @@ extern "C" void muyu_gpu_power_probe(void) {
         }
     }
 
+    // mode 9: the GMU's stage-1 SMMU. Read the identity and the stream state, put the whole
+    // global register in the state ArmSmmu4K requires (it refuses a disabled/unmatched-fault
+    // policy rather than guessing), lease the first free SMR slot for SID 5, then let
+    // MuyuGmuSmmu.c prepare the tables, start bank >= 2 and map the five GMU extents.
+    static MuyuGmuSmmu gmuSmmu;
+    static MuyuGmuSmmuSummary gmuSummary;
+    static MuyuGmuSmmuPlan gmuPlan;
+    static uint32_t gmuRaw[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static uint32_t gmuId[4] = {0, 0, 0, 0};
+    static unsigned gmuSmrValid = 0, gmuSlot = 0xffff, gmuSmmuError = 0;
+    static uint64_t gmuPoolPhysical = 0;
+    static IOBufferMemoryDescriptor *gmuPool = nullptr;
+    if (mode >= 9) {
+        ArmSmmu4KIo smmu = { nullptr, kSmmuWindow, smmuRead32, smmuRead64, smmuWrite32, smmuWrite64, smmuBarrier };
+        uint32_t id0 = 0, id1 = 0, id2 = 0, id7 = 0, scr0 = 0, scr0Before = 0, s2cr0 = 0, smr0 = 0;
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, MGB_SMMU_ID0, &id0);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, MGB_SMMU_ID1, &id1);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, MGB_SMMU_ID2, &id2);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x2c, &id7);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, MGB_SMMU_SCR0, &scr0);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x48, &r.gfsr);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x800, &smr0);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0xc00, &s2cr0);
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x22000, &gmuRaw[0]);   // CB2 at 0x20000+bank*0x1000
+        gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0x4000, &gmuRaw[1]);    // CB2 if GR0 is 2 pages
+        gmuRaw[2] = smr0;
+        gmuRaw[3] = s2cr0;
+        gmuId[0] = id0;
+        gmuId[1] = id1;
+        gmuId[2] = id2;
+        gmuId[3] = id7;
+        scr0Before = scr0;
+
+        // Lease an SMR slot above the GPU's own SIDs 0/1 for the GMU's SID 5, then make sure
+        // its S2CR says FAULT (ArmSmmu4KAttachStreams requires every owned stream faulted).
+        const unsigned smrCount = id0 & 0xff;
+        uint32_t candidate = 0;
+        for (unsigned i = 0; i < smrCount; ++i) {
+            uint32_t smr = 0, s2cr = 0;
+            if (read32(nullptr, MGB_WIN_SMMU, 0x800 + 4 * i, &smr) ||
+                read32(nullptr, MGB_WIN_SMMU, 0xc00 + 4 * i, &s2cr)) { gmuSmmuError = 1; break; }
+            if (smr & (1u << 31)) { ++gmuSmrValid; continue; }   // EXIDS is 0 on this SMMU
+            if (gmuSlot == 0xffff) { gmuSlot = i; candidate = s2cr; }
+        }
+        if (gmuSlot != 0xffff && (candidate & ~(1u << 10)) != 0x20000) {
+            gmuSmmuError |= write32(nullptr, MGB_WIN_SMMU, 0xc00 + 4 * gmuSlot, 0x20000u);
+            gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, 0xc00 + 4 * gmuSlot, &candidate);
+        }
+        gmuRaw[4] = candidate;
+        // The global policy ArmSmmu4KStreams' preflight demands: M|GFRE|GFIE|USFCFG set and
+        // CLIENTPD clear. Only those four bits change; everything else the firmware set stays.
+        if ((scr0 & 0x407) != 0x406) {
+            gmuSmmuError |= write32(nullptr, MGB_WIN_SMMU, MGB_SMMU_SCR0, (scr0 & ~0x407u) | 0x406u);
+            gmuSmmuError |= read32(nullptr, MGB_WIN_SMMU, MGB_SMMU_SCR0, &scr0);
+        }
+        gmuRaw[5] = scr0;
+        gmuRaw[6] = scr0Before;
+
+        // 4 MiB of tables: the aperture [0x4000,0x60407000) needs 774 pages of intermediate
+        // and level-3 tables (MuyuGmuSmmuTablePages), the leaves live inside them.
+        if (!gmuPool)
+            gmuPool = IOBufferMemoryDescriptor::withCapacity(1024u * 4096u, kIODirectionInOut, true);
+        MuyuGmuSmmuPool pool = { nullptr, 0, 0 };
+        if (gmuPool) {
+            IOByteCount segment = 0;
+            pool.physical = gmuPool->getPhysicalSegment(0, &segment, kIOMemoryMapperNone);
+            pool.cpu = gmuPool->getBytesNoCopy();
+            pool.capacity_pages = (size_t)(segment / 4096);
+            if (pool.capacity_pages > 1024) pool.capacity_pages = 1024;
+            gmuPoolPhysical = pool.physical;
+        }
+        __builtin_memset(&gmuPlan, 0, sizeof gmuPlan);
+        gmuPlan.pool = pool;
+        gmuPlan.bank = SHENG_GPU_SMMU_GMU_BANK_MIN;
+        gmuPlan.slot = gmuSlot;
+        gmuPlan.poll_budget = 1000;
+        for (unsigned i = 0; i < MUYU_GMU_EXTENTS; ++i) {
+            gmuPlan.extents[i].cpu = gmuMem[i] ? gmuMem[i]->getBytesNoCopy() : nullptr;
+            gmuPlan.extents[i].physical = gmuMemPhysical[i];
+            gmuPlan.extents[i].bytes = (size_t)MUYU_GMU_ICACHE_BYTES;
+            gmuPlan.extents[i].iova = MUYU_GMU_ICACHE_IOVA;
+        }
+        static const uint32_t gmuIova[5] = { MUYU_GMU_ICACHE_IOVA, MUYU_GMU_DUMMY_IOVA,
+            MUYU_GMU_DEBUG_IOVA, MUYU_GMU_LOG_IOVA, MUYU_GMU_HFI_IOVA };
+        static const uint32_t gmuSize[5] = { MUYU_GMU_ICACHE_BYTES, MUYU_GMU_DUMMY_BYTES,
+            MUYU_GMU_DEBUG_BYTES, MUYU_GMU_LOG_BYTES, MUYU_GMU_HFI_BYTES };
+        for (unsigned i = 0; i < MUYU_GMU_EXTENTS; ++i) {
+            gmuPlan.extents[i].iova = gmuIova[i];
+            gmuPlan.extents[i].bytes = gmuSize[i];
+        }
+        MuyuGmuSmmuCache cacheOps = { nullptr, publishCache };
+        MuyuGmuSmmuRun(&smmu, &gmuPlan, &cacheOps, &gmuSmmu);
+        gmuSummary = gmuSmmu.summary;
+        IOLog("MUYU GPU POWER gmu smmu %s phase=%u prepare=%u start=%u map=%u observe=%u "
+              "tbl=%u leaf=%u ctx=%08x bank=%u slot=%u mapped=%u pub=%u\n",
+              MuyuGmuSmmuOutcomeText(gmuSummary.outcome), gmuSummary.phase,
+              gmuSummary.prepare_status, gmuSummary.start_status, gmuSummary.map_status,
+              gmuSummary.observe_status, (unsigned)gmuSummary.table_pages,
+              (unsigned)gmuSummary.leaf_pages, (uint32_t)gmuSummary.context_offset,
+              gmuSummary.bank, gmuSummary.slot, gmuSummary.mapped, gmuSummary.map_published);
+        IOLog("MUYU GPU POWER gmu ids id0=%08x id1=%08x id2=%08x id7=%08x scr0=%08x/%08x "
+              "gfsr=%08x smr=%u pool=%08llx\n", id0, id1, id2, id7, gmuRaw[6], gmuRaw[5],
+              r.gfsr, gmuSmrValid, (unsigned long long)gmuPoolPhysical);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -226,7 +379,10 @@ extern "C" void muyu_gpu_power_probe(void) {
               "smmu scr0=%08x id0=%08x id1=%08x id2=%08x gfsr=%08x rbbm=%08x\n"
               "clk step=%u failed=%d lock=%u hub=%u gmu=%u br=%u pll1=%08x/%08x gpll0=%08x gmucfg=%08x hubcfg=%08x cxgmu=%08x gpll0_after=%08x\n"
               "cx power=%d gdscr=%08x hwctrl=%08x polls=%u\n"
-              "gmu memory digest %08x/%08x plan_sha/copied (mode 8)",
+              "gmu memory digest %08x/%08x plan_sha/copied (mode 8)\n"
+              "gmu smmu %s ph=%u prep=%u start=%u map=%u obs=%u tbl=%u leaf=%u cap=%u ctx=%08x\n"
+              "gmu io id0=%08x id1=%08x id2=%08x id7=%08x scr0=%08x>%08x gfsr=%08x smr=%u slot=%u mapped=%u pub=%u berr=%u\n"
+              "gmu raw cbA=%08x cbB=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
               r.io_error, r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi, r.pll_vote,
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
@@ -236,6 +392,15 @@ extern "C" void muyu_gpu_power_probe(void) {
               clock.step, clock.failed, clock.lock_polls, clock.hub_polls, clock.gmu_polls, clock.branch_polls,
               clock.pll1_mode, clock.pll1_opmode, clock.gpll0, clock.gmu_cfg, clock.hub_cfg, clock.cx_gmu,
               clock.gpll0_after, cx_result, cx_gdscr_after, cx_hwctrl_after, cx_polls,
-              panics[0], panics[1]);
+              panics[0], panics[1],
+              MuyuGmuSmmuOutcomeText(gmuSummary.outcome), gmuSummary.phase,
+              gmuSummary.prepare_status, gmuSummary.start_status, gmuSummary.map_status,
+              gmuSummary.observe_status, (unsigned)gmuSummary.table_pages,
+              (unsigned)gmuSummary.leaf_pages, (unsigned)gmuSummary.capacity_pages,
+              (uint32_t)gmuSummary.context_offset,
+              gmuId[0], gmuId[1], gmuId[2], gmuId[3], gmuRaw[6], gmuRaw[5], r.gfsr,
+              gmuSmrValid, gmuSlot, gmuSummary.mapped, gmuSummary.map_published, gmuSmmuError,
+              gmuRaw[0], gmuRaw[1], gmuRaw[2], gmuRaw[3], gmuRaw[4],
+              (uint32_t)gmuPoolPhysical, (uint32_t)(gmuPoolPhysical >> 32));
     }
 }

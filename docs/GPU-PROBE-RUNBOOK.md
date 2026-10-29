@@ -178,3 +178,84 @@ MUYU GPU POWER clk pll1=…/… gpll0=… gmucfg=… hubcfg=… cx_gmu=… cx=�
 
 **风险**：这是第一次真的"写" GPUCC 的时钟。若挂板，回滚 `fw/vendor_boot_btn2.img`，
 并把 `step` 号照片留下（panic 摘要里有）。
+
+## 10. mode 9：第一次**写** GPU SMMU（GMU 的 stage-1）
+
+`muyu-gpu-power=9` = mode 8（CX 上电 + 时钟树 + SMMU 可读 + 五块 GMU 内存 + 固件 staging）
+**＋ GMU 的 stage-1 SMMU 建起来**。GMU 本身仍然不启动。
+
+代码：`package/MuyuGmuSmmu.c`（板级计划）+ `package/ShengGpuSmmu.c`（bank/stream 生命周期）
++ `kits/ArmSmmu4K`（native4K 表/上下文/流）。主机校验：
+`python3 UniXNU-muyu/scripts/check-muyu-gmu-smmu.py`（常量对表 + 库生命周期 + 本板计划 + freestanding aarch64）。
+
+### 10.1 它到底写什么
+
+| 步骤 | 写/读 | 说明 |
+| --- | --- | --- |
+| 1 | 读 | IDR0/IDR1/IDR2/IDR7、sCR0、GFSR、SMR0/S2CR0、`0x22000`（CB2 在 0x20000+bank*0x1000）与 `0x4000`（若 GR0 只有 2 页）两个候选 CB 基址 |
+| 2 | 写 S2CR[slot] | 为 SID 5 租一个**无效 SMR**（跳过所有 valid 的槽位），把它的 S2CR 置成 FAULT（`0x20000`）。库要求"目标流已经是 FAULT" |
+| 3 | 写 sCR0 **4 位** | `(scr0 & ~0x407) | 0x406`：CLIENTPD=0、GFRE=1、GFIE=1、保留 USFCFG 与其余所有位。库的全局前置要求 `(scr0&0x407)==0x406` |
+| 4 | 分配 4 MiB | 表池：`[0x4000, 0x60407000)` 这段口径需要 **774 页**（1 根 + 2 个 level-2 + 771 个 level-3），叶子描述符放在这些表里 |
+| 5 | 写 CB2 | `ShengGpuSmmuStartLive(GMU, bank=2, slot, TTBR0=arena)`：先擦 image、写 TCR2/TCR/TTBR0/MAIR、ASID 同步、回读校验、最后置 SCTLR |
+| 6 | 写 CB2 | 五块按 `ArmSmmu4KLiveUpdate` 逐个映射（`[icache]→[dummy]→[log]→[hfi]→[debug]`，每次把已映射集合作为 `before` 重新证明）|
+| 7 | 读 | `ShengGpuSmmuObserveLive`：context+stream+五个 extent 再验一遍 |
+
+缓存：表池与五块内存在 walk 之前按**物理地址** `flush_dcache64(..., TRUE)` + `dsb sy`
+（`smmu_*` 的 barrier 不是 cache clean）。上下文 `coherent_walk=1`、`continue_after_fault=1`、
+icache 段带 X 权限，其余 RW+privileged，`writeback=0`、`shareability=2`（与 a6xx_gmu.c 的 GMU 映射一致）。
+
+### 10.2 期望值
+
+```
+gmu smmu done ph=5 prep=0 start=0 map=0 obs=0 tbl=774 leaf=4111 cap=1024 ctx=00022000
+gmu io id0=00000018 id1=... id2=... scr0=00000406>00000406 ...
+```
+
+| 字段 | 期望 | 偏离含义 |
+| --- | --- | --- |
+| `prep` | 0 | 1=计划被拒（对齐/尺寸/重叠/池太小），2..5 = `ArmSmmu4K` 的 BadRange..Busy |
+| `start` | 0 | **6 = Unsupported**：`ArmSmmu4KEncodeContext` 的 ID 门（IDR0 bit30、IDR2 bit12=4K、IDR2[11:8]/[7:4] 的 VA/OAS）或 `ArmSmmu4KProgram` 的 `IDR1[30:28]` 页数门（见 §10.3）|
+| `map` | 0 | 1=Argument、3=Overlap、7=StateMismatch：先看 `mapped`（已装上的数量）|
+| `obs` | 0 | 7 = 观察到的 context/流/映射与写入不一致 |
+| `tbl` | 774 | 不是 774 说明口径或 pool 变了，先改 `MuyuGmuSmmuTablePages` |
+| `leaf` | 4111 | 4092(icache)+4+7+4+4 个 4K 叶子 |
+| `ctx` | `00022000` | `(32+bank)*0x1000`（IDR1[30:28]=4 时）|
+
+### 10.3 ⚠ 第一次上机前就知道的两个"可能被拒"
+
+mode 6 读到的现场值是 `id0=00000018 id1=00000016 id2=00000002 scr0=00220465`。按 `ArmSmmu4K` 的模型：
+
+- `scr0=0x00220465`：CLIENTPD(bit0)=1、GFRE(bit1)=0 ⇒ `ArmSmmu4KStreams` 的全局预检**必然拒绝**
+  （它要 `0x406`）。这就是 mode 9 必须先写那 4 位的原因。
+- `id1=0x00000016`：库把 `IDR1[30:28]` 当"上下文页数指数"，`pages = 1<<(((id1>>28)&7)+1)` = **2**，
+  而 `banks = id1&0xff` = 22 ⇒ `banks > pages` ⇒ **Unsupported**。
+- `id2=0x00000002`：`bit12`（4 KiB 页表支持）为 0，`[11:8]`/`[7:4]` 的 VA/OAS 编码为 0 ⇒
+  `ArmSmmu4KEncodeContext` 也会 **Unsupported**。
+
+这三个值都是**裸的低位**，与 Android dmesg 的 "24 register groups / 22 context banks" 只对上了低字节。
+所以 mode 9 的 panic 摘要同时打印 **两个候选 CB 基址**（`cbA=0x22000`、`cbB=0x4000`）与 `id0..id7`：
+一次上机就能判定"上下文 bank 到底从 0x2000 还是 0x20000 开始"，以及 IDR 是不是真的没写高位。
+
+判定：
+1. `start=6` 且 `cbA`/`cbB` 里有一个看起来像 CB 寄存器（非 0、非全 1）⇒ 按那个基址确定 `pages`，
+   在 `ShengGpuSmmu`/`ArmSmmu4K` 层记录偏离（**不许静默改上游**，按 AGENTS §2 第 5 条写进 `PLAN.md`）。
+2. `start=6` 且两个候选都是 0 ⇒ 寄存器窗口/偏移的假设错了，先只读扫 0x3da0000+0x0..0x20000。
+3. `start=0` 而 `map!=0` ⇒ 先看 `mapped` 和 `leaf`，表池/权限问题。
+4. 挂板复位 ⇒ 就是写 SMMU 引起的，回滚 `btn2`，把最后一行照片留下。
+
+### 10.4 镜像与复现
+
+```bash
+# 内核（含 SMMU 板级代码；改了 package/MuyuGmuSmmu* 或 ShengGpuSmmu* 就要重来）
+cd UniXNU && python3.12 unixnu build kernel -D ../UniXNU-muyu \
+   --kernelcache out/ipsw/21H461/kernelcache.decompressed
+# payload + vendor_boot
+python3.12 unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
+   --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
+   --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr --kernel-arg=muyu-gpu-power=9
+python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
+   --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_gpupower9.img
+```
+
+`fw/vendor_boot_gpupower9.img` = `6e3f28accc025aae40e4e9e24a8738f784da9d82560952bfe379daf80abecd9b`
+（内核 `32d619a1c4d823f58278dfdd2737b3c17bf564a506ba439e45583b2ad2dab84d`，2026-10-29 21:15 上机）。
