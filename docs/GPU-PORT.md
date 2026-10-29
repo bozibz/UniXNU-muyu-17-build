@@ -97,6 +97,11 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
   从 `qcom,chipid=0x43030b00` 算出 **0x4303b000**（若错，会在 `FW_INIT_RESULT` 轮询阶段
   干净地失败，不会误写别处）。
 
+- **只读探针已就绪（2026-10-29 晚）**：`package/MuyuGpuPowerBoard.h` + `MuyuGpuPowerProbe.cpp`
+  （boot-arg `muyu-gpu-power=1` 只读 / `=2` 只多一次 AHB 使能写；`muyu-gpu-power-panic=1` 把摘要打上
+  panic 屏），7 个 host 用例 + 16 个常量断言都已通过；已编进 `libNativeLegacyDisplay.late.a` 与
+  `kernel.macho`，镜像 `fw/vendor_boot_gpupower1.img`（`c60ea851…`）做好但**未刷**。
+
 **仍缺（按阻塞顺序）**
 1. ~~A735 固件~~ —— **已取得，见上表**。
 2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
