@@ -249,6 +249,43 @@ def main(argv):
 
     gdsc = check_dt(args.dtb, fails)
 
+    # The probe header carries the same numbers to the kernel; keep it in lockstep with this table.
+    header = ROOT / "UniXNU-muyu/package/MuyuGpuPowerBoard.h"
+    if header.exists():
+        text = header.read_text()
+        def define(name):
+            import re
+            m = re.search(r"^#define\s+" + name + r"\s+\(?(0x[0-9a-fA-F]+|\d+)u?L?L?\)?", text, re.M)
+            if not m:
+                fails.append(f"MuyuGpuPowerBoard.h: no {name}")
+                return None
+            return int(m.group(1), 0)
+        # Header values are page-relative for the GCC windows and plain offsets inside GPUCC.
+        pairs = [
+            ("MGB_GCC_GPU_CFG_AHB", 0x00171000, 0x00100000 + GCC_CLOCKS["gcc_gpu_cfg_ahb_clk"]),
+            ("MGB_GCC_GPU_MEMNOC_GFX", 0x00171000, 0x00100000 + GCC_CLOCKS["gcc_gpu_memnoc_gfx_clk"]),
+            ("MGB_GCC_GPU_SNOC_DVM_GFX", 0x00171000, 0x00100000 + GCC_CLOCKS["gcc_gpu_snoc_dvm_gfx_clk"]),
+            ("MGB_GCC_DDRSS_GPU_AXI", 0x00171000, 0x00100000 + GCC_CLOCKS["gcc_ddrss_gpu_axi_clk"]),
+            ("MGB_GCC_PLL_VOTE", 0x00152000, 0x00100000 + GCC_GPLL0_VOTE_REG),
+            ("MGB_CC_CX_GDSCR", 0, 0x908C),
+            ("MGB_CC_GX_GDSCR", 0, 0x9034),
+            ("MGB_CC_CX_GDS_HW_CTRL", 0, 0x90A0),
+            ("MGB_CC_AHB_CLK", 0, GPUCC_CLOCKS["gpu_cc_ahb_clk"][1]),
+            ("MGB_CC_CX_GMU_CLK", 0, GPUCC_CLOCKS["gpu_cc_cx_gmu_clk"][1]),
+            ("MGB_CC_SMMU_VOTE_CLK", 0, GPUCC_CLOCKS["gpu_cc_hlos1_vote_gpu_smmu_clk"][1]),
+            ("MGB_CC_GMU_CLK_SRC", 0, GPUCC_CLOCKS["gpu_cc_gmu_clk_src"][1]),
+            ("MGB_CC_HUB_CLK_SRC", 0, GPUCC_CLOCKS["gpu_cc_hub_clk_src"][1]),
+            ("MGB_CC_PLL0", 0, GPUCC_PLLS["gpu_cc_pll0"]["offset"]),
+            ("MGB_CC_PLL1", 0, GPUCC_PLLS["gpu_cc_pll1"]["offset"]),
+        ]
+        for name, base, want in pairs:
+            got = define(name)
+            if got is not None and base + got != want:
+                fails.append(f"MuyuGpuPowerBoard.h: {name} {base + got:#x} != {want:#x}")
+        if define("MGB_GPUCC_BASE") != 0x03D90000:
+            fails.append("MuyuGpuPowerBoard.h: MGB_GPUCC_BASE is not 0x3d90000")
+        print(f"MuyuGpuPowerBoard.h constants checked: {len(pairs) + 1}")
+
     if args.json:
         Path(args.json).write_text(json.dumps(dict(
             gpucc_clocks={k: {"kind": v[0], "offset": v[1]} for k, v in GPUCC_CLOCKS.items()},
