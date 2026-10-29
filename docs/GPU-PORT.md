@@ -56,10 +56,24 @@ GMU 启动并响应 HFI → 有界提交后 fence 前进 → 渲染一张已知�
   `prepare-sheng-gmu.py`、`prepare-sheng-gmu-votes.py`、`check-sheng-gmu-startup.py`、
   `add-gpu-plugin-data.py`、`audit-*` 一组
 
-**缺失（按阻塞顺序）**
-1. **A735 固件**：`a735_sqe.fw`、GMU 固件（`gmu_gen70xxx.bin`）、板级 `a735_zap.mbn`。
-   ⇒ 只能从原厂 ROM 的 `vendor` / `vendor_dlkm` 分区里取；本地 `fw/fw_muyu.zip` 只有 firmware-update，
-   不含 GPU 固件。
+**已取得（2026-10-29，阶段 0 完成）**
+A735 固件已从设备上抽出，落在 `fw/gpu-firmware/`：
+
+| 文件 | 大小 | 来源 | sha256 |
+| --- | --- | --- | --- |
+| `gen71100_gmu.bin` | 80,680 B | `/vendor/firmware/` | `435c7bac9a328b8a100df930b84b65b4d579e42be44785d0e60e3729291bb864` |
+| `gen71100_sqe.fw` | 66,036 B | `/vendor/firmware/` | `b6df660d109504dbea5a266910b037a33d893a11c6de52f524a5fd112008c401` |
+| `gen71100_zap.mbn` | 12,088 B | `/odm/firmware/` | `463ba9b7d2e3f03ac0e6fa6358bf9c886c689b43af14face6a734bf289439fb4` |
+
+命名与 DTB 的 `compatible = "qcom,adreno-gpu-gen7-11-0"` 完全对应（`gen71100`）。
+设备上还并存 `gen70900_*` 一套（另一个 GPU SKU），注意别拿错。
+
+**取法（记录下来，换设备/换 ROM 可复用）**：`/vendor/firmware` 与 `/odm/firmware` 对 adb shell 是
+SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm/firmware/gen71100_zap.mbn /sdcard/...'`
+再 `adb pull`。本机用 Magisk 刷 `init_boot` 取 root（原厂镜像在 `fw/stock/init_boot.img`）。
+
+**仍缺（按阻塞顺序）**
+1. ~~A735 固件~~ —— **已取得，见上表**。
 2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
    （`NativeAdrenoPwrupRegs.h`、`NativeAdrenoPwrup.cpp` 里也有 A740 常量）。
 3. **板级 GMU votes / OPP / 带宽策略**：`ShengGmuVotes.c` 的 muyu 对应物。
