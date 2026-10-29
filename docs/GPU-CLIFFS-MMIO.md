@@ -208,3 +208,38 @@ python3 tools/btf-dump.py fw/android-harvest/gpucc-cliffs.ko \
 
 `fw/android-harvest/` 里的模块、base BTF（`/sys/kernel/btf/vmlinux`，5.4 MB）与厂商源码是
 **取证副本**，`fw/` 不进 git；本文的 sha256 固定了它们的身份。
+
+## 8. 运行中 Android 的实时快照（2026-10-29 19:5x，刷回 iPadOS 前一次性取证）
+
+采集脚本 `tools/harvest-android.sh`，副本与清单在 `fw/android-harvest/`（含 README）。
+
+### 8.1 可用的数字（已进 `fw/android-harvest/sysfs/`）
+
+- 时钟：`gpu_cc_pll0` 510 MHz、`gpu_cc_pll1` 440 MHz、`gpu_cc_gmu_clk_src`/`cx_gmu_clk` 220 MHz、
+  `hub_clk_src`/`hub_cx_int`/`ahb` 200 MHz；消费者 = `qcom,gmu@3d69000`、`3d00000.qcom,kgsl-3d0`、
+  `3da0000.kgsl-smmu`。
+- 频率档位 11 个：`1100 1000 950 900 835 736 684 633 500 353 255` MHz；`default_pwrlevel=10`。
+- kgsl `globals` 给出 **GMU 内存布局**：SCRATCH 4096、KERNEL/USER PROFILING 各 4096、
+  GMU RB 32 KiB ×4、SMMU INFO 4096、CSW PRIV 8,994,816 ×2、COUNTER 16384、PREEMPTION 4096
+  —— 阶段 1 之后给 GMU 分配 IOVA 时要照着这个尺寸表来（`ShengGmuConfig` 里的
+  icache/dummy/debug/log/hfi 尺寸是 sheng 的，muyu 要按这张表核对）。
+- regulator/interconnect 的投票都是 0（GPU 空闲、屏灭），没有参考价值；**要在有 3D 负载时抓**。
+
+### 8.2 ⚠ 两个陷阱（都是当天实测）
+
+1. **整块 dump GPUCC 寄存器会把设备读挂。** `/sys/kernel/debug/regmap/<gpucc>/registers` 的
+   range 是 `0–0x9988`，全量遍历**两次都挂**（一次停在 0x0cc8、一次走 debugcc 的 dummy 视图停在
+   0x332c），设备热复位后自愈。⇒ **禁止整块遍历时钟控制器寄存器**；这与 `GpuPowerBoard.h`
+   的"读时钟关着的块会挂总线而不是报错"完全一致，也让"分级读"从建议变成硬规则。
+   安全做法：只读 GDSC 那种 range 0–8 的单寄存器 regmap。
+2. **`regmap/.../registers` 在 cache-backed regmap 上返回缓存值。** 打开
+   `force_rail_on/force_clk_on` 后 GDSC 读数完全不变化（`0x00228801`/`0x00222801`），
+   说明读到的是 regcache 不是硅片。**不要用 regmap debugfs 证明硬件状态**；
+   用 `clk_summary` 的 rate/enable + `regulator_summary` 的使能计数。
+   `vendor-source/gdsc-regulator.c` 确认语义与上游一致：
+   `PWR_ON=BIT(31)`、`SW_COLLAPSE=BIT(0)`、`POWER_UP_COMPLETE=BIT(16)`。
+
+### 8.3 这次之后的设备状态
+
+两次挂板都是**热复位**、Android 正常回来（没有进 crash dump），说明读操作没有留下持久损伤。
+取证结束后设备仍是 Android + root，可以随时刷回 iPadOS 根（代价是 Android 数据）。
