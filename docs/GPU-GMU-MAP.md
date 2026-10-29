@@ -59,6 +59,26 @@ mboxes       aop（qcom,ipc-core）
 `ArmSmmu4K` kit 就是给 GPU 侧用的（`qsmmu-v500` + owned stream/context 生命周期），
 所以这一层**不需要新写驱动**，需要的是把这组参数喂给它。
 
+## 4.1 这些值怎么来的（可复现，不靠手抄）
+
+`scripts/gen-muyu-gpu-platform.py` 直接读设备 DTB，生成
+`build/gpu/muyu-gpu-platform.json`：
+
+```bash
+python3 UniXNU-muyu/scripts/gen-muyu-gpu-platform.py
+# window 0 gmu                  0x03d68000 +0x37000
+# window 1 rscc                 0x03d50000 +0x10000
+# window 2 gmu_pdc              0x0b280000 +0x10000
+# window 3 kgsl_3d0_reg_memory  0x03d00000 +0x40000
+# window 4 cx_misc              0x03d9e000 +0x1000
+# irq gpu=300 hfi=304 gmu=305   smmu /soc/kgsl-smmu@3da0000 stream=5 spis=26
+```
+
+JSON 里同时带 GPU/GMU 的时钟名、regulator 名、三个固件的 sha256、以及源 DTB 的 sha256，
+所以「这份参数来自哪个 DTB」是可追溯的。**为什么要自己写：sheng 的
+`prepare-sheng-gmu.py` 依赖 `scripts/data/adreno-inputs.json` 和一份 pinned 的 Linux msm 源码
+缓存，这两样本仓库都没有**（只有脚本副本），跑不起来。
+
 ## 5. 与 sheng 的差异（必须逐条核对，不能照抄）
 
 | 项 | sheng（SM8550）| muyu（SM8635 / cliffs）|
@@ -72,6 +92,7 @@ mboxes       aop（qcom,ipc-core）
 
 1. ~~解析 phandle `0x1c1`~~ —— **已完成**：`/soc/kgsl-smmu@3da0000`，见 §4；
 2. 把五窗口表 + 时钟/电源回调填进 muyu 的 `NativeAdrenoGmuPlatform` 调用点；
-3. `prepare-sheng-gmu.py` 改成读 `fw/gpu-firmware/gen71100_*`；
+3. ~~准备固件输入~~ —— **已解决**：新增 `scripts/gen-muyu-gpu-platform.py`，
+   从 DTB 生成平台 JSON（含固件 sha256），不再依赖 sheng 的 pinned Linux 源码；
 4. 把 §4 的参数喂给 `ArmSmmu4K`（它已支持 `qsmmu-v500`，不需要新驱动）；
 5. **完成标准**：boot log 出现 GMU 启动 + HFI 响应。
