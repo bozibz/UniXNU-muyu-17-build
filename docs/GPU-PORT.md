@@ -83,6 +83,11 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
   A735 chip id `0x43030b00`、GPU SMMU：24 SMR 组 / 22 context bank / 48-bit VA→36-bit IPA /
   26 个中断、AOP cmd-db 在 `0x81c60000`+`0x20000`。
 
+- **A735 GMU 固件容器与 sheng 相同**：`gen71100_gmu.bin` 用 `ShengGmu.c` 的三 region 划分
+  解出 **15 个 block**（ITCM 0x0/0x1dc、ICACHE 0x4000/0x1381c、DTCM 0x10007f98 与 0x10007fdc），
+  与加载器要求一致 ⇒ 固件加载/TCM 回读逻辑可复用，只换固件本体/chip id/寄存器常量。
+  复核：`tools/gmu-firmware-plan.c`（host，不碰设备）。
+
 **仍缺（按阻塞顺序）**
 1. ~~A735 固件~~ —— **已取得，见上表**。
 2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
