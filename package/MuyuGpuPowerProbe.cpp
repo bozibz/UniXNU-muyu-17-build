@@ -7,6 +7,9 @@
 //                      Nothing is written.
 //   muyu-gpu-power=2   as 1, plus the single write Linux's gcc_cliffs probe makes: enable
 //                      gcc_gpu_cfg_ahb_clk (0x71004 bit 0) if it is clear.
+//   muyu-gpu-power=7   mode 6, then allocate the five GMU memory blocks the cold start needs (icache,
+//                      dummy, debug, log, hfi) as real kernel buffers and report their physical addresses.
+//                      Nothing is mapped into the GPU SMMU and the GMU is not started yet.
 //   muyu-gpu-power=6   mode 5, then re-read SMMU global space 0 and RBBM_STATUS now that CX (and its SMMU
 //                      vote clock) are up, then the panic summary.
 //   muyu-gpu-power=5   mode 1, then power the GPU CX domain (gpu_cc_cx_gdsc, gdsc.c order), then mode 4's
@@ -24,6 +27,7 @@
 // faulting. On 2026-10-29 walking the whole GPUCC regmap over debugfs from Android hung this board twice.
 // Constants and the staged order live in MuyuGpuPowerBoard.h (asserted by check-muyu-gpu-mmio.py) and the
 // sequence is host-tested by MuyuGpuPowerBoardTests.c.
+#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
@@ -88,7 +92,7 @@ const char *yesNo(int v) { return v ? "Y" : "N"; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 6) mode = 6;
+    if (mode > 7) mode = 7;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -124,6 +128,7 @@ extern "C" void muyu_gpu_power_probe(void) {
 
     struct mgb_clock_result clock;
     __builtin_memset(&clock, 0, sizeof clock);
+    uint32_t panics[2] = {0, 0};        // mode 7's physical-address digest for the panic summary
     int cx_result = -2;                 // -2: not attempted
     uint32_t cx_gdscr_after = 0, cx_hwctrl_after = 0;
     unsigned cx_polls = 0;
@@ -141,7 +146,7 @@ extern "C" void muyu_gpu_power_probe(void) {
         IOLog("MUYU GPU POWER clk pll1=%08x/%08x gpll0=%08x gmucfg=%08x hubcfg=%08x cx_gmu=%08x cx=%08x\n",
               clock.pll1_mode, clock.pll1_opmode, clock.gpll0, clock.gmu_cfg, clock.hub_cfg, clock.cx_gmu,
               r.cx_gdscr);
-        if (mode == 6) {
+        if (mode >= 6) {
             mgb_observe_powered(&io, &r, have);
             IOLog("MUYU GPU POWER post smmu %s scr0=%08x id0=%08x id1=%08x id2=%08x gfsr=%08x smr=%u cb=%u\n",
                   mgb_state_text(r.smmu), r.scr0, r.id0, r.id1, r.id2, r.gfsr, mgb_smmu_num_smr(r.id0),
@@ -153,6 +158,27 @@ extern "C" void muyu_gpu_power_probe(void) {
               mgb_rcg_div(clock.hub_cfg), yesNo(mgb_branch_running(clock.cx_gmu)));
     }
 
+    // mode 7: the GMU memory plan, allocated for real. Sizes come from ShengGmu.c's validator
+    // (icache 0xffc000, dummy 0x4000, debug 0x7000, log 0x4000, hfi 0x4000); the kgsl globals dump
+    // (fw/android-harvest/sysfs/kgsl-globals.txt) is the vendor's own layout for comparison.
+    if (mode == 7) {
+        static const uint32_t sizes[5] = {0xffc000u, 0x4000u, 0x7000u, 0x4000u, 0x4000u};
+        static const char *names[5] = {"icache", "dummy", "debug", "log", "hfi"};
+        for (unsigned i = 0; i < 5; ++i) {
+            IOBufferMemoryDescriptor *desc =
+                IOBufferMemoryDescriptor::withCapacity(sizes[i], kIODirectionInOut, true);
+            if (!desc) { IOLog("MUYU GPU POWER mem %s FAILED\n", names[i]); continue; }
+            IOByteCount seg = 0;
+            addr64_t phys = desc->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
+            memset((void *)desc->getBytesNoCopy(), 0, sizes[i]);
+            IOLog("MUYU GPU POWER mem %s bytes=%u phys=%08llx seg=%llu\n", names[i], sizes[i],
+                  (unsigned long long)phys, (unsigned long long)seg);
+            panics[0] ^= (uint32_t)phys;
+            panics[1] ^= (uint32_t)(phys >> 32);
+        }
+        IOLog("MUYU GPU POWER mem physmix=%08x/%08x\n", panics[0], panics[1]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -161,7 +187,8 @@ extern "C" void muyu_gpu_power_probe(void) {
               "pll1=%08x/%08x l=%08x user=%08x gmurcgr=%08x gmucfg=%08x hubrcgr=%08x hubcfg=%08x\n"
               "smmu scr0=%08x id0=%08x id1=%08x id2=%08x gfsr=%08x rbbm=%08x\n"
               "clk step=%u failed=%d lock=%u hub=%u gmu=%u br=%u pll1=%08x/%08x gpll0=%08x gmucfg=%08x hubcfg=%08x cxgmu=%08x gpll0_after=%08x\n"
-              "cx power=%d gdscr=%08x hwctrl=%08x polls=%u",
+              "cx power=%d gdscr=%08x hwctrl=%08x polls=%u\n"
+              "gmu memory digest %08x/%08x (mode 7)",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
               r.io_error, r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi, r.pll_vote,
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
@@ -170,6 +197,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               r.scr0, r.id0, r.id1, r.id2, r.gfsr, r.rbbm_status,
               clock.step, clock.failed, clock.lock_polls, clock.hub_polls, clock.gmu_polls, clock.branch_polls,
               clock.pll1_mode, clock.pll1_opmode, clock.gpll0, clock.gmu_cfg, clock.hub_cfg, clock.cx_gmu,
-              clock.gpll0_after, cx_result, cx_gdscr_after, cx_hwctrl_after, cx_polls);
+              clock.gpll0_after, cx_result, cx_gdscr_after, cx_hwctrl_after, cx_polls,
+              panics[0], panics[1]);
     }
 }
