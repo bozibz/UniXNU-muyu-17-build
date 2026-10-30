@@ -1,61 +1,93 @@
-# UniXNU-braveark
+# UniXNU-muyu
 
 Device repository for running [UniXNU](https://github.com/UniXNU/UniXNU) on the
-**Brave Ark** tablet (KU1381, Qualcomm SM8635 "cliffsp", QRD-based board).
+**Xiaomi Pad 7 Pro** (codename `muyu`, Qualcomm SM8635 "cliffs", Adreno 735),
+with an iPadOS 17.7.11 (21H461) root on `userdata`.
 
-Derived from [Allenwdk/UniXNU-uke](https://github.com/Allenwdk/UniXNU-uke)
-(Xiaomi Pad 7, SM7675). Both SoCs are Palawan, and every SoC-level value the
-kernel side uses was checked against the Brave Ark stock device tree
-(`dtb_idx 4` CliffsP + `dtbo_idx 24` Cliffs QRD) and is the same as uke's:
-GICv3 `0x17100000`/`0x17180000`, UFS `0x1d84000` (PHY `0x1d80000`, SMMU stream
-`0x60`), the 19.2 MHz timer, the `cont_splash_region` at `0xe3940000`, the
-`llcc_lpi` panic-log region at `0xff800000` and the vendor ramdisk at
-`0x1000000`. The device identity is `brave,braveark` / `qcom,cliffsp`.
-
-Names that belong to this device use `braveark`: the kit (`kits/braveark`),
-`BravearkLastLog`, `BravearkPreflight`, the `-bravearktextconsole` boot argument
-and the `BRAVEARK:` log prefix. Names defined in UniXNU itself stay as they are
-there: the `sheng-*` and `offline-*` boot arguments, the `uke` branch of
-`Allenwdk/UniXNU`, the `_uke_*` symbols of `NativeLegacyDisplay` and the
-`gUkeMemStatusGuid` status table the UniXNU menu reads.
+Derived from [UniXNU-braveark](https://github.com/tattwamashi/UniXNU-braveark)
+(same SM8635 SoC). Identifiers that came from that shared SM8635 work keep their
+`braveark` names (`drivers/BravearkPreflight`, `package/BravearkLastLog.c`, the
+`-bravearktextconsole` boot argument, the `BRAVEARK:` log prefix and two XNU
+patches); names specific to this device use `muyu` (`kits/muyu`, the `muyu-*`
+boot arguments). `board.toml` is the authority for the device identity.
 
 ## Status
 
 | Stage | State |
-|---|---|
-| 1. UEFI firmware (Mu-Silicium `bravearkPkg`) | works via `fastboot boot` |
-| 2. UniXNU menu | works |
-| 3. Payload | works from `vendor_boot` (see below) |
-| 4. DarwinBoot / 5. XNU entry | works: XNU reaches BSD init on all 8 CPUs |
-| 6. Root | in progress: iPadOS 17.7.11 root image on userdata |
+| --- | --- |
+| UEFI (fastboot boot) | works |
+| UniXNU menu | works |
+| Payload (`vendor_boot` ramdisk) | works |
+| DarwinBoot / XNU | works: reaches BSD init, boots iPadOS to the desktop |
+| Display | works, CPU-composed framebuffer (~1.4 fps) |
+| Input | physical buttons and the Novatek touch controller as native IOServices |
+| GPU | **Adreno 735 GMU cold-starts and completes the full HFI startup** (2026-10-30); no CP/Metal yet |
+
+## GPU
+
+The GPU work is the current focus. All of it is hardware-verified except the last
+step, and the evidence is in the repository:
+
+- `docs/GPU-CLIFFS-MMIO.md` — the cliffs register map (this SoC is **not** register
+  compatible with SM8550/SM8650; the devicetree node names are leftovers).
+- `docs/GPU-GMU-MAP.md` — the GMU platform description derived from the device DTB.
+- `docs/GPU-PROBE-RUNBOOK.md` — probe modes 1–16, expected values and judgement trees.
+- `docs/GPU-PORT.md` — the phased plan and what is still missing.
+
+Milestones reached on hardware:
+
+1. CX power domain and the GPUCC clock tree (modes 4–6).
+2. GPU SMMU identity and the GMU's stage-1 SMMU context (mode 9).
+3. The five GMU memory blocks and the A735 firmware staged with its SHA verified (modes 7–8).
+4. **GMU cold start + full HFI startup**: `cold=0 ph=7 proto=0 fw=0x00000100 hfi=0x00000001`
+   (mode 11, 2026-10-30; the HFI startup's seven commands are acknowledged by the firmware).
+
+Two facts worth keeping:
+
+- The GMU firmware chip id is **`0x070b0000`**, recovered from the CM3 image itself
+  (it compares the `GMU_GENERAL_10` mirror against that literal). The catalog-less
+  formula gives `0x4303b000`, which the firmware rejects (`FW_INIT_RESULT=0x901`).
+- The board OPP/BCM policy is generated from the device's own downstream devicetree
+  (`qcom,gpu-pwrup-levels`-style nodes), not from another SKU.
+
+Known blocker: GX rail power-up. `gpu_cc_gx_gdsc`'s parent supply is the RPMh ARC
+voter `pm_v6c_s6_gfx_voter_level`; this port does not drive the RSC yet, so
+`CFG_GDSCR.POWER_UP_COMPLETE` never sets.
+
+## Build and boot
+
+The build and flashing procedures are the UniXNU ones; this repository only adds the
+board configuration (`board.toml`) and the device code under `package/`, `drivers/`,
+`kits/muyu` and `patches/`. In short:
+
+```bash
+# kernel, payload, vendor_boot (see AGENTS.md for the full sequence)
+cd UniXNU && python3.12 unixnu build kernel -D ../UniXNU-muyu \
+    --kernelcache out/ipsw/21H461/kernelcache.decompressed
+python3.12 unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
+    --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
+    --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr
+python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
+    --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_muyu.img
+```
+
+Requirements: unlocked bootloader, a wall charger for the experiments, and a full
+stock ROM for recovery. The iPadOS root image is **not** part of this repository.
 
 ## Hardware data
 
-- 12 GB RAM, UFS, Android 16 on a vendor 14 BSP, slot `_a`, unlocked bootloader.
-- `userdata`: `sda32`, 4 KiB LBA `0x2d3000`–`0x3b147fa` (225 GiB). Derive from the live GPT: this device's
-  `super` (`sda31`, 4 KiB `0x33000`–`0x2d2fff`) was enlarged once, which moved userdata 2.10 GiB later.
-  The BSP values `0x24c628`–`0x3a8b7fa` now point inside `super` and must not be used as-is.
-- Panel: 1840×2880 video-mode DSC (`Panel_KU1380_1840_2880_dsc.xml`).
-- Touch and pen: Novatek `NVT-ts-spi` on GENI SPI `0xa90000`, IRQ GPIO 129.
-- GPU: Adreno 735 (`qcom,adreno-gpu-gen7-11-0`); the native GPU driver knows only the Adreno 740.
+- SM8635 "cliffs", 12 GB RAM (device dependent), UFS, 4 KiB pages.
+- Display 1840×2880; Novatek `NVT-ts-spi` on GENI SPI `0xa90000`.
+- GPU: Adreno 735, `qcom,adreno-gpu-gen7-11-0`, GMU `gen71100` firmware.
+- `userdata` is the iPadOS root; the Android user data is gone.
 
-## Boot path
+## Safety
 
-The Brave ABL takes the generic ramdisk from `init_boot` for boot image v4 and
-ignores the ramdisk of a `fastboot boot` image, and `init_boot` is only 8 MiB.
-So, as on uke, the UniXNU payload is the **vendor ramdisk of `vendor_boot`**
-(96 MiB), built from the device's own `vendor_boot` with
-`scripts/patch-vendor-boot.py`, while the UEFI image is started with
-`fastboot boot`. Back up `vendor_boot` first (`fastboot reboot fastboot`,
-then `fastboot fetch vendor_boot_a`); flashing that backup restores Android.
+This is an experimental port on a device with an unlocked bootloader. It has no
+thermal management and no DVFS; long GPU experiments raise the temperature. Read
+`AGENTS.md` in the upstream workspace before flashing anything: it lists the
+operations that have previously bricked or wedged this tablet.
 
-## Building
+## License
 
-- Kernel: `.github/workflows/build-kernel.yml` on GitHub's macOS runners
-  (Xcode is required), against `Allenwdk/UniXNU` branch `uke`.
-- Firmware, payload and boot image: Linux, with a Mu-Silicium checkout that has
-  the `bravearkPkg` platform (`unixnu build firmware --uefi …`,
-  `unixnu bootimg --dtb <braveark.dtb> --ramdisk none`).
-
-No Apple, Qualcomm or Brave firmware, kernelcaches or images belong in this
-repository.
+Same license as UniXNU (BSD-2-Clause-Patent), see `LICENSE`.

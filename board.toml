@@ -1,5 +1,5 @@
-# Board description of the Brave Ark (KU1381, SM8635 cliffsp, QRD board), read by the unixnu build driver.
-# Derived from UniXNU-uke (Xiaomi Pad 7, SM7675): both are Palawan and share the SoC-level values below.
+# Board description of the Xiaomi Pad 7 Pro (muyu, SM8635 cliffs), read by the unixnu build driver.
+# Derived from UniXNU-braveark (same SM8635 SoC); the SoC-level values below are shared with it.
 
 [board]
 name = "muyu"
