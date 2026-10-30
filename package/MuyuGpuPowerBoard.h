@@ -55,6 +55,8 @@
 #define MGB_CC_CX_GDS_HW_CTRL 0x90a0       // gdsc.c polls PWR_ON here when gds_hw_ctrl is set
 #define MGB_CC_GX_BCR 0x9030
 #define MGB_CC_GX_GDSCR 0x9034
+#define MGB_CC_GX_CFG_GDSCR 0x9038         // gpu_cc_gx_gdsc is a "support-cfg-gdscr" GDSC:
+                                           // gdsc.c polls CFG_GDSCR bit16, not GDSCR bit31
 #define MGB_CC_AHB_CLK 0x90c8              // sheng: 0x911c
 #define MGB_CC_CRC_AHB_CLK 0x90cc
 #define MGB_CC_SLEEP_CLK 0x90dc
@@ -76,6 +78,8 @@
 #define MGB_GDSC_RETAIN_FF (1u << 11)
 #define MGB_GDSC_POLL_US 2000
 #define MGB_GDSC_PWR_ON (1u << 31)
+#define MGB_GDSC_POWER_UP_COMPLETE (1u << 16)   // CFG_GDSCR: the status bit POLL_CFG_GDSCR uses
+#define MGB_GDSC_POWER_DOWN_COMPLETE (1u << 15)
 #define MGB_GDSC_SW_COLLAPSE (1u << 0)
 #define MGB_GDSC_POWER_UP_COMPLETE (1u << 16)
 
@@ -399,6 +403,38 @@ static inline int mgb_power_cx(const struct mgb_io *io, struct mgb_result *r, ui
                   v | MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH | MGB_GDSC_RETAIN_FF)) return -1;
     if (io->delay_us) io->delay_us(io->cookie, 1);
     return mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_CX_GDSCR, gdscr_after) ? -1 : 1;
+}
+
+// GX main rail (gpu_cc_gx_gdsc). The DT node (soc/qcom,gdsc@3d9905c, reg 0x3d99034) has no
+// hw-ctrl-addr, so gdsc.c's non-hw sequence applies: clear SW_COLLAPSE, then poll PWR_ON in
+// the GDSCR itself. Same return codes as mgb_power_cx (1 = powered now, 0 = already on,
+// 2 = refused/timeout, -1 = I/O error).
+static inline int mgb_power_gx(const struct mgb_io *io, struct mgb_result *r, uint32_t *gdscr_after,
+                               unsigned *polls) {
+    uint32_t v = 0, cfg = 0;
+    *polls = 0;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &v)) return -1;
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_CFG_GDSCR, &cfg)) return -1;
+    if (cfg & MGB_GDSC_POWER_UP_COMPLETE) { *gdscr_after = v; return 0; }
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, v & ~MGB_GDSC_SW_COLLAPSE)) return -1;
+    if (io->delay_us) io->delay_us(io->cookie, 1);
+    for (unsigned waited = 0;; waited += 10) {
+        ++*polls;
+        if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_CFG_GDSCR, &cfg)) return -1;
+        if ((cfg & MGB_GDSC_POWER_UP_COMPLETE) || waited >= MGB_GDSC_POLL_US) break;
+        if (io->delay_us) io->delay_us(io->cookie, 10);
+    }
+    if (mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &v)) return -1;
+    *gdscr_after = v;
+    if (!(cfg & MGB_GDSC_POWER_UP_COMPLETE)) return 2;
+    // v was re-read after power-up: writing the pre-enable value here would carry
+    // SW_COLLAPSE back in and power the domain straight down again.
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR,
+                  v | MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH)) return -1;
+    if (io->delay_us) io->delay_us(io->cookie, 1);
+    if (mgb_write(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR,
+                  v | MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH | MGB_GDSC_RETAIN_FF)) return -1;
+    return mgb_rd(io, r, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, gdscr_after) ? -1 : 1;
 }
 
 // Re-run the SMMU and GPU stages after power/clock bring-up: mgb_run evaluates them before CX exists, so

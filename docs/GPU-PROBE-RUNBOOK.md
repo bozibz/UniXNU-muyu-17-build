@@ -431,3 +431,48 @@ python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_
 | 失败对照 | `logs/2026-10-30-18-39-31-476.jpg` | `cold=6 ph=5 fw=00000901` |
 
 回滚：`tools/muyu-flash-mode.sh xnu fw/vendor_boot_btn2.img`（能进 iOS 的保底镜像）。
+
+## 12. mode 12–16：GX 上电链路（2026-10-30，**卡在 RPMh 电压投票**）
+
+> **一句话**：GMU 之后的第一件事是让 GX 电源域起来。五轮上机把寄存器写法、OOB 位、
+> 轮询时长、gx_clkctl GDSC 全部排除，最后定位到：**`gpu_cc_gx_gdsc` 的 parent-supply 是
+> RPMh ARC regulator `pm_v6c_s6_gfx_voter_level`，没有 CPU 侧 RSC 驱动去使能它，
+> 所以 `CFG_GDSCR.POWER_UP_COMPLETE` 永远不置位。** 完整证据在
+> `HANDOFF-2026-10-29.md` §20。
+
+### 12.1 mode 一览
+
+| mode | 做什么 | 结果 |
+| --- | --- | --- |
+| 12 | mode 11 + OOB GPU_SET（非 legacy 30/31，20 ms） | `ack=0`，`st 3>2`（GDSC 的 power-off 位清了） |
+| 13 | mode 12 + 1 s 轮询 + GMU log 32 字 | 仍 `ack=0`；log 是 `0x21` 记录 + `deadba55` |
+| 14 | mode 13 + `gx_clkctl_gx_gdsc`（0x3d68024）上电 | `0>0`：父电源没上，写不进去 |
+| 15 | mode 14 + 先抬主 GX GDSC（0x9034） | `power=2`（超时），`gdscr=6822f800`，rail `0>0` |
+| 16 | mode 15 + legacy OOB（16/24）+ gx_clkctl 块 dump | `cfg=050e0000`（bit16=0）、legacy `ack=0`、`blk=0/0/0/0` |
+
+### 12.2 关键寄存器语义（已修正）
+
+- `gpu_cc_gx_gdsc`（0x9034）是 **`qcom,support-cfg-gdscr`** 的 GDSC：
+  - 使能 = 清 `GDSCR.SW_COLLAPSE(bit0)`；
+  - **在位** = `CFG_GDSCR(0x9038).POWER_UP_COMPLETE(bit16)`，**不是** `GDSCR.PWR_ON(bit31)`；
+  - retention 位（bit14/13）写 **GDSCR**，且必须用**上电后重读**的值（用上电前的值会把域压回去）。
+- `gx_clkctl_gx_gdsc`（0x3d68024）：DT `status = "disabled"`，Linux 不启用；父电源没上时整块读 0。
+- OOB：非 legacy（set 30 / ack 31 / clear 31），legacy（set 16 / ack 24 / clear 24）；
+  ack 在 `GMU_GMU2HOST_INTR_INFO`，set/clear 写 `GMU_HOST2GMU_INTR_SET`，ack 清 `GMU_GMU2HOST_INTR_CLR`。
+
+### 12.3 判定树
+
+| 读数 | 含义 | 下一步 |
+| --- | --- | --- |
+| `gx power=2 cfg=...`（bit16=0） | GDSC 没完成上电 | 先查 parent-supply（RPMh voter） |
+| `rail ... 0>0` | gx_clkctl 块不可访问 | 同上，父电源 |
+| `ack=0`（两套位、1 s） | GMU 不会在 GX 不可用时 ack | 先解决供电，再谈 OOB |
+| `on=1` 且 `st=0` | GX 上电成功 | 读 `RBBM_STATUS`/GPU ID，进 SQE/ZAP |
+
+### 12.4 校验
+
+```bash
+python3 UniXNU-muyu/scripts/check-muyu-gx-host.py      # 寄存器/位 + 主机用例 + aarch64
+python3 UniXNU-muyu/scripts/check-muyu-gpu-power-host.py   # 19 个 power 用例（含 GX）
+python3 UniXNU-muyu/scripts/check-muyu-gpu-mmio.py         # 新增 CGF_GDSCR 常量
+```

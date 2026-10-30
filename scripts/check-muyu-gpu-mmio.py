@@ -269,6 +269,7 @@ def main(argv):
             ("MGB_GCC_PLL_VOTE", 0x00152000, 0x00100000 + GCC_GPLL0_VOTE_REG),
             ("MGB_CC_CX_GDSCR", 0, 0x908C),
             ("MGB_CC_GX_GDSCR", 0, 0x9034),
+            ("MGB_CC_GX_CFG_GDSCR", 0, 0x9038),
             ("MGB_CC_CX_GDS_HW_CTRL", 0, 0x90A0),
             ("MGB_CC_AHB_CLK", 0, GPUCC_CLOCKS["gpu_cc_ahb_clk"][1]),
             ("MGB_CC_CX_GMU_CLK", 0, GPUCC_CLOCKS["gpu_cc_cx_gmu_clk"][1]),

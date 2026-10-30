@@ -187,6 +187,7 @@ struct bank {
     unsigned writes, violations;
     int lock_never;        // PLL1 never reports LOCK_DET
     int cx_stuck;          // the CX domain never reports PWR_ON
+    int gx_stuck;          // the GX domain never reports PWR_ON
     int root_off_stuck;    // RCG never leaves ROOT_OFF
     int update_stuck;      // CMD_UPDATE never clears
 };
@@ -224,6 +225,13 @@ static int bwr(void *c, unsigned w, uint32_t o, uint32_t v) {
     case MGB_WIN_GCC_VOTE: b->gccv[o / 4] = v; return 0;
     case MGB_WIN_GPUCC:
         b->cc[o / 4] = v;
+        if (o == MGB_CC_GX_GDSCR) {
+            // POLL_CFG_GDSCR: status is CFG_GDSCR bit16, not GDSCR bit31.
+            if (!(v & MGB_GDSC_SW_COLLAPSE) && !b->gx_stuck)
+                b->cc[MGB_CC_GX_CFG_GDSCR / 4] |= MGB_GDSC_POWER_UP_COMPLETE;
+            else
+                b->cc[MGB_CC_GX_CFG_GDSCR / 4] &= ~MGB_GDSC_POWER_UP_COMPLETE;
+        }
         if (o == MGB_CC_CX_GDSCR) {
             if (!(v & MGB_GDSC_SW_COLLAPSE) && !b->cx_stuck) {
                 b->cc[o / 4] |= MGB_GDSC_PWR_ON;
@@ -330,6 +338,41 @@ static void test_cx_never_powers(void) {
 }
 
 
+static void test_gx_already_on(void) {
+    struct bank b; bank_ready(&b);
+    b.cc[MGB_CC_GX_GDSCR / 4] = 0x800u;
+    b.cc[MGB_CC_GX_CFG_GDSCR / 4] = MGB_GDSC_POWER_UP_COMPLETE;
+    struct mgb_io io = { &b, brd, bwr, NULL };
+    struct mgb_result r; uint32_t gdscr = 0; unsigned polls = 0;
+    __builtin_memset(&r, 0, sizeof r);
+    CHECK(mgb_power_gx(&io, &r, &gdscr, &polls) == 0);
+    CHECK(b.writes == 0 && polls == 0);
+}
+
+static void test_gx_turns_on_with_retention(void) {
+    struct bank b; bank_ready(&b);
+    b.cc[MGB_CC_GX_GDSCR / 4] = MGB_GDSC_SW_COLLAPSE | 0x800u;
+    struct mgb_io io = { &b, brd, bwr, NULL };
+    struct mgb_result r; uint32_t gdscr = 0; unsigned polls = 0;
+    __builtin_memset(&r, 0, sizeof r);
+    CHECK(mgb_power_gx(&io, &r, &gdscr, &polls) == 1);
+    // Power state lives in CFG_GDSCR bit16 for this GDSC; gdscr carries the retention bits.
+    CHECK(b.cc[MGB_CC_GX_CFG_GDSCR / 4] & MGB_GDSC_POWER_UP_COMPLETE);
+    CHECK((gdscr & (MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH | MGB_GDSC_RETAIN_FF)) ==
+          (MGB_GDSC_RETAIN_MEM | MGB_GDSC_RETAIN_PERIPH | MGB_GDSC_RETAIN_FF));
+    CHECK(polls >= 1 && b.writes == 3);
+}
+
+static void test_gx_never_powers(void) {
+    struct bank b; bank_ready(&b); b.gx_stuck = 1;
+    b.cc[MGB_CC_GX_GDSCR / 4] = MGB_GDSC_SW_COLLAPSE | 0x800u;
+    struct mgb_io io = { &b, brd, bwr, NULL };
+    struct mgb_result r; uint32_t gdscr = 0; unsigned polls = 0;
+    __builtin_memset(&r, 0, sizeof r);
+    CHECK(mgb_power_gx(&io, &r, &gdscr, &polls) == 2);
+    CHECK(!(b.cc[MGB_CC_GX_CFG_GDSCR / 4] & MGB_GDSC_POWER_UP_COMPLETE) && polls >= 1 && polls <= 210);
+}
+
 static void test_observe_powered_reads_smmu_and_gpu(void) {
     struct bank b; bank_ready(&b);
     b.cc[MGB_CC_CX_GDSCR / 4] = MGB_GDSC_PWR_ON;
@@ -364,12 +407,15 @@ int main(void) {
     test_clock_bringup_requires_readable_gpucc();
     test_clock_bringup_reports_lock_timeout();
     test_clock_bringup_reports_rcg_timeout();
+    test_gx_already_on();
+    test_gx_turns_on_with_retention();
+    test_gx_never_powers();
     test_cx_already_on();
     test_cx_turns_on_with_retention();
     test_cx_never_powers();
     test_observe_powered_reads_smmu_and_gpu();
     test_observe_powered_gates_on_state();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
-    printf("PASS: 16 cases, cliffs offsets, gating, one sanctioned write, clock bring-up order and timeouts, CX power\n");
+    printf("PASS: 19 cases, cliffs offsets, gating, one sanctioned write, clock bring-up order and timeouts, CX and GX power\n");
     return 0;
 }
