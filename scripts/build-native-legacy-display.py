@@ -248,6 +248,12 @@ run([sys.executable,str(ROOT/'scripts/gen-muyu-gmu-source.py'),'--out',str(ROOT/
      '--dtb',str(_W/'fw/stock/dtb_3.dtb'),'--regs',str(_W/'fw/android-harvest/msm-regs'),
      '--driver',str(_W/'fw/android-harvest/msm-drv/a6xx_gmu.c'),
      '--firmware',str(_W/'fw/gpu-firmware/gen71100_gmu.bin')])
+# The board OPP/BCM policy (ShengGmuVotesSource.h) and the AOP command-db reservation/version
+# (ShengGmuCommandDbSource.h), both generated from this board's own DTB + the pinned A7xx catalog.
+# ShengGmuVotes.c and ShengGmuCommandDb.c include these, so they must exist before they compile.
+print(run([sys.executable,str(_W/'UniXNU-muyu/scripts/gen-muyu-gmu-votes.py'),
+           '--out',str(ROOT/'build/gpu'),'--dtb',str(_W/'fw/stock/dtb_3.dtb'),
+           '--catalog',str(_W/'fw/android-harvest/msm-drv/a7xx_catalog.c')],text=True),end='')
 gmu_fw_c=ROOT/'build/gpu/MuyuGmuFirmware.c';gmu_fw_obj=touch_dir/'MuyuGmuFirmware.o'
 adreno_fw_c=ROOT/'kits/AdrenoFirmware/AdrenoFirmware.c';adreno_fw_obj=touch_dir/'AdrenoFirmware.o'
 for _src,_obj in ((gmu_fw_c,gmu_fw_obj),(adreno_fw_c,adreno_fw_obj)):
@@ -273,6 +279,16 @@ for _src in smmu_sources:
     _obj=smmu_dir/(_src.stem+'.o');smmu_objs.append(_obj)
     run([str(_src) if str(arg)==str(process_source) else str(_obj) if str(arg)==str(process_obj) else arg for arg in process_cmd]+smmu_include,cwd=pr['directory'])
 gmu_include=['-I',str(ROOT/'kits/AdrenoFirmware'),'-I',str(ROOT/'kits/ArmSmmu4K'),'-I',str(ROOT/'build/gpu')]
+# mode 11's cold start: the shared ShengGmu.c lifecycle plus the board vote/command-db units and
+# the HFI kit they call. Plain C, same kernel recipe as the units above.
+cold_dir=OUT/'gmu-cold';cold_dir.mkdir(exist_ok=True)
+cold_sources=[ROOT/'kits/muyu/ShengGmu.c',ROOT/'kits/muyu/ShengGmuVotes.c',
+              ROOT/'kits/muyu/ShengGmuCommandDb.c',ROOT/'kits/AdrenoFirmware/AdrenoHfi.c',
+              ROOT/'kits/AdrenoFirmware/AdrenoHfiStartup.c',ROOT/'kits/AdrenoFirmware/AdrenoHfiVotes.c']
+cold_objs=[]
+for _src in cold_sources:
+    _obj=cold_dir/(_src.stem+'.o');cold_objs.append(_obj)
+    run([str(_src) if str(arg)==str(process_source) else str(_obj) if str(arg)==str(process_obj) else arg for arg in process_cmd]+gmu_include,cwd=pr['directory'])
 run([str(gpupower_cpp) if str(arg)==str(source) else str(gpupower_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+gmu_include,cwd=r['directory'])
 # The driver lives in drivers/NativeNovatekTouch but needs the GENI SPI library and the board headers;
 # give it those two include directories explicitly instead of relative paths through symlinked trees.
@@ -308,14 +324,17 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs])
+     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs,*cold_objs])
 sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
          ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
          ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
          ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h',
-         ROOT/'kits/muyu/MuyuGmuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.h',ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/ShengGpuSmmu.h',*smmu_sources]
+         ROOT/'kits/muyu/MuyuGmuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.h',ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/ShengGpuSmmu.h',*smmu_sources,
+         *cold_sources,ROOT/'kits/muyu/ShengGmu.h',ROOT/'kits/muyu/ShengGmuVotes.h',ROOT/'kits/muyu/ShengGmuCommandDb.h',
+         ROOT/'build/gpu/ShengGmuVotesSource.h',ROOT/'build/gpu/ShengGmuCommandDbSource.h',
+         ROOT/'kits/muyu/MuyuGmuVotesHostTests.c']
 print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeGOPPresenter'],text=True),end='')
 gop=ROOT/'build/native-gop-presenter';gop_late=gop/'NativeGOPPresenter.late.o'
 run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func','--globalize-symbol=__GLOBAL__sub_I_NativeGOPPresenter.cpp',

@@ -240,7 +240,7 @@ def gpu_chip_id(dtb, windows):
     magic, _total, off_struct, off_strings = struct.unpack_from(">4sIII", data, 0)
     if magic != b"\xd0\x0d\xfe\xed":
         raise SystemExit("not a dtb")
-    pos, stack, chip = off_struct, [], None
+    pos, stack, chip, compat = off_struct, [], None, None
 
     def name_at(off):
         e = data.index(b"\0", off_strings + off)
@@ -260,13 +260,58 @@ def gpu_chip_id(dtb, windows):
             pos += 8
             blob = data[pos:pos + length]
             pos = (pos + length + 3) & ~3
-            if name_at(nameoff) == "qcom,chipid" and blob:
+            prop = name_at(nameoff)
+            if prop == "qcom,chipid" and blob:
                 chip = struct.unpack(">I", blob[:4])[0]
+            elif prop == "compatible" and b"adreno-gpu-gen" in blob:
+                compat = blob.split(b"\0")[0].decode()
         elif tok == 9:
             break
-    if chip is None:
-        raise SystemExit("DT has no qcom,chipid")
-    return chip, platform
+    if chip is None or compat is None:
+        raise SystemExit("DT has no qcom,chipid or Adreno compatible")
+    return chip, compat, platform
+
+
+def gmu_fw_chip_id(firmware, compatible):
+    """The value the CM3 image itself expects in GMU_GENERAL_10.
+
+    a6xx_gmu.c massages the GPU chip id only when the catalog has no .gmu_chipid;
+    muyu has no catalog entry, but that formula is demonstrably not what this
+    firmware accepts (it aborted FW_INIT at 0x901 on the first attempt,
+    HANDOFF-2026-10-29 §19). The image contains its own chip-id check: each
+    variant loads the GMU's chip-id mirror and compares it to a literal, e.g.
+
+        ldr r0, =0x10004104   ; chip id mirror
+        ldr r0, [r0]
+        ldr r1, =0x070b0000   ; this GPU's id
+        cmp r0, r1
+
+    so the supported ids are exactly the literals that follow 0x10004104. Pick
+    the one whose gen/minor/sub field equals the DT's
+    "qcom,adreno-gpu-gen7-11-0" and require exactly one match; anything else is
+    a firmware/DT disagreement and must stop the build.
+    """
+    import struct
+    match = re.fullmatch(r"qcom,adreno-gpu-gen(\d+)-(\d+)-(\d+)", compatible)
+    if not match:
+        raise SystemExit(f"unrecognised Adreno compatible {compatible!r}")
+    major, minor, sub = (int(v) for v in match.groups())
+    marker = struct.pack("<I", 0x10004104)
+    found = set()
+    at = 0
+    while True:
+        at = firmware.find(marker, at + 1)
+        if at < 0:
+            break
+        if at + 8 <= len(firmware):
+            value = struct.unpack_from("<I", firmware, at + 4)[0]
+            if (value >> 24) == major and ((value >> 16) & 0xFF) == minor \
+                    and ((value >> 8) & 0xFF) == sub:
+                found.add(value)
+    if len(found) != 1:
+        raise SystemExit(f"{compatible}: firmware has {len(found)} chip-id literals "
+                         f"({', '.join(hex(v) for v in sorted(found))}), expected one")
+    return found.pop(), (major, minor, sub)
 
 
 def main(argv):
@@ -281,15 +326,11 @@ def main(argv):
     regs_dir = Path(args.regs)
     regs, ao_mask, cm3_mask = parse_xmls([regs_dir / "a6xx.xml", regs_dir / "a6xx_gmu.xml"])
     setup = parse_setup(args.driver, regs)
-    chip, platform = gpu_chip_id(Path(args.dtb), None)
+    chip, compat, platform = gpu_chip_id(Path(args.dtb), None)
     windows = [(w["base"], w["size"]) for w in platform["windows"]]
     delta = windows[0][0] - windows[3][0]
     firmware = Path(args.firmware).read_bytes()
-    # GMU packs major<<16 | minor<<12 | patch<<8; Linux derives it from the GPU chip id
-    # when the catalog has no .gmu_chipid (a6xx_gmu.c, the GENERAL_10 write).
-    fw_chip = chip & 0xFFFF0000
-    fw_chip |= (chip << 4) & 0xF000
-    fw_chip |= (chip << 8) & 0x0F00
+    fw_chip, gpu_gen = gmu_fw_chip_id(firmware, compat)
 
     for window, offset, _value in setup:
         if offset + 4 > windows[window][1]:
@@ -327,7 +368,9 @@ def main(argv):
         lines.append("  " + ",".join(f"0x{b:02x}" for b in firmware[i:i + 16]) + ",")
     lines += ["};", f"const size_t muyu_gmu_firmware_size = {len(firmware)};", ""]
     fw_c.write_text("\n".join(lines))
-    report = dict(gpu_chip_id=f"{chip:#x}", gmu_fw_chip_id=f"{fw_chip:#x}",
+    report = dict(gpu_chip_id=f"{chip:#x}", gpu_compatible=compat,
+                  gpu_gen=".".join(str(v) for v in gpu_gen), gmu_fw_chip_id=f"{fw_chip:#x}",
+                  gmu_fw_chip_id_source="chip-id compare literal in the CM3 image (0x10004104 + value)",
                   firmware=dict(bytes=len(firmware), sha256=hashlib.sha256(firmware).hexdigest()),
                   core_gpu_delta=f"{delta:#x}", windows=[{"enum": e, "name": n, "base": f"{b:#x}", "bytes": f"{s:#x}"}
                                                          for e, n, (b, s) in zip(WINDOW_ENUM, WINDOW_ORDER, windows)],
@@ -347,7 +390,7 @@ def main(argv):
         if name in ("REG_GMU_CM3_ITCM_START", "REG_GMU_CM3_DTCM_START", "REG_GMU_CM3_SYSRESET",
                     "REG_GMU_CM3_FW_INIT_RESULT", "REG_GMU_HFI_CTRL_STATUS", "REG_GMU_GENERAL_10"):
             print(f"  {name:34s} {value:#x}")
-    print(f"chip id {chip:#x}, gmu fw chip id {fw_chip:#x}, delta {delta:#x}")
+    print(f"chip id {chip:#x} ({compat}), gmu fw chip id {fw_chip:#x}, delta {delta:#x}")
     print(f"RSC/PDC setup writes: {len(setup)} (first {{win,off,val}} = {setup[0]})")
     print(f"wrote {header} and {out / 'muyu-gmu-source-report.json'}")
     return 0

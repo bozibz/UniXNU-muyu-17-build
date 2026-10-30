@@ -305,3 +305,129 @@ python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_
 
 `fw/vendor_boot_gpupower9.img` = `6e3f28accc025aae40e4e9e24a8738f784da9d82560952bfe379daf80abecd9b`
 （内核 `32d619a1c4d823f58278dfdd2737b3c17bf564a506ba439e45583b2ad2dab84d`，2026-10-29 21:15 上机）。
+
+## 11. mode 11：GMU 冷启动（2026-10-30，**已成功**）
+
+> **一句话**：mode 11 在 mode 10 之后把板级 OPP/BCM 表从 AOP cmd-db 重建，然后跑上游
+> `ShengGmuColdStart()`。**2026-10-30 18:46 第一次成功**：`cold=0 ph=7 proto=0 fw=00000100
+> hfi=00000001`，即固件加载、TCM 回读、RSC/PDC、CM3 释放、`FW_INIT` 与**七条 HFI 命令全部收到真 ACK**。
+>
+> 但第一版（`gpupower11`）在 `FW_INIT_RESULT` 超时（`cold=6 fw=00000901`），根因是**固件 chip id 用错**。
+> 两轮的过程写在 `HANDOFF-2026-10-29.md` §19；**这一节只留可复现的做法与判定**。
+
+### 11.1 mode 11 的输入（全部已有，缺一不可）
+
+| 输入 | 来源 | 生成/校验 |
+| --- | --- | --- |
+| 五块 MMIO 窗口 | `fw/stock/dtb_3.dtb` | `scripts/gen-muyu-gmu-source.py` → `ShengGmuSource.h` |
+| 37 个 GMU 寄存器偏移 + 19 条 RSC/PDC + 固件 sha | 同上 + `a6xx_gmu.c`/`a6xx.xml` | 同上 |
+| **固件 chip id `0x070b0000`** | **CM3 镜像自带的 chip-id 比较字面量**（`0x10004104` 后跟 `0x070b0000`）| 同上（见 §11.4）|
+| 五块 GMU 内存 + IOVA | mode 7 分配、mode 9 映射 | `MuyuGmuSmmu.c` / `ShengGmu.c` 的尺寸表 |
+| **板级 OPP/BCM 策略** | 本机 DT 的 `qcom,gpu-pwrlevels` / `qcom,gmu-freq-table` + 主线的 A7xx 公共 BCM | `scripts/gen-muyu-gmu-votes.py` → `ShengGmuVotesSource.h` |
+| AOP cmd-db | 本机 DT 的 `aop_cmd_db_region@81c60000`（+0x20000）| `ShengGmuCommandDbSource.h`（base/bytes/version=1） |
+| stage-1 SMMU | mode 9（`start=0 mapped=5`）| `MuyuGmuSmmu.c` |
+
+生成器与校验（**改任何 GPU 代码前先跑，全绿才动手**）：
+
+```bash
+python3 UniXNU-muyu/scripts/gen-muyu-gmu-votes.py     # OPP/BCM/cmd-db 头
+python3 UniXNU-muyu/scripts/check-muyu-gmu-votes.py   # 生成物对 DT、主机用例、aarch64 编译
+python3 UniXNU-muyu/scripts/check-muyu-gmu-smmu.py
+python3 UniXNU-muyu/scripts/check-muyu-gpu-mmio.py
+python3 UniXNU-muyu/scripts/check-muyu-gpu-power-host.py
+```
+
+### 11.2 它到底写什么
+
+`ShengGmuColdStart()` = `ShengGmuLoadAndStartHfi()` + `AdrenoHfiStartupRun()`：
+
+1. 复核 CM3 在复位、TCM retention 清、RSC 空闲、HFI 无旧 ready；
+2. 19 条 RSC/PDC 写 + FALNEXT/FAL + `TCM_RET_CNTL=1`；
+3. 清零 icache/dummy/debug/log、初始化 HFI 队列、按 15 个 block 把 80,680 B 固件写进 ITCM/ICACHE/DTCM；
+4. **逐字读回** TCM 与 icache 内容比对（CPU 侧）；
+5. 写 `FW_INIT_RESULT=0`、`BOOT_CONFIG=2`、`HFI_QTBL_ADDR/INFO`、`AHB_FENCE_RANGE_0`、`CM3_CFG=0x4052`、
+   `GENERAL_10=chip id`、`GENERAL_8=log iova|3`、GBIF QSB side、`SYS_BUS_CONFIG/ICACHE/DCACHE=1`；
+6. 读 DTCM+0xff8 选 mask（本机 `dtcm=0x3c0ab2a5 > 0x20010004` ⇒ mask `0x1ff`、ready `0x100`）；
+7. `SYSRESET=0` 释放 CM3，轮询 `FW_INIT_RESULT`（上限 10 ms，见 §11.5）；
+8. 写 `HFI_CTRL_INIT=1`，轮询 `HFI_CTRL_STATUS&1`；
+9. 七条 HFI 消息（performance / bandwidth / core start / start 等），每条等真 ACK。
+
+### 11.3 期望值与判定（本机实测）
+
+```
+gmu cold guard=1 map=0 db=0 votes=0 cold=0 ph=7 proto=0 fw=00000100 hfi=00000001
+gmu cold hash=1 reset=0 ready=1/1 rw=259/176 polls=17 ao=00000000 cm3=00000001 cfg=12/3/7/0
+```
+
+| 字段 | 成功值 | 含义 |
+| --- | --- | --- |
+| `guard` | 1 | 前置全过（mode 9 `mapped=5` + 六个窗口 + 五块内存）|
+| `map` | 0 | 窗口物理/长度与生成的 `sheng_gmu_window_*` 逐字节一致 |
+| `db` / `votes` | 0 / 0 | cmd-db 解析成功（version=1）/ 板级 OPP/BCM 构造成功 |
+| `cold` / `ph` | 0 / 7 | `ShengGmuSuccess`，最后阶段 = HFI ready |
+| `proto` | 0 | `AdrenoHfiStartupSuccess`：**七条命令都有 ACK** |
+| `fw` / `hfi` | `00000100` / `00000001` | 固件 init 完成 / HFI 队列就绪 |
+| `hash` / `reset` | 1 / 0 | 固件整份 sha 校验过 / CM3 已不在复位 |
+| `rw` / `polls` | 259 / 176 / 17 | I/O 次数（本板基线）|
+| `ao` / `cm3` | 0 / 1 | 无致命中断；`cm3=1` 是 HFI 的 ack 位，不是故障（fatal mask `0x800000`）|
+| `cfg` | 12/3/7/0 | GPU OPP 12（含 off）/ GMU OPP 3 / 带宽 7（含 off）/ ACD 0 |
+| `dtcm` | `0x3c0ab2a5` | 决定 FW_INIT 的 mask/ready；**冷启动后可能略有变化**（10-29 记的是 `0x3c0aa2f5`）|
+
+**失败判定**：
+
+| 读数 | 含义 | 处置 |
+| --- | --- | --- |
+| `cold=6 ph=5 fw=00000901` | `FW_INIT_RESULT` 超时；**先怀疑固件 chip id** | 见 §11.4，不要先怀疑 SMMU |
+| `cold=5 ph=4` | 配置寄存器读回不一致（`FW_INIT_RESULT/BOOT_CONFIG/QTBL/CM3_CFG/GENERAL_10…`）| 对照 §11.2 第 5 步 |
+| `cold=3` | GMU 不在复位 / RSC 忙 / HFI 残留 ready | mode 10 的 `gmu win` 行 |
+| `cold=2` | 固件 sha 或 15-block 计划不符 | `gmu memory digest` 的 sha 前 4 字节应为 `435c7bac` |
+| `cold=1` | 参数/窗口/内存尺寸不符 | `map` 与 `guard` |
+| `cold=9` | AO/CM3 致命位置位 | 看 `ao`/`cm3` |
+
+### 11.4 ★ 固件 chip id：`0x070b0000`，不是公式算的 `0x4303b000`
+
+第一版用 Linux 的"catalog 没有 `.gmu_chipid` 时把 GPU chip id 打包"公式，得到 `0x4303b000`，
+结果 `FW_INIT_RESULT=0x901`、10 ms 超时。用 `llvm-mc --triple=thumbv7m` 反汇编 CM3 镜像发现它自己带
+chip-id 检查：
+
+```
+ldr r0, =0x10004104   ; GMU chip-id 镜像
+ldr r0, [r0]
+ldr r1, =0x070b0000   ; 本 GPU 期望值
+cmp r0, r1
+```
+
+`0x070b0000` = gen7 / minor `0x0b`(=11) / sub 0，与 DT `qcom,adreno-gpu-gen7-11-0` 完全对应。
+`gen-muyu-gmu-source.py` 现在**从镜像里**取这个值：扫 `0x10004104` 后跟的字面量，按
+gen/minor/sub 过滤，要求**恰好一个**匹配，否则构建失败。写死的旧结论已作废。
+
+### 11.5 已知限制（不是本轮的问题，但要知道）
+
+- `ShengGmu.c` 的 `poll()` 把**单次轮询上限写死成 10 ms**（Linux 对 `FW_INIT` 给 100 ms）。
+  本机固件在 <10 ms 内完成，所以没挡；若以后换固件出现"总是差一点"，先看这里，不要改板级代码。
+- ACD / IFPC 都**关着**（`cfg=…/0`）：ACD 需要 AOSS/ACD 前置，IFPC 需要 power-collapse 路径。
+  开它们之前要单独取证。
+- 成功只表示 **GMU 固件与 HFI 起来了**，**不表示** SQE/ZAP 已加载、GPU 已初始化、能提交命令。
+
+### 11.6 镜像与复现
+
+```bash
+# 内核（改了 package/ 里任何东西都要重来）
+cd UniXNU && python3.12 unixnu build kernel -D ../UniXNU-muyu \
+   --kernelcache out/ipsw/21H461/kernelcache.decompressed
+# payload + vendor_boot（mode 11）
+python3.12 unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
+   --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
+   --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr --kernel-arg=muyu-gpu-power=11
+python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
+   --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_gpupower11b.img
+```
+
+| 镜像 | sha256 | 结果 |
+| --- | --- | --- |
+| `fw/vendor_boot_gpupower11.img` | `fa1e6755a966076a4200589dd61e645c23a205b10ba1d29f4a040a6f56064b52` | 第一版（chip id 公式值）→ `cold=6 fw=0x901` |
+| **`fw/vendor_boot_gpupower11b.img`** | **`f6c85a99ec958c33628dd52f8c14e5f532c2f30b86048881d2039bcca15846f3`** | **成功**（内核 `c4eaebd5…`）|
+| 照片 | `logs/2026-10-30-18-46-34-306.jpg` | 成功摘要 |
+| 失败对照 | `logs/2026-10-30-18-39-31-476.jpg` | `cold=6 ph=5 fw=00000901` |
+
+回滚：`tools/muyu-flash-mode.sh xnu fw/vendor_boot_btn2.img`（能进 iOS 的保底镜像）。
