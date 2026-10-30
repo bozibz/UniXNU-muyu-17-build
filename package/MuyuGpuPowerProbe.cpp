@@ -7,6 +7,10 @@
 //                      Nothing is written.
 //   muyu-gpu-power=2   as 1, plus the single write Linux's gcc_cliffs probe makes: enable
 //                      gcc_gpu_cfg_ahb_clk (0x71004 bit 0) if it is clear.
+//   muyu-gpu-power=10  mode 9, then a read-only survey of the five GMU windows, the CM3/HFI
+//                      state and the AOP command-db. No GMU register is written: the cold
+//                      start also needs the board OPP/BCM policy, which this board does not
+//                      have yet (see docs/GPU-GMU-MAP.md).
 //   muyu-gpu-power=9   mode 8, then the GMU's own stage-1 SMMU: read the identity, enable the
 //                      global policy ArmSmmu4K requires, lease a free SMR slot for SID 5, build a
 //                      4 MiB native4K table pool, start context bank 2 and map the five GMU
@@ -131,6 +135,47 @@ int smmuWrite64(void *, size_t at, uint64_t v) {
 }
 int smmuBarrier(void *) { __asm__ volatile("dsb sy" ::: "memory"); return 0; }
 
+// The five GMU windows ShengGmuBindMmio() requires, verbatim from the generated
+// ShengGmuSource.h (sheng_gmu_window_physical/bytes): core, rscc, pdc, gpu, cx_misc.
+// Only read here; the cold start itself is not part of this probe yet.
+enum { MGW_CORE = 0, MGW_RSCC, MGW_PDC, MGW_CXMISC, MGW_CMDDB, MGW_COUNT };
+struct GmuWindow {
+    uint64_t physical;
+    uint64_t bytes;
+    IOMemoryDescriptor *descriptor;
+    IOMemoryMap *map;
+    volatile uint8_t *base;
+};
+GmuWindow gGmuWindows[MGW_COUNT] = {
+    {0x3d68000, 0x37000, nullptr, nullptr, nullptr},   // GMU core (CM3/HFI), ShengGmuCore
+    {0x3d50000, 0x10000, nullptr, nullptr, nullptr},   // RSCC
+    {0xb280000, 0x10000, nullptr, nullptr, nullptr},   // GPU PDC
+    {0x3d9e000, 0x1000, nullptr, nullptr, nullptr},    // CX misc (TCM retention)
+    {0x81c60000, 0x20000, nullptr, nullptr, nullptr},  // AOP cmd-db (RAM, not MMIO)
+};
+
+bool mapGmuWindow(unsigned index) {
+    GmuWindow &w = gGmuWindows[index];
+    if (w.base) return true;
+    w.descriptor = IOMemoryDescriptor::withPhysicalAddress(w.physical, (IOByteCount)w.bytes,
+                                                           kIODirectionInOut);
+    if (!w.descriptor) return false;
+    w.map = w.descriptor->map(kIOMapAnywhere);
+    if (!w.map) {
+        OSSafeReleaseNULL(w.descriptor);
+        return false;
+    }
+    w.base = reinterpret_cast<volatile uint8_t *>(w.map->getVirtualAddress());
+    return w.base != nullptr;
+}
+
+int gmuRead32(unsigned window, uint32_t offset, uint32_t *out) {
+    if (window >= MGW_COUNT || !out || (offset & 3) ||
+        (uint64_t)offset + 4 > gGmuWindows[window].bytes) return -1;
+    *out = *reinterpret_cast<volatile uint32_t *>(gGmuWindows[window].base + offset);
+    return 0;
+}
+
 // Clean the range to the point of coherency before the SMMU walks it and before the GMU
 // reads the staged image. A barrier alone is not a cache clean (ArmSmmu4KLiveVisibility).
 int publishCache(void *, uint64_t physical, size_t bytes) {
@@ -145,7 +190,7 @@ int publishCache(void *, uint64_t physical, size_t bytes) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 9) mode = 9;
+    if (mode > 10) mode = 10;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -371,6 +416,47 @@ extern "C" void muyu_gpu_power_probe(void) {
               r.gfsr, gmuSmrValid, (unsigned long long)gmuPoolPhysical);
     }
 
+    // mode 10: read-only GMU survey. Everything a cold start checks first -- CM3 reset,
+    // TCM retention, RSCC idle, the PDC sequencer, HFI status, the DTCM version word and
+    // the AOP cmd-db -- without writing a single GMU register. Mode 9 has already put the
+    // GMU's stage-1 SMMU up, which is the cold start's only other prerequisite.
+    // core offsets are a6xx dword offsets minus SHENG_GMU_CORE_GPU_DELTA (0x68000).
+    static unsigned gmuWinMapped = 0, gmuDbNonZero = 0;
+    static uint32_t gmuState[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static uint32_t gmuDbWord[4] = {0, 0, 0, 0};
+    static uint8_t gmuDbDigest[32] = {0};
+    if (mode >= 10) {
+        for (unsigned i = 0; i < MGW_COUNT; ++i)
+            if (mapGmuWindow(i)) gmuWinMapped |= 1u << i;
+        // 0 CM3_SYSRESET (1 = held in reset), 1 FW_INIT_RESULT, 2 HFI_CTRL_STATUS,
+        // 3 CX_MISC_TCM_RET_CNTL, 4 RSCC_SEQ_BUSY, 5 PDC GPU_ENABLE_PDC,
+        // 6 PDC GPU_SEQ_START_ADDR, 7 DTCM+0xff8 (A735 revision word).
+        gmuRead32(MGW_CORE, 0x1f800u * 4u - 0x68000u, &gmuState[0]);
+        gmuRead32(MGW_CORE, 0x1f81cu * 4u - 0x68000u, &gmuState[1]);
+        gmuRead32(MGW_CORE, 0x1f980u * 4u - 0x68000u, &gmuState[2]);
+        gmuRead32(MGW_CXMISC, 0x39u * 4u, &gmuState[3]);
+        gmuRead32(MGW_RSCC, 0x101u * 4u, &gmuState[4]);
+        gmuRead32(MGW_PDC, 0x1140u * 4u, &gmuState[5]);
+        gmuRead32(MGW_PDC, 0x1148u * 4u, &gmuState[6]);
+        gmuRead32(MGW_CORE, (0x1c400u + 0xff8u) * 4u - 0x68000u, &gmuState[7]);
+        if (gGmuWindows[MGW_CMDDB].base) {
+            const volatile uint32_t *db = (const volatile uint32_t *)gGmuWindows[MGW_CMDDB].base;
+            for (unsigned i = 0; i < 4; ++i) gmuDbWord[i] = db[i];
+            for (unsigned i = 0; i < 0x1000 / 4; ++i)
+                if (db[i]) ++gmuDbNonZero;
+            SHA256_CTX dbCtx;
+            SHA256_Init(&dbCtx);
+            SHA256_Update(&dbCtx, (const void *)db, (size_t)gGmuWindows[MGW_CMDDB].bytes);
+            SHA256_Final(gmuDbDigest, &dbCtx);
+        }
+        IOLog("MUYU GPU POWER gmu survey mapped=%u reset=%08x fwinit=%08x hfi=%08x tcmret=%08x "
+              "rscc=%08x pdc=%08x/%08x dtcm=%08x\n", gmuWinMapped, gmuState[0], gmuState[1],
+              gmuState[2], gmuState[3], gmuState[4], gmuState[5], gmuState[6], gmuState[7]);
+        IOLog("MUYU GPU POWER gmu db sha=%02x%02x%02x%02x nz=%u w0=%08x w1=%08x w2=%08x w3=%08x\n",
+              gmuDbDigest[0], gmuDbDigest[1], gmuDbDigest[2], gmuDbDigest[3], gmuDbNonZero,
+              gmuDbWord[0], gmuDbWord[1], gmuDbWord[2], gmuDbWord[3]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -383,7 +469,9 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu memory digest %08x/%08x plan_sha/copied (mode 8)\n"
               "gmu smmu %s ph=%u prep=%u start=%u map=%u obs=%u tbl=%u leaf=%u cap=%u ctx=%08x\n"
               "gmu io id0=%08x id1=%08x id2=%08x id7=%08x scr0=%08x>%08x gfsr=%08x smr=%u slot=%u mapped=%u pub=%u berr=%u\n"
-              "gmu raw cb2=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x",
+              "gmu raw cb2=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x\n"
+              "gmu win mapped=%u reset=%08x fwinit=%08x hfi=%08x tcmret=%08x rscc=%08x pdc=%08x/%08x dtcm=%08x\n"
+              "gmu db sha=%02x%02x%02x%02x nz=%u w0=%08x w1=%08x w2=%08x w3=%08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
               r.io_error, r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi, r.pll_vote,
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
@@ -402,6 +490,10 @@ extern "C" void muyu_gpu_power_probe(void) {
               gmuId[0], gmuId[1], gmuId[2], gmuId[3], gmuRaw[6], gmuRaw[5], r.gfsr,
               gmuSmrValid, gmuSlot, gmuSummary.mapped, gmuSummary.map_published, gmuSmmuError,
               gmuRaw[0], gmuRaw[2], gmuRaw[3], gmuRaw[4],
-              (uint32_t)gmuPoolPhysical, (uint32_t)(gmuPoolPhysical >> 32));
+              (uint32_t)gmuPoolPhysical, (uint32_t)(gmuPoolPhysical >> 32),
+              gmuWinMapped, gmuState[0], gmuState[1], gmuState[2], gmuState[3], gmuState[4],
+              gmuState[5], gmuState[6], gmuState[7],
+              gmuDbDigest[0], gmuDbDigest[1], gmuDbDigest[2], gmuDbDigest[3], gmuDbNonZero,
+              gmuDbWord[0], gmuDbWord[1], gmuDbWord[2], gmuDbWord[3]);
     }
 }
