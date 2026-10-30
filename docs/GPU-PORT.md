@@ -93,9 +93,10 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
   37 个寄存器偏移来自 `a6xx.xml`/`a6xx_gmu.xml`；19 条 RSC/PDC 写入从 `a6xx_gmu.c`
   的 `a6xx_gmu_rpmh_init` 按 A735（a7xx、非 A740 family、`pdc_in_aop`）这条分支求值；
   窗口/`CORE_GPU_DELTA=0x68000` 来自 DT；固件 80,680 B + sha256 来自 `fw/gpu-firmware/`。
-  **假设项只有一个**：GMU firmware chip id，按 Linux 对无 `.gmu_chipid` 芯片的打包公式
-  从 `qcom,chipid=0x43030b00` 算出 **0x4303b000**（若错，会在 `FW_INIT_RESULT` 轮询阶段
-  干净地失败，不会误写别处）。
+  ~~**假设项只有一个**：GMU firmware chip id 按 Linux 打包公式算成 0x4303b000~~ ——
+  **已作废**：2026-10-30 实测该值被固件拒绝（`FW_INIT_RESULT=0x901`）。A735 要写
+  **`0x070b0000`**，由 CM3 镜像自带的 chip-id 比较字面量导出（见
+  `GPU-PROBE-RUNBOOK.md` §11.4 与 `HANDOFF-2026-10-29.md` §19.4）。
 
 - **只读探针已就绪（2026-10-29 晚）**：`package/MuyuGpuPowerBoard.h` + `MuyuGpuPowerProbe.cpp`
   （boot-arg `muyu-gpu-power=1` 只读 / `=2` 只多一次 AHB 使能写；`muyu-gpu-power-panic=1` 把摘要打上
@@ -104,11 +105,16 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
 
 **仍缺（按阻塞顺序）**
 1. ~~A735 固件~~ —— **已取得，见上表**。
-2. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
+2. ~~板级 GMU votes / OPP / 带宽策略~~ —— **2026-10-30 完成**：
+   `scripts/gen-muyu-gmu-votes.py` 从本机 DT 的厂商 `qcom,gpu-pwrlevels` / `qcom,gmu-freq-table`
+   + 主线 A7xx 公共 BCM 生成 `ShengGmuVotesSource.h`；`check-muyu-gmu-votes.py` 四道校验。
+3. ~~GMU stage-1 SMMU~~ —— mode 9 上机（`mapped=5`）。
+4. ~~GMU 冷启动 + HFI~~ —— **2026-10-30 上机全绿**（`cold=0 ph=7 proto=0`，七条 HFI 命令真 ACK）。
+5. **A735 硬初始化**：现有 `NativeAdrenoA740HwInit.h` 是逐型号的寄存器序列，需要 A735 版本
    （`NativeAdrenoPwrupRegs.h`、`NativeAdrenoPwrup.cpp` 里也有 A740 常量）。
-3. **板级 GMU votes / OPP / 带宽策略**：`ShengGmuVotes.c` 的 muyu 对应物。
-4. **GPU 的 SID / stream、扫描输出布局、电源域**：从 muyu DT 的 `kgsl_3d0` 与 `iommus` 取。
-5. **显示侧的 GPU scanout 挂接**：muyu 的 `NativeLegacyDisplay` 还没有接
+   还要 SQE / ZAP 固件加载（与 GMU 同一套 `AdrenoFirmware` 加载器）。
+6. **GPU 的 SID / stream、扫描输出布局、电源域**：从 muyu DT 的 `kgsl_3d0` 与 `iommus` 取。
+7. **显示侧的 GPU scanout 挂接**：muyu 的 `NativeLegacyDisplay` 还没有接
    `GpuScanoutClient`/`GpuScanoutPresenter`。
 
 ## 6. 分阶段计划（每阶段都有可验证的完成标准）
@@ -116,7 +122,7 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
 | 阶段 | 内容 | 完成标准 |
 | --- | --- | --- |
 | **0. 取证** | 从原厂 ROM 取 `vendor`/`vendor_dlkm`，抽出 A735 固件，记录 `proprietary-files.txt` | 三个固件文件的 sha256 与来源分区都记下来 |
-| **1. GMU 起来** | 板级 `NativeAdrenoGmuPlatform::bind/services` + 映射窗口 + 定时器 + 固件；`prepare-sheng-gmu.py` 改成 muyu | boot log 出现 GMU 启动与 HFI 响应 |
+| **1. GMU 起来** | 板级 `NativeAdrenoGmuPlatform::bind/services` + 映射窗口 + 定时器 + 固件；`prepare-sheng-gmu.py` 改成 muyu | **✅ 2026-10-30**：`cold=0 ph=7 proto=0 fw=0x100 hfi=1`（`ShengGmu.c` + 生成头，mode 11）|
 | **2. 内存与提交** | `ArmSmmu4K` context/stream、GPU VA 窗口、CP 初始化、ring | 一次有界提交后 fence 前进；失败能报出 request/handle/fence |
 | **3. 已知图像** | 用 `AdrenoPM4` 编码一个最小绘制 | 渲染结果与预期像素一致 |
 | **4. Metal + 合成** | turnip + metal 插件 + `add-gpu-plugin-data.py` 打进 data seed；显示侧接 GPU scanout | Metal 设备可见、UI 由 GPU 合成、帧率显著高于 1.4 fps |
@@ -134,7 +140,8 @@ SELinux 隐藏的，必须用 root：`su -c 'cp /vendor/firmware/gen71100_* /odm
 - **风险 3**：Metal 前端依赖 iOS 17 的 GPU/IOSurface ABI；muyu 是 4K 页、iOS 17.7.11，
   与上游 sheng 同源，这是相对有利的一面。
 
-## 8. 现在为什么不开始写代码
+## 8. 阶段 0/1 已完成（原文保留作历史）
 
-阶段 0（固件）拿不到，阶段 1 就没有输入；而拿固件需要完整 ROM，也就需要先把设备救回来。
-**所以正确的顺序是：恢复设备 → 拿到 ROM → 取固件 → 阶段 1。**
+~~阶段 0（固件）拿不到，阶段 1 就没有输入~~ —— 2026-10-29 设备救回并 root 后取到 A735 三件套，
+2026-10-30 GMU 冷启动 + 完整 HFI 启动上机通过。现在的主线是**阶段 2 的前半**：
+SQE/ZAP 固件装载 + A735 硬初始化（pwrup 序列）+ CP/ring，再谈有界提交。
