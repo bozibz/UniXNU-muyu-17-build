@@ -283,7 +283,8 @@ gmu_include=['-I',str(ROOT/'kits/AdrenoFirmware'),'-I',str(ROOT/'kits/ArmSmmu4K'
 # the HFI kit they call. Plain C, same kernel recipe as the units above.
 cold_dir=OUT/'gmu-cold';cold_dir.mkdir(exist_ok=True)
 cold_sources=[ROOT/'kits/muyu/ShengGmu.c',ROOT/'kits/muyu/ShengGmuVotes.c',
-              ROOT/'kits/muyu/ShengGmuCommandDb.c',ROOT/'kits/AdrenoFirmware/AdrenoHfi.c',
+              ROOT/'kits/muyu/ShengGmuCommandDb.c',ROOT/'kits/muyu/MuyuRpmhRsc.c',
+              ROOT/'kits/AdrenoFirmware/AdrenoHfi.c',
               ROOT/'kits/AdrenoFirmware/AdrenoHfiStartup.c',ROOT/'kits/AdrenoFirmware/AdrenoHfiVotes.c']
 cold_objs=[]
 for _src in cold_sources:
@@ -332,7 +333,8 @@ sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
          ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h',
          ROOT/'kits/muyu/MuyuGmuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.h',ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/ShengGpuSmmu.h',*smmu_sources,
-         *cold_sources,ROOT/'kits/muyu/ShengGmu.h',ROOT/'kits/muyu/ShengGmuVotes.h',ROOT/'kits/muyu/ShengGmuCommandDb.h',
+         *cold_sources,ROOT/'kits/muyu/ShengGmu.h',ROOT/'kits/muyu/ShengGmuVotes.h',ROOT/'kits/muyu/ShengGmuCommandDb.h',ROOT/'kits/muyu/MuyuRpmhRsc.h',
+         ROOT/'kits/muyu/MuyuRpmhRscHostTests.c',
          ROOT/'build/gpu/ShengGmuVotesSource.h',ROOT/'build/gpu/ShengGmuCommandDbSource.h',
          ROOT/'kits/muyu/MuyuGmuVotesHostTests.c']
 print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeGOPPresenter'],text=True),end='')
