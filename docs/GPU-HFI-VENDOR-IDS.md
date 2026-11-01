@@ -2,6 +2,7 @@
 
 Source: `MiCode/Xiaomi_Kernel_OpenSource`, branch `muyu-v-oss`,
 `drivers/gpu/drm/msm/adreno/a6xx_hfi.h` / `a6xx_hfi.c`.
+Local copies kept in `refs/muyu-vendor-kernel/adreno/` (see its README).
 
 ## Message ids (AUTHORITATIVE)
 

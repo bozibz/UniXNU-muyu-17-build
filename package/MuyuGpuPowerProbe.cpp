@@ -377,7 +377,7 @@ static uint32_t rsccByte(uint32_t off) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 29) mode = 29;
+    if (mode > 30) mode = 30;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -721,7 +721,13 @@ extern "C" void muyu_gpu_power_probe(void) {
                     // the library sends gmu_count-1-level, so level 2 -> index 0 (550 MHz).
                     // Mode 27 votes the 220 MHz point (index 1); mode 29 votes the top point,
                     // so the two runs differ in exactly one constant.
-                    gmuStartup.gmu_dcvs_level = (mode >= 29) ? 2 : 1;
+                    gmuStartup.gmu_dcvs_level = (mode == 29) ? 2 : 1;
+                    // Mode 30: the vendor re-issues the vote as the perf point changes and the
+                    // device trace shows the 0x1e burst repeating 2..29 times per resume, while
+                    // this port sent it exactly once. Repeat the same conservative vote 8 times,
+                    // each waiting for its own ACK. Mode 29's top-index vote is not reused: it
+                    // was measured as a regression (GDSCR bit31 clears, power=2).
+                    gmuStartup.gmu_dcvs_repeat = (mode >= 30) ? 8 : 0;
                     gGmuFreqSent = 1;
                 }
             }

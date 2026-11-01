@@ -2,6 +2,7 @@
 
 Source: `MiCode/Xiaomi_Kernel_OpenSource`, branch **`muyu-v-oss`** (SM8635/Adreno735),
 files `drivers/gpu/drm/msm/adreno/a6xx_gmu.c` and `a6xx_gmu.xml.h`.
+Local copies kept in `refs/muyu-vendor-kernel/adreno/` (see its README).
 This is upstream `drm/msm`, not the downstream `msm_kgsl` that ships on the device,
 but the GMU/SPTPRAC programming is the same hardware contract.
 
