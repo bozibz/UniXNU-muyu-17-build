@@ -135,6 +135,7 @@ static struct {
     uint32_t ssphy_serdes, ssphy_com, ssphy_pcs, ssphy_tx, ssphy_rx, ssphy_start, ssphy_pwr, ssphy_status;
     uint32_t ssphy_misc, ssphy_swreset;
     int ssphy_mapped;
+    int ssphy_init_rc;   /* ssphy_power_on result; -3 = not attempted */
     uint32_t step_rc[8];
     int replay_pending;
 } u;
@@ -352,11 +353,11 @@ static void command_line(void)
     } else if (!strcmp(u.command,"dbg"))
         printf("MUYU DEBUG: gcc=%08x/%08x/%08x/%08x dwc3 id=%08x hw=%08x aw=%u gctl=%08x dctl=%08x dsts=%08x\n"
                "MUYU DEBUG: smmu base=%08x/%08x/%08x/%08x sid40 matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n"
-               "MUYU DEBUG: ssphy=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x swreset=%08x pwr=%08x start=%08x status=%08x\n",
+               "MUYU DEBUG: ssphy=%d init=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x swreset=%08x pwr=%08x start=%08x status=%08x\n",
             u.gcc[0],u.gcc[1],u.gcc[2],u.gcc[3],u.id,u.hwparams,u.awidth,u.gctl,u.dctl,u.dsts,
             u.smmu_base[0],u.smmu_base[1],u.smmu_base[2],u.smmu_base[3],
             u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1],
-            u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx,
+            u.ssphy_mapped,u.ssphy_init_rc,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx,
             u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_status);
     else if (u.command_n) printf("MUYU DEBUG: commands help status ping replay dbg; queries only\n");
     u.command_n=0;u.command_overflow=false;
@@ -529,6 +530,40 @@ static void ssphy_survey(vm_offset_t phy)
     u.ssphy_status=read_reg(phy,MUYU_SSPHY_PCS_STATUS_OFF);
 }
 
+static void write_reg(vm_offset_t base,unsigned off,uint32_t v)
+{
+    *(volatile uint32_t *)(base+off)=v;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
+/* Bring the SS PHY up in the mainline qmp-usb order (phy-qcom-qmp-usb.c: qmp_usb_init +
+ * qmp_usb_power_on):
+ *   1. program the whole vendor table (the DT's qcom,qmp-phy-init-seq, MuyuUsbPhy.h)
+ *   2. set PCS_POWER_DOWN_CONTROL.SW_PWRDN (mainline powers up with this bit set; power_off clears it)
+ *   3. clear PCS_SW_RESET.SW_RESET
+ *   4. set START_CONTROL.{SERDES_START,PCS_START}
+ *   5. poll PCS_STATUS.PHYSTATUS (bit 6) until it clears (200us steps, ~200ms budget)
+ * The table offsets are absolute inside the 0x3000 window, so no per-block bookkeeping is needed.
+ * Returns 0 success, -1 no mapping, -2 PHYSTATUS timeout. */
+static int ssphy_power_on(vm_offset_t phy)
+{
+    unsigned i;
+    if (!phy) return -1;
+    for (i=0;i<MUYU_SSPHY_INIT_COUNT;i++)
+        write_reg(phy,muyu_ssphy_init_seq[i].off,muyu_ssphy_init_seq[i].val);
+    write_reg(phy,MUYU_SSPHY_PCS_POWER_DOWN_OFF,
+        read_reg(phy,MUYU_SSPHY_PCS_POWER_DOWN_OFF)|MUYU_QPHY_SW_PWRDN);
+    write_reg(phy,MUYU_SSPHY_PCS_SW_RESET_OFF,
+        read_reg(phy,MUYU_SSPHY_PCS_SW_RESET_OFF)&~MUYU_QPHY_SW_RESET);
+    write_reg(phy,MUYU_SSPHY_START_CTRL_OFF,
+        read_reg(phy,MUYU_SSPHY_START_CTRL_OFF)|MUYU_QPHY_START_SERDES|MUYU_QPHY_START_PCS);
+    for (i=0;i<1000;i++) {
+        if (!(read_reg(phy,MUYU_SSPHY_PCS_STATUS_OFF)&MUYU_QPHY_PHYSTATUS)) return 0;
+        delay(200);
+    }
+    return -2;
+}
+
 static void report(void)
 {
     printf("MUYU USB: gcc=%08x/%08x/%08x/%08x dwc3 id=%08x hwparams=%08x awidth=%u\n",
@@ -543,8 +578,8 @@ static void report(void)
         u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr);
     printf("MUYU USB: ssphy mapped=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x\n",
         u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx);
-    printf("MUYU USB: ssphy swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n",
-        u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
+    printf("MUYU USB: ssphy init=%d swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n",
+        u.ssphy_init_rc,u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
         (u.ssphy_status&MUYU_QPHY_PHYSTATUS)?1:0);
 }
 
@@ -571,7 +606,7 @@ static void panic_thread(void *arg,wait_result_t result __unused)
           "smmu=%08x/%08x/%08x/%08x matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n"
           "gdsc30=%d gdscphy=%d\n"
           "ssphy mapped=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x\n"
-          "ssphy swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n"
+          "ssphy init=%d swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
@@ -588,7 +623,7 @@ static void panic_thread(void *arg,wait_result_t result __unused)
         u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1],
         u.gdsc30,u.gdscphy,
         u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx,
-        u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
+        u.ssphy_init_rc,u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
         (u.ssphy_status&MUYU_QPHY_PHYSTATUS)?1:0,
         u.gcc_before[0],u.gcc_before[1],u.gcc_before[2],u.gcc_before[3],u.gcc_before[4],u.gcc_before[5],u.gcc_before[6],u.gcc_before[7],
         u.gcc_before[8],u.gcc_before[9],u.gcc_before[10],u.gcc_before[11],u.gcc_before[12],u.gcc_before[13],u.gcc_before[14],u.gcc_before[15],
@@ -623,6 +658,7 @@ void muyu_usb_debug_start(void)
             thread_deallocate(reporter);
     }
     u.mps=512;u.coding[0]=0;u.coding[1]=0xc2;u.coding[2]=1;u.coding[6]=8;
+    u.ssphy_init_rc=-3;
     printf("MUYU USB: CDC ACM debug001, msgbuf log and read-only commands\n");
 
     unsigned qs_arg=0;
@@ -644,7 +680,14 @@ void muyu_usb_debug_start(void)
     u.id=rd(0xc120);u.hwparams=rd(0xc140);u.awidth=u.hwparams>>24;
     u.gctl=rd(GCTL);u.dctl=rd(DCTL);u.dsts=rd(DSTS);
     smmu_survey();
-    ssphy_survey(ml_io_map(MUYU_SSPHY_BASE,MUYU_SSPHY_BYTES));
+    {
+        vm_offset_t phy=ml_io_map(MUYU_SSPHY_BASE,MUYU_SSPHY_BYTES);
+        unsigned init_phy=0;
+        /* Opt-in because it writes 165 PHY registers: muyu-usb-phy-init=1. */
+        if (PE_parse_boot_argn("muyu-usb-phy-init",&init_phy,sizeof(init_phy)) && init_phy==1)
+            u.ssphy_init_rc=ssphy_power_on(phy);
+        ssphy_survey(phy);
+    }
     gcc_usb_up(gcc);
     report();
     if ((u.id>>16)!=0x5533 && (u.id>>16)!=0x3331) {
