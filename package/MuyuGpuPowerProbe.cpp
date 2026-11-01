@@ -377,7 +377,7 @@ static uint32_t rsccByte(uint32_t off) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 28) mode = 28;
+    if (mode > 29) mode = 29;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -715,7 +715,13 @@ extern "C" void muyu_gpu_power_probe(void) {
                 // gmu[]; 220 MHz is index 1 on this board (0 = off, 2 = 550 MHz).
                 if (mode >= 27) {
                     gmuStartup.gmu_dcvs_enable = 1;
-                    gmuStartup.gmu_dcvs_level = 1;
+                    // 0x1e is HFI_H2F_MSG_GX_BW_PERF_VOTE and its "freq" field is a
+                    // PERFORMANCE INDEX (vendor a6xx_hfi_set_freq), so a vote at the highest
+                    // point is what should bring GX up. The board table is {off, 220, 550} and
+                    // the library sends gmu_count-1-level, so level 2 -> index 0 (550 MHz).
+                    // Mode 27 votes the 220 MHz point (index 1); mode 29 votes the top point,
+                    // so the two runs differ in exactly one constant.
+                    gmuStartup.gmu_dcvs_level = (mode >= 29) ? 2 : 1;
                     gGmuFreqSent = 1;
                 }
             }
