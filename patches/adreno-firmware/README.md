@@ -13,13 +13,21 @@
                           2) 2 个文件、+31 行（gen7 GMU DCVS 阶段，HFI 0x1e）
 ```
 
-应用方式（在 submodule 里）：
+应用方式（在 submodule 里）——**必须用 `git apply`，不能用 `git am`**：
 
 ```bash
 cd UniXNU/kits/AdrenoFirmware
-git checkout 20ad3d7
-git am /path/to/UniXNU-muyu/patches/adreno-firmware/0001-muyu-bring-up.patch
+git checkout 20ad3d7 -- . && git clean -fd
+git apply /path/to/UniXNU-muyu/patches/adreno-firmware/0001-muyu-bring-up.patch
+git status --short          # 应显示 4 个 M
 ```
+
+> ⚠️ **为什么不能用 `git am`**：`unixnu build` 会跑 `git submodule update`
+> （`UniXNU/scripts/unixnu/feeds.py:208`），把**有已提交改动**的 submodule 重置回
+> gitlink。`git am` 会留下提交 → 被重置 → 补丁失效，症状是
+> `error: no member named 'perf_table_v2' in 'AdrenoHfiStartupConfig'`。
+> `git apply` 只留未提交改动，构建会识别为"local development"并跳过更新
+> （日志：`== submodules: kits/AdrenoFirmware has local changes, not updated`）。
 
 ---
 
