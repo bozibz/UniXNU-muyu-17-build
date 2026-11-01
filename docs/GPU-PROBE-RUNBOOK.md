@@ -476,3 +476,62 @@ python3 UniXNU-muyu/scripts/check-muyu-gx-host.py      # 寄存器/位 + 主机�
 python3 UniXNU-muyu/scripts/check-muyu-gpu-power-host.py   # 19 个 power 用例（含 GX）
 python3 UniXNU-muyu/scripts/check-muyu-gpu-mmio.py         # 新增 CGF_GDSCR 常量
 ```
+
+---
+
+## 13. mode 27：补发 HFI `0x1e`（GMU DCVS set）——2026-11-01
+
+### 13.1 为什么是 `0x1e`
+
+厂商 resume 序列是 `… 0xa → 0x14×13 → 0x1e×N → 0x83 …`，而本移植**从来没发过 `0x1e`**。
+`0x14` 是固件→主机的通知（**没有 ACK**，每个 resume 块恒为 13 个），**不要照发它**。
+`0x1e` 才是主机发往 GMU 的频率设置命令，**254/254 都有正常 ACK**。
+
+### 13.2 载荷（离线反汇编定案，不需要抓包）
+
+对 `msm_kgsl.ko` 反汇编（`gen7_gmu_clock_set` `0x7b04c` → `gen7_gmu_dcvs_set` `0x7c6e4`）：
+
+```
+gen7_gmu_clock_set 是 36 字节薄封装：
+  mov w2, #0xff          ; 写死
+  mov w3, #0xffff        ; 写死
+  bl  gen7_gmu_dcvs_set  ; 只透传 w1 (level)
+```
+
+⇒ `w3=0xffff` 必走 `0xFFFF0000 | w9`，该分支 `w9` 恒为 `0xff`
+⇒ **线上 4 字：`{header, 1, gmu_count-1-level, 0xffff00ff}`**（最后一字是常数）。
+
+`gen7_bus_ab_quantize`（频率比值编码器）只从 bus/AB 路径进入，**这条路不走它**。
+
+### 13.3 mode 27 做了什么
+
+在 mode 26 的基础上（`perf_table_v2=1`）额外：
+
+```
+gmuStartup.gmu_dcvs_enable = 1;
+gmuStartup.gmu_dcvs_level  = 1;   // gmu[] = {off, 220MHz, 550MHz} -> 220MHz
+```
+
+即发出 `{1, 1, 0xffff00ff}` 三个数据字（wire count=4）。
+
+### 13.4 期望值与判定
+
+| 读数 | 含义 |
+| --- | --- |
+| `v2=1 f=1` | 新阶段确实挂上了（`gPerfV2Used` / `gGmuFreqSent`）|
+| `proto=0` | 启动序列仍然完整（`0x1e` 被固件 ACK）|
+| `proto=8` | 传输错误 —— `0x1e` 没被 ACK，需回看载荷 |
+| `gmu gx power=… cfg=…` 里 `CFG_GDSCR` bit16 置位 | **GX 上电成功**（这是本轮要验证的唯一目标）|
+| `proto=0` 但 `CFG_GDSCR` 仍不置位 | `0x1e` 不足以打开 GX，回到 §12 的 RPMh 结论 |
+
+```bash
+./tools/muyu-flash-mode.sh xnu fw/vendor_boot_gpupower27.img
+# 屏幕读 `gmu cold … v2=1 f=1 proto=?` 与 `gmu gx power=…`
+```
+
+### 13.5 校验
+
+```bash
+python3 UniXNU-muyu/scripts/check-muyu-gpu-power-host.py
+python3 UniXNU-muyu/scripts/check-muyu-gmu-votes.py
+```

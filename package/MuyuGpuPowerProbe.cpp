@@ -313,6 +313,7 @@ static uint8_t gCmdDbCopy[SHENG_GMU_COMMAND_DB_BYTES];
 static unsigned gPreHfiGxSel = 0, gPreHfiMxSel = 0;
 static unsigned gPreHfiRan = 0, gPreHfiAck = 0;
 static int gPerfV2Used = 0;
+static int gGmuFreqSent = 0;
 static uint32_t gPreHfiGdscrBefore = 0, gPreHfiGdscrAfter = 0;
 static int preHfiRailOn(void *) __attribute__((unused));
 static int preHfiRailOn(void *) {
@@ -706,6 +707,16 @@ extern "C" void muyu_gpu_power_probe(void) {
                 if (mode >= 26) {
                     gmuStartup.perf_table_v2 = 1;
                     gPerfV2Used = 1;
+                }
+                // Mode 27: also send HFI 0x1e (GMU DCVS set) after the core start. Offline
+                // disassembly of the vendor's msm_kgsl (gen7_gmu_clock_set -> gen7_gmu_dcvs_set)
+                // shows the whole payload: the wrapper hard-codes w2=0xff and w3=0xffff, so the
+                // wire message is {header, 1, gmu_count-1-level, 0xffff00ff}. The level indexes
+                // gmu[]; 220 MHz is index 1 on this board (0 = off, 2 = 550 MHz).
+                if (mode >= 27) {
+                    gmuStartup.gmu_dcvs_enable = 1;
+                    gmuStartup.gmu_dcvs_level = 1;
+                    gGmuFreqSent = 1;
                 }
             }
             if (gmuDbStatus == ShengGmuDbSuccess && gmuVoteStatus == AdrenoHfiStartupSuccess &&
@@ -1230,7 +1241,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu raw cb2=%08x smr0=%08x s2cr0=%08x s2crL=%08x pool=%08x/%08x\n"
               "gmu win mapped=%u reset=%08x fwinit=%08x hfi=%08x tcmret=%08x rscc=%08x pdc=%08x/%08x dtcm=%08x\n"
               "gmu db sha=%02x%02x%02x%02x nz=%u w0=%08x w1=%08x w2=%08x w3=%08x\n"
-              "gmu cold guard=%u map=%u db=%u votes=%u cold=%u ph=%u proto=%u fw=%08x hfi=%08x\n"
+              "gmu cold guard=%u map=%u db=%u votes=%u cold=%u ph=%u proto=%u fw=%08x hfi=%08x v2=%u f=%u\n"
               "gmu cold hash=%u reset=%u ready=%u/%u rw=%u/%u polls=%u ao=%08x cm3=%08x cfg=%u/%u/%u/%u\n"
               "gmu gx power=%u gdscr=%08x cfg=%08x polls=%u\n"
               "gmu gx legacy ran=%u ack=%u polls=%u st=%08x>%08x info=%08x blk=%08x/%08x/%08x/%08x\n"
@@ -1278,6 +1289,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gmuColdGuarded, gmuColdMap, gmuDbStatus, gmuVoteStatus, gmuColdStatus,
               gmuStart.load.phase, (unsigned)gmuStart.protocol_status,
               gmuStart.load.firmware_init_result, gmuStart.load.hfi_status,
+              (unsigned)gPerfV2Used, (unsigned)gGmuFreqSent,
               gmuStart.load.complete_hash_verified, gmuStart.load.reset_verified,
               gmuStart.load.firmware_ready_observed, gmuStart.load.hfi_ready_observed,
               gmuStart.load.read_attempts, gmuStart.load.write_attempts, gmuStart.load.poll_reads,

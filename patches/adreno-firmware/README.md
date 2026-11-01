@@ -8,7 +8,9 @@
 按 AGENTS §2.3「改动落在补丁/组件层」，本板的改动以补丁形式留在这里：
 
 ```
-0001-muyu-bring-up.patch    基于官方 20ad3d7，改 4 个文件、+90 行
+0001-muyu-bring-up.patch    基于官方 20ad3d7，两个提交：
+                          1) 4 个文件、+90 行（one-way 发送 / v2 性能表 / set-value+feature-ctrl）
+                          2) 2 个文件、+31 行（gen7 GMU DCVS 阶段，HFI 0x1e）
 ```
 
 应用方式（在 submodule 里）：
@@ -59,6 +61,34 @@ feature-ctrl: {1,0} {2,13} {9,5760} {11,1} {12,0} {16,0} {17,0} {27,0}
 ```
 
 数值同样来自 kprobe 实测。
+
+### 4. gen7 GMU DCVS 阶段（`AdrenoHfiStageGmuFreq`，HFI `0x1e`）
+
+厂商 resume 序列以 `0xa` → `0x1e` 收尾，而本移植**从来没发过 `0x1e`**。
+载荷来自对 `msm_kgsl.ko` 的**离线反汇编**（不是猜测，也不需要上机）：
+
+`gen7_gmu_clock_set`（`0x7b04c`，仅 36 字节）是个薄封装，**把后两个参数写死**：
+
+```
+mov w2, #0xff        ; w2 写死
+mov w3, #0xffff      ; w3 写死
+bl  gen7_gmu_dcvs_set ; 只透传 w1（level）
+```
+
+因此 `gen7_gmu_dcvs_set` 里的 `w3=0xffff` 一定走 `0xFFFF0000 | w9` 分支，
+而那个分支上 `w9` 恒为 `0xff` ⇒ **`w[3]` 恒为 `0xFFFF00FF`**。
+`gen7_bus_ab_quantize`（频率比值编码器）只从 bus/AB 路径进入，**这条路径不走它**。
+
+线上载荷（4 字，含 header）：
+
+```
+{header, 1, gmu_count-1-level, 0xffff00ff}
+```
+
+- `n=3` 个数据字 ⇒ wire `count=4`，与真机 trace 的 `size=0x4` 一致；
+- 该消息**有正常 ACK**（真机 254/254），所以用可等回执的 `AdrenoHfiSend`；
+- 阶段**默认关闭**（`gmu_dcvs_enable=0`），且要求 `perf_table_v2`（`0x1e` 是 gen7 消息）；
+- `gmu_dcvs_level` 索引 `gmu[]`，本板 GMU 表 `{off, 220 MHz, 550 MHz}`。
 
 ---
 

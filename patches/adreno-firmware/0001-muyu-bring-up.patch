@@ -1,7 +1,7 @@
-From b8889633811b977af5436b46f23c5702d634b70d Mon Sep 17 00:00:00 2001
+From b57f10f4fea2ea9e7b81198e030375a78c79b30f Mon Sep 17 00:00:00 2001
 From: dev <dev@local>
 Date: Sun, 1 Nov 2026 15:19:47 +0800
-Subject: [PATCH] muyu bring-up
+Subject: [PATCH 1/2] muyu bring-up
 
 ---
  AdrenoHfi.c        | 20 +++++++++++++++++
@@ -169,6 +169,117 @@ index 0496c6f..5a4b0e6 100644
      AdrenoHfiStageCoreStart,AdrenoHfiStageStart,AdrenoHfiStageComplete
  } AdrenoHfiStartupStage;
  typedef enum {
+-- 
+2.54.0 (Apple Git-157)
+
+
+From 84aadb8eea0ef32744d34169c3abf98e6a4287c9 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 1 Nov 2026 19:38:27 +0800
+Subject: [PATCH 2/2] muyu: gen7 GMU DCVS stage (HFI 0x1e) from offline
+ disassembly
+
+The vendor resume sequence ends with 0xa then 0x1e, and this port never sent
+0x1e. Offline disassembly of msm_kgsl (gen7_gmu_clock_set -> gen7_gmu_dcvs_set)
+gives the whole message: the wrapper hard-codes w2=0xff and w3=0xffff, so the
+wire payload is always {header, 1, gmu_count-1-level, 0xffff00ff} - the last word
+is constant because gen7_bus_ab_quantize is only reached from the bus/AB path.
+The stage is opt-in, requires the gen7 v2 table, and is acknowledged normally.
+---
+ AdrenoHfiStartup.c | 21 ++++++++++++++++++---
+ AdrenoHfiStartup.h | 14 +++++++++++++-
+ 2 files changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/AdrenoHfiStartup.c b/AdrenoHfiStartup.c
+index 88d5a4d..84b7308 100644
+--- a/AdrenoHfiStartup.c
++++ b/AdrenoHfiStartup.c
+@@ -24,8 +24,13 @@ AdrenoHfiStartupStatus AdrenoHfiStartupValidate(const AdrenoHfiStartupConfig *c)
+ {
+     if(!c || !levels(c->gpu,c->gpu_count,16) || !levels(c->gmu,c->gmu_count,4) ||
+         !c->bandwidth_count || c->bandwidth_count>16 || c->enable_ifpc>1 ||
++        c->gmu_dcvs_enable>1 ||
+         !addresses(c->cnoc_addresses,c->cnoc_count,6) ||
+         !addresses(c->ddr_addresses,c->ddr_count,8))return AdrenoHfiStartupInvalid;
++    /* 0x1e is a gen7 message and carries a level index into gmu[]. Refuse the
++     * combination rather than emit a message the firmware would reject. */
++    if(c->gmu_dcvs_enable &&
++        (!c->perf_table_v2 || c->gmu_dcvs_level>=c->gmu_count))return AdrenoHfiStartupInvalid;
+     if(c->cnoc_wait_mask>>c->cnoc_count || c->ddr_wait_mask>>c->ddr_count)return AdrenoHfiStartupInvalid;
+     for(unsigned i=0;i<c->cnoc_count;++i)
+         for(unsigned j=0;j<c->ddr_count;++j)if(c->cnoc_addresses[i]==c->ddr_addresses[j])return AdrenoHfiStartupInvalid;
+@@ -50,9 +55,10 @@ AdrenoHfiStartupStatus AdrenoHfiStartupEncode(const AdrenoHfiStartupConfig *c,
+     if(!count)return AdrenoHfiStartupInvalid;
+     *count=0;
+     if(!id || !p || capacity<159 || AdrenoHfiStartupValidate(c)!=AdrenoHfiStartupSuccess ||
+-        stage<AdrenoHfiStagePerformance || stage>AdrenoHfiStageStart ||
++        stage<AdrenoHfiStagePerformance || stage>AdrenoHfiStageGmuFreq ||
+         ((stage==AdrenoHfiStageAcdEnable || stage==AdrenoHfiStageAcdTable) && !c->acd_enable_mask) ||
+-        (stage==AdrenoHfiStageIfpc && !c->enable_ifpc))return AdrenoHfiStartupInvalid;
++        (stage==AdrenoHfiStageIfpc && !c->enable_ifpc) ||
++        (stage==AdrenoHfiStageGmuFreq && !c->gmu_dcvs_enable))return AdrenoHfiStartupInvalid;
+     size_t n=0;unsigned message=0;
+     switch(stage) {
+     case AdrenoHfiStagePerformance:
+@@ -115,6 +121,14 @@ AdrenoHfiStartupStatus AdrenoHfiStartupEncode(const AdrenoHfiStartupConfig *c,
+     case AdrenoHfiStageIfpc:message=11;n=3;p[0]=9;p[1]=1;p[2]=0x1680;break;
+     case AdrenoHfiStageCoreStart:message=14;n=1;p[0]=0;break;
+     case AdrenoHfiStageStart:message=10;n=0;break;
++    case AdrenoHfiStageGmuFreq:
++        /* HFI 0x1e, sent by the vendor from gen7_gmu_clock_set right after 0xa. That wrapper
++         * hard-codes the two trailing arguments, so this is the whole payload: the constant
++         * 1, the inverted level index, and the constant 0xffff00ff. Word count is 3 and the
++         * wire header carries count = 4, which is what the vendor's 0x10-byte send produces. */
++        message=30;n=3;
++        p[0]=1;p[1]=c->gmu_count-1u-c->gmu_dcvs_level;p[2]=UINT32_C(0xffff00ff);
++        break;
+     default:return AdrenoHfiStartupInvalid;
+     }
+     *id=message;*count=n;return AdrenoHfiStartupSuccess;
+@@ -154,9 +168,10 @@ AdrenoHfiStartupStatus AdrenoHfiStartupRun(AdrenoHfiStartup *state,AdrenoHfi *h,
+     state->attempted=1;
+     AdrenoHfiStartupStatus status=AdrenoHfiStartupSuccess;
+     uint32_t payload[159],output[16],id;size_t words,returned;
+-    for(unsigned step=AdrenoHfiStagePerformance;step<=AdrenoHfiStageStart;++step) {
++    for(unsigned step=AdrenoHfiStagePerformance;step<=AdrenoHfiStageGmuFreq;++step) {
+         if(!c->perf_table_v2 && step>=AdrenoHfiStageSetValue0 && step<=AdrenoHfiStageSetValue2)
+             continue;
++        if(step==AdrenoHfiStageGmuFreq && !c->gmu_dcvs_enable)continue;
+         if(c->perf_table_v2 && step==AdrenoHfiStageCoreStart) {
+             /* The gen7 firmware is told eight feature controls (msg 0x0b) before the core start;
+              * the vendor driver was observed sending exactly these subtypes, each as
+diff --git a/AdrenoHfiStartup.h b/AdrenoHfiStartup.h
+index 5a4b0e6..8a283d9 100644
+--- a/AdrenoHfiStartup.h
++++ b/AdrenoHfiStartup.h
+@@ -21,6 +21,15 @@ typedef struct {
+      * gmu_count, 2, and 2 words/GMU level. The legacy 0x04 table is ignored by that firmware,
+      * so a board whose GPU never leaves the slumber state must set this. */
+     unsigned perf_table_v2;
++    /* HFI 0x1e GMU DCVS set (gen7). The vendor's gen7_gmu_clock_set is a thin wrapper that
++     * forwards only the level and hard-codes the other two arguments (w2=0xff, w3=0xffff),
++     * so the wire payload is always four words:
++     *     {header, 1, gmu_count-1-level, 0xffff00ff}
++     * The last word is constant on that path; gen7_bus_ab_quantize (the freq-ratio encoder)
++     * is only reached from the bus/AB path, which passes real w2/w3. This stage reproduces
++     * the clock path, so gmu_dcvs_level indexes gmu[] and the message is sent only when the
++     * board enables it. Requires perf_table_v2: 0x1e is a gen7 message. */
++    unsigned gmu_dcvs_enable,gmu_dcvs_level;
+ } AdrenoHfiStartupConfig;
+ typedef enum {
+     AdrenoHfiStageNone,AdrenoHfiStagePerformance,AdrenoHfiStageBandwidth,
+@@ -29,7 +38,10 @@ typedef enum {
+      * the core start; without them it keeps the GPU core slumbered. Values are the ones the
+      * vendor driver was observed sending (kprobe capture, A735). */
+     AdrenoHfiStageSetValue0,AdrenoHfiStageSetValue1,AdrenoHfiStageSetValue2,
+-    AdrenoHfiStageCoreStart,AdrenoHfiStageStart,AdrenoHfiStageComplete
++    AdrenoHfiStageCoreStart,AdrenoHfiStageStart,
++    /* gen7 GMU DCVS set (msg 0x1e), after the core start: the vendor's resume sequence
++     * ends with 0xa then 0x1e. Optional; skipped unless the board enables it. */
++    AdrenoHfiStageGmuFreq,AdrenoHfiStageComplete
+ } AdrenoHfiStartupStage;
+ typedef enum {
+     AdrenoHfiStartupSuccess,AdrenoHfiStartupInvalid,AdrenoHfiStartupBusy,
 -- 
 2.54.0 (Apple Git-157)
 
