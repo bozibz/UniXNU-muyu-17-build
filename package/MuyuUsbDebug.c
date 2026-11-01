@@ -32,6 +32,7 @@
 #include <vm/vm_kern.h>
 #include <pexpert/pexpert.h>
 #include "MuyuUsbProtocol.h"
+#include "MuyuUsbPhy.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
@@ -127,6 +128,13 @@ static struct {
     uint32_t reset_wb, csf_wb;
     uint32_t gcc_before[32], gcc_after[32];
     int gdsc30, gdscphy;
+    /* USB3 SS PHY survey. Read-only for now: the DT facts (init sequence and section offsets)
+     * live in MuyuUsbPhy.h, but the bring-up order (PLL lock, level select, GUSB3PIPECTL) is
+     * protocol the guest has never driven, so this session only reports what the hardware holds. */
+    vm_offset_t ssphy;
+    uint32_t ssphy_serdes, ssphy_com, ssphy_pcs, ssphy_tx, ssphy_rx, ssphy_start, ssphy_pwr, ssphy_status;
+    uint32_t ssphy_misc, ssphy_swreset;
+    int ssphy_mapped;
     uint32_t step_rc[8];
     int replay_pending;
 } u;
@@ -343,10 +351,13 @@ static void command_line(void)
         u.replay_pending=1;printf("MUYU DEBUG: replay retained msgbuf tail\n");
     } else if (!strcmp(u.command,"dbg"))
         printf("MUYU DEBUG: gcc=%08x/%08x/%08x/%08x dwc3 id=%08x hw=%08x aw=%u gctl=%08x dctl=%08x dsts=%08x\n"
-               "MUYU DEBUG: smmu base=%08x/%08x/%08x/%08x sid40 matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n",
+               "MUYU DEBUG: smmu base=%08x/%08x/%08x/%08x sid40 matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n"
+               "MUYU DEBUG: ssphy=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x swreset=%08x pwr=%08x start=%08x status=%08x\n",
             u.gcc[0],u.gcc[1],u.gcc[2],u.gcc[3],u.id,u.hwparams,u.awidth,u.gctl,u.dctl,u.dsts,
             u.smmu_base[0],u.smmu_base[1],u.smmu_base[2],u.smmu_base[3],
-            u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1]);
+            u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1],
+            u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx,
+            u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_status);
     else if (u.command_n) printf("MUYU DEBUG: commands help status ping replay dbg; queries only\n");
     u.command_n=0;u.command_overflow=false;
 }
@@ -497,6 +508,27 @@ static void smmu_survey(void)
     }
 }
 
+/* Read-only survey of the USB3 SS PHY (qcom,usb-ssphy-qmp-dp-combo at 0x88e8000). The important
+ * readings are QPHY_PCS_SW_RESET / SW_PWRDN / START_CONTROL (are SerDes and PCS started at all),
+ * QPHY_PCS_STATUS bit 6 (PHYSTATUS: 1 = still calibrating) and a SerDes PLL word, so the next
+ * session knows whether the PLL was left locked by ABL or is dead. Nothing here writes: the write
+ * order has never been validated on this board. */
+static void ssphy_survey(vm_offset_t phy)
+{
+    u.ssphy=phy; u.ssphy_mapped=(phy!=0);
+    if (!phy) return;
+    u.ssphy_serdes=read_reg(phy,MUYU_SSPHY_SERDES_OFF+0x00);
+    u.ssphy_com=read_reg(phy,MUYU_SSPHY_SERDES_OFF+0x1c);
+    u.ssphy_pcs=read_reg(phy,MUYU_SSPHY_PCS_OFF+0x00);
+    u.ssphy_tx=read_reg(phy,MUYU_SSPHY_TX_OFF+0x00);
+    u.ssphy_rx=read_reg(phy,MUYU_SSPHY_RX_OFF+0x00);
+    u.ssphy_misc=read_reg(phy,MUYU_SSPHY_PCS_MISC_OFF);
+    u.ssphy_swreset=read_reg(phy,MUYU_SSPHY_PCS_SW_RESET_OFF);
+    u.ssphy_start=read_reg(phy,MUYU_SSPHY_START_CTRL_OFF);
+    u.ssphy_pwr=read_reg(phy,MUYU_SSPHY_PCS_POWER_DOWN_OFF);
+    u.ssphy_status=read_reg(phy,MUYU_SSPHY_PCS_STATUS_OFF);
+}
+
 static void report(void)
 {
     printf("MUYU USB: gcc=%08x/%08x/%08x/%08x dwc3 id=%08x hwparams=%08x awidth=%u\n",
@@ -509,6 +541,11 @@ static void report(void)
     printf("MUYU USB: smmu=%08x/%08x/%08x/%08x sid40 matches=%d index=%d route=%08x cbar=%08x sctlr=%08x\n",
         u.smmu_base[0],u.smmu_base[1],u.smmu_base[2],u.smmu_base[3],
         u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr);
+    printf("MUYU USB: ssphy mapped=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x\n",
+        u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx);
+    printf("MUYU USB: ssphy swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n",
+        u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
+        (u.ssphy_status&MUYU_QPHY_PHYSTATUS)?1:0);
 }
 
 /* One line for the msgbuf dump page / panic text, so a failed probe is still readable from a photo
@@ -533,6 +570,8 @@ static void panic_thread(void *arg,wait_result_t result __unused)
           "dwc3 id=%08x hwparams=%08x awidth=%u gctl=%08x dctl=%08x dsts=%08x\n"
           "smmu=%08x/%08x/%08x/%08x matches=%d index=%d route=%08x cbar=%08x sctlr=%08x qs=%08x/%08x\n"
           "gdsc30=%d gdscphy=%d\n"
+          "ssphy mapped=%d serdes=%08x com=%08x pcs=%08x tx=%08x rx=%08x\n"
+          "ssphy swreset=%08x pwr=%08x start=%08x misc=%08x status=%08x phystatus=%d\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
           "gcc_before %08x %08x %08x %08x %08x %08x %08x %08x\n"
@@ -548,6 +587,9 @@ static void panic_thread(void *arg,wait_result_t result __unused)
         u.smmu_base[0],u.smmu_base[1],u.smmu_base[2],u.smmu_base[3],
         u.smmu_matches,u.smmu_index,u.route,u.cbar,u.sctlr,u.qs[0],u.qs[1],
         u.gdsc30,u.gdscphy,
+        u.ssphy_mapped,u.ssphy_serdes,u.ssphy_com,u.ssphy_pcs,u.ssphy_tx,u.ssphy_rx,
+        u.ssphy_swreset,u.ssphy_pwr,u.ssphy_start,u.ssphy_misc,u.ssphy_status,
+        (u.ssphy_status&MUYU_QPHY_PHYSTATUS)?1:0,
         u.gcc_before[0],u.gcc_before[1],u.gcc_before[2],u.gcc_before[3],u.gcc_before[4],u.gcc_before[5],u.gcc_before[6],u.gcc_before[7],
         u.gcc_before[8],u.gcc_before[9],u.gcc_before[10],u.gcc_before[11],u.gcc_before[12],u.gcc_before[13],u.gcc_before[14],u.gcc_before[15],
         u.gcc_before[16],u.gcc_before[17],u.gcc_before[18],u.gcc_before[19],u.gcc_before[20],u.gcc_before[21],u.gcc_before[22],u.gcc_before[23],
@@ -602,6 +644,7 @@ void muyu_usb_debug_start(void)
     u.id=rd(0xc120);u.hwparams=rd(0xc140);u.awidth=u.hwparams>>24;
     u.gctl=rd(GCTL);u.dctl=rd(DCTL);u.dsts=rd(DSTS);
     smmu_survey();
+    ssphy_survey(ml_io_map(MUYU_SSPHY_BASE,MUYU_SSPHY_BYTES));
     gcc_usb_up(gcc);
     report();
     if ((u.id>>16)!=0x5533 && (u.id>>16)!=0x3331) {
