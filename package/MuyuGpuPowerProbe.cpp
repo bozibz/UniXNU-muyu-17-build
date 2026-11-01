@@ -312,11 +312,25 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 static uint8_t gCmdDbCopy[SHENG_GMU_COMMAND_DB_BYTES];
 static unsigned gPreHfiGxSel = 0, gPreHfiMxSel = 0;
 static unsigned gPreHfiRan = 0, gPreHfiAck = 0;
+static uint32_t gPreHfiGdscrBefore = 0, gPreHfiGdscrAfter = 0;
 static int preHfiRailOn(void *) __attribute__((unused));
 static int preHfiRailOn(void *) {
     uint32_t v = 0;
     if (!gGmuWindows[MGW_CORE].base) return 0;   // no GMU window: let the cold start proceed
     gPreHfiRan = 1;
+    /* The vendor enables the GX power domain (a6xx_gmu_gxpd_get) before it votes the rail
+     * (a6xx_gmu_gfx_rail_on). Our GDSC used to be enabled only later, in mode 15, so the vote
+     * happened while the domain was collapsed. Clear SW_COLLAPSE first. */
+    {
+        uint32_t gd = 0;
+        if (!read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &gd)) {
+            gPreHfiGdscrBefore = gd;
+            if (gd & MGB_GDSC_SW_COLLAPSE)
+                write32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, gd & ~MGB_GDSC_SW_COLLAPSE);
+            IODelay(1000);
+            read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &gPreHfiGdscrAfter);
+        }
+    }
     if (!gPreHfiGxSel && gGmuWindows[MGW_CMDDB].base) {
         // Runs during the cold start, before mode 17 parses the ARC table, so parse it here.
         const volatile uint32_t *db = (const volatile uint32_t *)gGmuWindows[MGW_CMDDB].base;
@@ -689,8 +703,10 @@ extern "C" void muyu_gpu_power_probe(void) {
                 // selectors (gx=12 mx=9), pending interrupts cleared and a 1 s wait, the GMU still
                 // never acks BOOT_SLUMBER here, and the attempt leaves GX_HM_GDSC_POWER_OFF set
                 // (st 2 -> 3). Keep the hook available but do not arm it by default.
+                // 2026-11-01: arming this made ShengGmuColdStart time out (cold=6), so it stays
+                // off until the panic-order bug is fixed and the budget is re-measured.
                 // gmuConfig.pre_hfi = preHfiRailOn;
-                // gmuConfig.pre_hfi_cookie = nullptr;
+                gmuConfig.pre_hfi_cookie = nullptr;
                 gmuConfig.poll_budget = 1000;
                 __builtin_memset(&gmuDevice, 0, sizeof gmuDevice);
                 gmuDevice.io.read32 = coldRead32;
@@ -1089,13 +1105,13 @@ extern "C" void muyu_gpu_power_probe(void) {
 
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
+              "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
               "gmu gx23a ran=%u clk=%08x pwr=%08x st=%08x cnt=%08x\n"
               "gmu gx23b rpmh=%08x/%08x fal=%08x/%08x\n"
               "gmu gx23c slum=%08x gx=%02x mx=%02x info=%08x\n"
-              "gmu prehfi ran=%u ack=%u gx=%u mx=%u\n"
+              "gmu prehfi ran=%u ack=%u gx=%u mx=%u gd=%08x>%08x\n"
               "gmu gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x\n"
               "gmu gx24 clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n"
-              "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
               "pll1=%08x/%08x l=%08x user=%08x gmurcgr=%08x gmucfg=%08x hubrcgr=%08x hubcfg=%08x\n"
@@ -1126,7 +1142,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx23Ran, gx23[0], gx23[1], gx23[2], gx23[3],
               gx23[4], gx23[5], gx23[6], gx23[7],
               gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11],
-              gPreHfiRan, gPreHfiAck, gPreHfiGxSel, gPreHfiMxSel,
+              gPreHfiRan, gPreHfiAck, gPreHfiGxSel, gPreHfiMxSel, gPreHfiGdscrBefore, gPreHfiGdscrAfter,
               gx24Ran, gx24[0], gx24[1], gx24[2], gx24[3],
               gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
