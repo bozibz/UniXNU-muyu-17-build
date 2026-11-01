@@ -13,7 +13,8 @@ adb wait-for-device
 echo "== model: $(adb shell getprop ro.product.model 2>&1)"
 echo "== build: $(adb shell getprop ro.build.version.incremental 2>&1)"
 
-adb shell dmesg > "$OUT/dmesg.txt" 2>&1
+sh 'mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null; echo mounted'
+sh 'dmesg' > "$OUT/dmesg.txt"
 sh 'ls -l /sys/kernel/debug/kgsl/kgsl-3d0/' > "$OUT/kgsl-nodes.txt"
 sh 'cat /sys/kernel/debug/kgsl/kgsl-3d0/gpu' > "$OUT/kgsl-gpu-state.txt"
 sh 'cat /sys/kernel/debug/clk/clk_summary' > "$OUT/clk_summary.txt"
@@ -27,7 +28,7 @@ adb shell am start -a android.intent.action.VIEW -d https://example.com >/dev/nu
 sleep 5
 sh 'cat /sys/kernel/debug/kgsl/kgsl-3d0/gpu' > "$OUT/kgsl-gpu-state-busy.txt"
 sh 'cat /proc/interrupts' > "$OUT/interrupts-busy.txt"
-adb shell dmesg | tail -300 > "$OUT/dmesg-busy.txt" 2>&1
+sh 'dmesg | tail -300' > "$OUT/dmesg-busy.txt"
 
 shasum -a 256 "$OUT"/* > "$OUT/SHA256SUMS" 2>/dev/null || true
 echo

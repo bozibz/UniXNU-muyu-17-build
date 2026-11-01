@@ -375,7 +375,7 @@ static uint32_t rsccByte(uint32_t off) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 25) mode = 25;
+    if (mode > 26) mode = 26;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -1138,6 +1138,39 @@ extern "C" void muyu_gpu_power_probe(void) {
               rscc25Ran, rscc25[0], rscc25[4], rscc25[1], rscc25[5], rscc25[3]);
     }
 
+    // mode 26: the missing step from the Android harvest (HANDOFF §22). kgsl's resume does
+    //   GMU_AO_HOST_INTERRUPT_CLR  = ~0
+    //   GMU_AO_HOST_INTERRUPT_MASK = ~A6XX_GMU_IRQ_MASK    (0x29: WDOG_BITE|FENCE_ERR|AHB_BUS_ERROR)
+    // before it ever issues an OOB. Our cold start never touched these, which is the prime suspect
+    // for GPU_SET never being acknowledged. Register numbers are a6xx_gmu.xml dword offsets; the
+    // GMU window is 0x37000 bytes, so 0x23b04 lands at byte 0x26c10 inside it.
+    static uint32_t ao26[6] = {0};
+    static unsigned ao26Ran = 0, ao26Ack = 0;
+    if (mode >= 26) {
+        if (gmuWinMapped & (1u << MGW_CORE)) {
+            ao26Ran = 1;
+            gxRead(nullptr, 0x23b05, &ao26[0]);            // AO status before
+            gxWrite(nullptr, 0x23b04, 0xffffffffu);        // AO_HOST_INTERRUPT_CLR
+            gxWrite(nullptr, 0x23b06, ~0x29u);             // AO_HOST_INTERRUPT_MASK
+            IODelay(100);
+            gxRead(nullptr, 0x23b05, &ao26[1]);            // AO status after
+            gxRead(nullptr, 0x23b06, &ao26[2]);            // mask readback
+            gxWrite(nullptr, 0x1f991, 0xffffffffu);        // GMU2HOST_INTR_CLR
+            gxWrite(nullptr, 0x1cbf9, gPreHfiGxSel & 0xff);
+            gxWrite(nullptr, 0x1cbfa, gPreHfiMxSel & 0xff);
+            gxWrite(nullptr, 0x1f994, 1u << 30);           // GPU_SET (set 30 / ack 31)
+            for (int i = 0; i < 2000; ++i) {
+                gxRead(nullptr, 0x1f992, &ao26[3]);
+                if (ao26[3] & (1u << 31)) { ao26Ack = 1; break; }
+                IODelay(100);
+            }
+            gxRead(nullptr, 0x1f8d0, &ao26[4]);            // SPTPRAC_PWR_CLK_STATUS
+            gxRead(nullptr, 0x23b05, &ao26[5]);            // AO status final
+        }
+        IOLog("MUYU GPU POWER ao26 ran=%u ack=%u ao=%08x>%08x>%08x mask=%08x intr=%08x sptp=%08x\n",
+              ao26Ran, ao26Ack, ao26[0], ao26[1], ao26[5], ao26[2], ao26[3], ao26[4]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -1148,6 +1181,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x\n"
               "gmu gx24 clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n"
               "gmu rscc25 ran=%u ctl=%08x>%08x st=%08x/%08x seq=%08x\n"
+              "gmu ao26 ran=%u ack=%u ao=%08x>%08x>%08x mask=%08x intr=%08x sptp=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
               "pll1=%08x/%08x l=%08x user=%08x gmurcgr=%08x gmucfg=%08x hubrcgr=%08x hubcfg=%08x\n"
@@ -1182,6 +1216,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx24Ran, gx24[0], gx24[1], gx24[2], gx24[3],
               gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9],
               rscc25Ran, rscc25[0], rscc25[4], rscc25[1], rscc25[5], rscc25[3],
+              ao26Ran, ao26Ack, ao26[0], ao26[1], ao26[5], ao26[2], ao26[3], ao26[4],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,
