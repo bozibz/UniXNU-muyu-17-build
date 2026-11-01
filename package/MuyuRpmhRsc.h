@@ -150,6 +150,19 @@ MuyuRpmhRscStatus MuyuRpmhRscArcsParse(const uint8_t *cmd_db, size_t cmd_db_byte
 // enable|trigger), poll each slot's CMD_STATUS for ISSUED|COMPL, then clear
 // ENABLE/WAIT and the TCS's IRQ bit. Only the RSC window bit of "have" is
 // consulted.
+// One ARC entry as the command DB stores it, for diagnostics: the vendor GPU driver votes on
+// "mx.lvl" (or "gmxc.lvl"), while the devicetree names the rail "mxc.lvl". Printing every ARC
+// entry shows which of those really exist and what the GMU is expected to vote on.
+typedef struct {
+    char id[9];
+    uint32_t address;
+    unsigned count;
+} MuyuRpmhRscEntry;
+
+// Walk the command DB and fill up to `max` ARC entries (slave 3). Returns the number written.
+unsigned MuyuRpmhRscListArcs(const uint8_t *cmd_db, size_t bytes, uint32_t version,
+                             MuyuRpmhRscEntry *out, unsigned max);
+
 MuyuRpmhRscStatus MuyuRpmhRscVoteGx(const MuyuRpmhRscIo *io, unsigned have,
                                     const MuyuRpmhRscArcs *arcs, MuyuRpmhRscResult *out);
 

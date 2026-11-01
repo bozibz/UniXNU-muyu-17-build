@@ -168,6 +168,36 @@ MuyuRpmhRscStatus MuyuRpmhRscArcsParse(const uint8_t *cmd_db, size_t cmd_db_byte
     return MuyuRpmhRscSuccess;
 }
 
+unsigned MuyuRpmhRscListArcs(const uint8_t *cmd_db, size_t bytes, uint32_t version,
+                             MuyuRpmhRscEntry *out, unsigned max) {
+    unsigned written = 0;
+    if (!cmd_db || !out || !max) return 0;
+    if (bytes < 144u + 8u * 16u) return 0;
+    if (load_u32(cmd_db) != version) return 0;
+    if (load_u32(cmd_db + 4) != MUYU_RSC_CMD_DB_MAGIC) return 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        const uint8_t *r = cmd_db + 8 + 16u * i;
+        unsigned slave = load_u16(r);
+        if (!slave) break;
+        if (slave != MUYU_RSC_ARC_SLAVE) continue;
+        size_t head = 144u + (size_t)load_u16(r + 2);
+        size_t size = (size_t)load_u16(r + 6) * 24u;
+        if (!in_range(head, size, bytes)) return written;
+        for (size_t at = head; at + 24u <= head + size && written < max; at += 24u) {
+            const uint8_t *e = cmd_db + at;
+            uint32_t address = load_u32(e + 16);
+            if (((address >> 16) & 7u) != MUYU_RSC_ARC_SLAVE) continue;
+            if (!address || (address & 3u)) continue;
+            memcpy(out[written].id, e, 8);
+            out[written].id[8] = 0;
+            out[written].address = address;
+            out[written].count = load_u16(e + 20) / 2u;
+            ++written;
+        }
+    }
+    return written;
+}
+
 // --- DRV2 active TCS submit -------------------------------------------------
 
 static uint32_t tcs_off(uint32_t reg, unsigned tcs) {

@@ -310,7 +310,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 19) mode = 19;
+    if (mode > 21) mode = 21;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -686,6 +686,7 @@ extern "C" void muyu_gpu_power_probe(void) {
     static unsigned rpmhStatus = 0xff, rpmhDbStatus = 0xff, rpmhMapped = 0;
     static unsigned rpmhVersion[4] = {0, 0, 0, 0};
     static unsigned rpmhPolls = 0, rpmhTcs = 0;
+    static uint8_t rpmhCmdDb[SHENG_GMU_COMMAND_DB_BYTES];
     if (mode >= 17) {
         static MuyuRpmhRscArcs rpmhArcs;
         static MuyuRpmhRscResult rpmhResult;
@@ -693,7 +694,6 @@ extern "C" void muyu_gpu_power_probe(void) {
             // PRNT_CHLD_CONFIG picks ncpt/max_tcs (verified in check-muyu-rpmh-host.py).
             read32(nullptr, MUYU_RSC_WINDOW, MUYU_RSC_DRV_ID_REG, &rpmhVersion[2]);
             read32(nullptr, MUYU_RSC_WINDOW, MUYU_RSC_DRV_PRNT_CHLD_CONFIG, &rpmhVersion[3]);
-            static uint8_t rpmhCmdDb[SHENG_GMU_COMMAND_DB_BYTES];
             const volatile uint32_t *db = (const volatile uint32_t *)gGmuWindows[MGW_CMDDB].base;
             for (size_t i = 0; i < sizeof rpmhCmdDb / 4; ++i) {
                 const uint32_t word = db[i];
@@ -874,6 +874,59 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx19Ran, gx19Ack, gx19[0], gx19[1], gx19[2], gx19[3], gx19[4], gx19[5], gx19[6], gx19[7]);
     }
 
+    // mode 20: list every ARC entry in the command DB. The devicetree names the GX parent rail
+    // "mxc.lvl", but the vendor GPU driver votes on "mx.lvl" (falling back from "gmxc.lvl",
+    // a6xx_gmu.c:1902). If both exist they are different resources and only one is what the GMU
+    // votes on, so the selector we computed may have been written to the wrong rail all along.
+    static unsigned dbArcCount = 0;
+    static uint32_t dbArcW[8][3];
+    if (mode >= 20) {
+        static MuyuRpmhRscEntry ents[8];
+        dbArcCount = MuyuRpmhRscListArcs(rpmhCmdDb, sizeof rpmhCmdDb,
+                                         SHENG_GMU_COMMAND_DB_VERSION, ents, 8);
+        for (unsigned i = 0; i < 8; ++i) {
+            if (i < dbArcCount) {
+                uint32_t hi = 0, lo = 0;
+                memcpy(&hi, ents[i].id, 4);
+                memcpy(&lo, ents[i].id + 4, 4);
+                dbArcW[i][0] = hi;
+                dbArcW[i][1] = lo;
+                dbArcW[i][2] = ents[i].address | ((ents[i].count & 0xffu) << 24);
+            } else {
+                dbArcW[i][0] = dbArcW[i][1] = dbArcW[i][2] = 0;
+            }
+        }
+        IOLog("MUYU GPU POWER dbarc n=%u\n", dbArcCount);
+        for (unsigned i = 0; i < 8; ++i)
+            IOLog("MUYU GPU POWER dbarc%d id=%08x%08x addr=%08x count=%u\n", i,
+                  dbArcW[i][0], dbArcW[i][1], dbArcW[i][2] & 0x00ffffffu,
+                  (dbArcW[i][2] >> 24) & 0xffu);
+    }
+
+    // mode 21: targeted command-DB lookup. The dump in mode 20 puts eight entries on one line and a
+    // photo of it is unreadable, so this prints only the four names that matter for the GX rail:
+    // gfx.lvl (the DT parent chain) and the three names the vendor GPU driver uses (mx.lvl, mxc.lvl,
+    // gmxc.lvl). Any name that is absent prints 0.
+    static uint32_t dbFind[4][2] = {{0}};   // {address, count}
+    if (mode >= 21) {
+        static MuyuRpmhRscEntry ents[16];
+        unsigned n = MuyuRpmhRscListArcs(rpmhCmdDb, sizeof rpmhCmdDb,
+                                         SHENG_GMU_COMMAND_DB_VERSION, ents, 16);
+        static const char *const want[4] = {"gfx.lvl", "mx.lvl", "mxc.lvl", "gmxc.lvl"};
+        for (unsigned w = 0; w < 4; ++w) {
+            dbFind[w][0] = dbFind[w][1] = 0;
+            for (unsigned i = 0; i < n; ++i)
+                if (!strncmp(ents[i].id, want[w], 8)) {
+                    dbFind[w][0] = ents[i].address;
+                    dbFind[w][1] = ents[i].count;
+                    break;
+                }
+        }
+        IOLog("MUYU GPU POWER dbfind gfx=%08x/%u mx=%08x/%u mxc=%08x/%u gmxc=%08x/%u\n",
+              dbFind[0][0], dbFind[0][1], dbFind[1][0], dbFind[1][1],
+              dbFind[2][0], dbFind[2][1], dbFind[3][0], dbFind[3][1]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -897,6 +950,8 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx ran=%u ack=%u clr=%u polls=%u on=%u io=%u st=%08x>%08x info=%08x gdscr=%08x rbbm=%08x\n"
               "gmu rpmh map=%d cold=%u db=%u vote=%s rsc=%08x cfg=%08x gfx=%08x/%u mxc=%08x/%u tcs=%u polls=%u\n"
               "gmu gx19 ran=%u ack=%u info=%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x now=%08x\n"
+              "gmu dbarc n=%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u\n"
+              "gmu dbfind gfx=%08x/%u mx=%08x/%u mxc=%08x/%u gmxc=%08x/%u\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
@@ -944,6 +999,17 @@ extern "C" void muyu_gpu_power_probe(void) {
               rpmhVersion[0], rpmhVersion[1], rpmhGfxAddr, rpmhGfxSel,
               rpmhMxcAddr, rpmhMxcSel, rpmhTcs, rpmhPolls,
               gx19Ran, gx19Ack, gx19[0], gx19[1], gx19[2], gx19[3], gx19[4], gx19[5], gx19[6], gx19[7],
+              dbArcCount,
+              dbArcW[0][0], dbArcW[0][1], dbArcW[0][2] & 0x00ffffffu, (dbArcW[0][2] >> 24) & 0xffu,
+              dbArcW[1][0], dbArcW[1][1], dbArcW[1][2] & 0x00ffffffu, (dbArcW[1][2] >> 24) & 0xffu,
+              dbArcW[2][0], dbArcW[2][1], dbArcW[2][2] & 0x00ffffffu, (dbArcW[2][2] >> 24) & 0xffu,
+              dbArcW[3][0], dbArcW[3][1], dbArcW[3][2] & 0x00ffffffu, (dbArcW[3][2] >> 24) & 0xffu,
+              dbArcW[4][0], dbArcW[4][1], dbArcW[4][2] & 0x00ffffffu, (dbArcW[4][2] >> 24) & 0xffu,
+              dbArcW[5][0], dbArcW[5][1], dbArcW[5][2] & 0x00ffffffu, (dbArcW[5][2] >> 24) & 0xffu,
+              dbArcW[6][0], dbArcW[6][1], dbArcW[6][2] & 0x00ffffffu, (dbArcW[6][2] >> 24) & 0xffu,
+              dbArcW[7][0], dbArcW[7][1], dbArcW[7][2] & 0x00ffffffu, (dbArcW[7][2] >> 24) & 0xffu,
+              dbFind[0][0], dbFind[0][1], dbFind[1][0], dbFind[1][1],
+              dbFind[2][0], dbFind[2][1], dbFind[3][0], dbFind[3][1],
               gmuLogWords[0], gmuLogWords[1], gmuLogWords[2], gmuLogWords[3],
               gmuLogWords[4], gmuLogWords[5], gmuLogWords[6], gmuLogWords[7],
               gmuLogWords[8], gmuLogWords[9], gmuLogWords[10], gmuLogWords[11],
