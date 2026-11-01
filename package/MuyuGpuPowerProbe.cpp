@@ -377,7 +377,7 @@ static uint32_t rsccByte(uint32_t off) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 27) mode = 27;
+    if (mode > 28) mode = 28;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -839,6 +839,8 @@ extern "C" void muyu_gpu_power_probe(void) {
     static uint32_t gxPowerGdscr = 0, gxPowerCfg = 0;
     static uint32_t gxBlock[4] = {0, 0, 0, 0};
     static uint32_t gxGdscr = 0, gxRbbm = 0, gxIoError = 0;
+    static unsigned gx28Ran = 0;
+    static uint32_t gx28CounterA = 0, gx28CounterB = 0, gx28Status = 0, gx28Status3 = 0;
     static uint32_t gmuLogWords[32];
     if (mode >= 12) {
         if (gmuColdStatus == ShengGmuSuccess && gmuColdMap == 0) {
@@ -908,6 +910,19 @@ extern "C" void muyu_gpu_power_probe(void) {
             // diagnostics there, which is the only way to see why it refused an OOB.
             const volatile uint32_t *log = (const volatile uint32_t *)gmuMem[3]->getBytesNoCopy();
             for (unsigned i = 0; i < 32; ++i) gmuLogWords[i] = log[i];
+        }
+        if (mode >= 28 && gxPower == 1) {
+            // Mode 28: prove the GX clock is really running rather than trusting one status bit.
+            // CP_ALWAYS_ON_COUNTER (A740 kit 0x00980) is driven by the GX clock: if the clock is
+            // off it cannot advance. Reading it twice with a 2 ms gap is self-validating - a
+            // nonzero delta needs a live clock, and no plausible stuck-register artefact moves
+            // on its own. RBBM_STATUS/STATUS3 come along because they only decode when GX is up.
+            gx28Ran = 1;
+            gxRead(nullptr, 0x00980, &gx28CounterA);
+            read32(nullptr, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &gx28Status);
+            gxRead(nullptr, 0x00213, &gx28Status3);
+            IODelay(2000);
+            gxRead(nullptr, 0x00980, &gx28CounterB);
         }
         IOLog("MUYU GPU POWER gx power=%u gdscr=%08x cfg=%08x polls=%u\n",
               gxPower, gxPowerGdscr, gxPowerCfg, gxPowerPolls);
@@ -1244,6 +1259,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu cold guard=%u map=%u db=%u votes=%u cold=%u ph=%u proto=%u fw=%08x hfi=%08x v2=%u f=%u\n"
               "gmu cold hash=%u reset=%u ready=%u/%u rw=%u/%u polls=%u ao=%08x cm3=%08x cfg=%u/%u/%u/%u\n"
               "gmu gx power=%u gdscr=%08x cfg=%08x polls=%u\n"
+              "gmu gx28 ran=%u ctr=%08x>%08x d=%u st=%08x st3=%08x\n"
               "gmu gx legacy ran=%u ack=%u polls=%u st=%08x>%08x info=%08x blk=%08x/%08x/%08x/%08x\n"
               "gmu gx rail ran=%u was=%u en=%u polls=%u io=%u %08x>%08x\n"
               "gmu gx ran=%u ack=%u clr=%u polls=%u on=%u io=%u st=%08x>%08x info=%08x gdscr=%08x rbbm=%08x\n"
@@ -1297,6 +1313,8 @@ extern "C" void muyu_gpu_power_probe(void) {
               gmuStartup.gpu_count, gmuStartup.gmu_count, gmuStartup.bandwidth_count,
               gmuStartup.acd_count,
               gxPower, gxPowerGdscr, gxPowerCfg, gxPowerPolls,
+              gx28Ran, gx28CounterA, gx28CounterB,
+              (unsigned)(gx28CounterB - gx28CounterA), gx28Status, gx28Status3,
               gxLegacy.ran, gxLegacy.acked, gxLegacy.polls, gxLegacy.status_before,
               gxLegacy.status_after, gxLegacy.intr_info,
               gxBlock[0], gxBlock[1], gxBlock[2], gxBlock[3],
