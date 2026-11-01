@@ -644,7 +644,7 @@ void muyu_usb_debug_start(void)
     static bool attempted;
     int enabled=0;
     u.stage="off";
-    if (!PE_parse_boot_argn("muyu_usb",&enabled,sizeof(enabled)) || enabled!=1) return;
+    if (!PE_parse_boot_argn("muyu_usb",&enabled,sizeof(enabled)) || enabled<1) return;
     if (attempted) return;
     attempted=true;
     u.stage="start";
@@ -682,10 +682,10 @@ void muyu_usb_debug_start(void)
     smmu_survey();
     {
         vm_offset_t phy=ml_io_map(MUYU_SSPHY_BASE,MUYU_SSPHY_BYTES);
-        unsigned init_phy=0;
-        /* Opt-in because it writes 165 PHY registers: muyu-usb-phy-init=1. */
-        if (PE_parse_boot_argn("muyu-usb-phy-init",&init_phy,sizeof(init_phy)) && init_phy==1)
-            u.ssphy_init_rc=ssphy_power_on(phy);
+        /* muyu_usb=1 surveys only; muyu_usb=2 also programs the 165-entry PHY table.
+         * (A separate muyu-usb-phy-init argument was dropped: the boot command line is at its
+         * 1000-byte limit and the two extra words did not fit next to a 60 s panic delay.) */
+        if (enabled>=2) u.ssphy_init_rc=ssphy_power_on(phy);
         ssphy_survey(phy);
     }
     gcc_usb_up(gcc);

@@ -310,7 +310,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 17) mode = 17;
+    if (mode > 19) mode = 19;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -704,6 +704,15 @@ extern "C" void muyu_gpu_power_probe(void) {
                                                           MUYU_RSC_GFX_INIT_LEVEL,
                                                           MUYU_RSC_MXC_INIT_LEVEL, &rpmhArcs);
             if (rpmhDbStatus == MuyuRpmhRscSuccess) {
+                // 2026-11-01 on-device: voting the DT init levels (0x10/0x30) got vote=success and
+                // gfx sel 1 / mxc sel 2, but gpu_cc_gx_gdsc still read PWR_ON without
+                // POWER_UP_COMPLETE (cfg=050e0000). The ARC level a GDSC needs is the one its OPP
+                // corner asks for, and the init level is only the regulator's boot default. Vote the
+                // top of each table instead: muyu-gpu-arc-max=1.
+                unsigned arcMax = 0;
+                PE_parse_boot_argn("muyu-gpu-arc-max", &arcMax, sizeof arcMax);
+                if (arcMax && rpmhArcs.gfx.count > 1) rpmhArcs.gfx.selector = rpmhArcs.gfx.count - 1;
+                if (arcMax && rpmhArcs.mxc.count > 1) rpmhArcs.mxc.selector = rpmhArcs.mxc.count - 1;
                 rpmhGfxAddr = rpmhArcs.gfx.address;
                 rpmhMxcAddr = rpmhArcs.mxc.address;
                 rpmhGfxSel = rpmhArcs.gfx.selector;
@@ -773,6 +782,32 @@ extern "C" void muyu_gpu_power_probe(void) {
                 r.gx_gdscr = gxGdscr;
                 r.rbbm_status = gxRbbm;
             }
+            // mode 18: on this board GDSCR bit31 is both the power request and the status word,
+            // and it already reads set, while CFG_GDSCR bit16 does not. So gate on bit31 and try
+            // the GX core clock (gpucc-cliffs: gpu_cc_mnd1x_0/1_gfx3d_clk, CBCR 0x9158/0x915c),
+            // then read the GPU window. One boot then separates "rail never came up" from
+            // "rail up, GX clock never enabled". A read with the rail really off can hang the
+            // bus instead of faulting, which is why this is behind mode 18 and not the default.
+            if (mode >= 18) {
+                read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &gxGdscr);
+                if (mgb_gdsc_on(gxGdscr)) {
+                    uint32_t cb = 0;
+                    read32(nullptr, MGB_WIN_GPUCC, 0x9158, &cb); gxBlock[0] = cb;
+                    write32(nullptr, MGB_WIN_GPUCC, 0x9158, cb | MGB_CBCR_ENABLE);
+                    read32(nullptr, MGB_WIN_GPUCC, 0x915c, &cb); gxBlock[1] = cb;
+                    write32(nullptr, MGB_WIN_GPUCC, 0x915c, cb | MGB_CBCR_ENABLE);
+                    for (int i = 0; i < 100; ++i) {
+                        read32(nullptr, MGB_WIN_GPUCC, 0x9158, &cb);
+                        if (!(cb & MGB_CBCR_CLK_OFF)) break;
+                        IODelay(10);
+                    }
+                    read32(nullptr, MGB_WIN_GPUCC, 0x9158, &gxBlock[2]);
+                    read32(nullptr, MGB_WIN_GPUCC, 0x915c, &gxBlock[3]);
+                    read32(nullptr, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &gxRbbm);
+                    r.rbbm_status = gxRbbm;
+                    r.gx_gdscr = gxGdscr;
+                }
+            }
         }
         if (mode >= 13 && gmuMem[3]) {
             // The GMU log buffer (GENERAL_8 iova, 16 KiB); the firmware writes its own
@@ -792,6 +827,51 @@ extern "C" void muyu_gpu_power_probe(void) {
               "st=%08x>%08x info=%08x gdscr=%08x rbbm=%08x\n",
               gx.ran, gx.acked, gx.cleared, gx.polls, gx.gx_on, (unsigned)gx.io_error,
               gx.status_before, gx.status_after, gx.intr_info, gxGdscr, gxRbbm);
+    }
+
+    // mode 19: power GX the way the vendor driver does, through the GMU instead of CPU writes to
+    // the ARC block. fw/android-harvest/msm-drv/a6xx_gmu.c:
+    //   a6xx_gmu_gfx_rail_on()  GMU_BOOT_SLUMBER_OPTION=0, GX_VOTE_IDX, MX_VOTE_IDX,
+    //                           then OOB BOOT_SLUMBER (host intr bit 22, ack bit 30)
+    //   a6xx_sptprac_enable()   GX_SPTPRAC_POWER_CONTROL=0x778000, poll SPTPRAC_PWR_CLK_STATUS
+    //                           until (val & 0x38) == 0x28 (GDSC powered + GX clock on)
+    // Register numbers are a6xx_gmu.xml dword offsets, which is what gxRead/gxWrite take.
+    static uint32_t gx19[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static unsigned gx19Ack = 0, gx19Ran = 0;
+    if (mode >= 19) {
+        if (gmuWinMapped & (1u << MGW_CORE)) {
+            uint32_t v = 0;
+            gx19Ran = 1;
+            gxRead(nullptr, 0x1f992, &gx19[0]);                 // GMU2HOST_INTR_INFO before
+            gxWrite(nullptr, 0x1cbf8, 0);                       // BOOT_SLUMBER_OPTION
+            gxWrite(nullptr, 0x1cbf9, rpmhGfxSel & 0xff);       // GX_VOTE_IDX
+            gxWrite(nullptr, 0x1cbfa, rpmhMxcSel & 0xff);       // MX_VOTE_IDX
+            gxWrite(nullptr, 0x1f994, 1u << 22);                // HOST2GMU_INTR_SET: BOOT_SLUMBER
+            for (int i = 0; i < 1000; ++i) {
+                gxRead(nullptr, 0x1f992, &v);
+                if (v & (1u << 30)) { gx19Ack = 1; break; }
+                IODelay(100);
+            }
+            gxRead(nullptr, 0x1f992, &gx19[1]);                 // info after
+            gxWrite(nullptr, 0x1a881, 0x778000);                // CPU-controlled SPTPRAC on
+            for (int i = 0; i < 200; ++i) {
+                gxRead(nullptr, 0x1f8d0, &v);
+                gx19[2] = v;
+                if ((v & 0x38) == 0x28) break;
+                IODelay(500);
+            }
+            gxRead(nullptr, 0x1f8d0, &gx19[3]);                 // SPTPRAC_PWR_CLK_STATUS final
+            read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &gx19[4]);
+            read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_CFG_GDSCR, &gx19[5]);
+            if (mgb_gdsc_on(gx19[4])) {
+                read32(nullptr, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &gx19[6]);
+                r.rbbm_status = gx19[6];
+                r.gx_gdscr = gx19[4];
+            }
+            gxRead(nullptr, 0x1f8d0, &gx19[7]);
+        }
+        IOLog("MUYU GPU POWER gx19 ran=%u ack=%u info=%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x now=%08x\n",
+              gx19Ran, gx19Ack, gx19[0], gx19[1], gx19[2], gx19[3], gx19[4], gx19[5], gx19[6], gx19[7]);
     }
 
     if (panicDump) {
@@ -816,6 +896,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx rail ran=%u was=%u en=%u polls=%u io=%u %08x>%08x\n"
               "gmu gx ran=%u ack=%u clr=%u polls=%u on=%u io=%u st=%08x>%08x info=%08x gdscr=%08x rbbm=%08x\n"
               "gmu rpmh map=%d cold=%u db=%u vote=%s rsc=%08x cfg=%08x gfx=%08x/%u mxc=%08x/%u tcs=%u polls=%u\n"
+              "gmu gx19 ran=%u ack=%u info=%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x now=%08x\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
@@ -862,6 +943,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               MuyuRpmhRscStatusText((MuyuRpmhRscStatus)rpmhStatus),
               rpmhVersion[0], rpmhVersion[1], rpmhGfxAddr, rpmhGfxSel,
               rpmhMxcAddr, rpmhMxcSel, rpmhTcs, rpmhPolls,
+              gx19Ran, gx19Ack, gx19[0], gx19[1], gx19[2], gx19[3], gx19[4], gx19[5], gx19[6], gx19[7],
               gmuLogWords[0], gmuLogWords[1], gmuLogWords[2], gmuLogWords[3],
               gmuLogWords[4], gmuLogWords[5], gmuLogWords[6], gmuLogWords[7],
               gmuLogWords[8], gmuLogWords[9], gmuLogWords[10], gmuLogWords[11],
