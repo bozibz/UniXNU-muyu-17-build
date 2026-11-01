@@ -312,6 +312,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 static uint8_t gCmdDbCopy[SHENG_GMU_COMMAND_DB_BYTES];
 static unsigned gPreHfiGxSel = 0, gPreHfiMxSel = 0;
 static unsigned gPreHfiRan = 0, gPreHfiAck = 0;
+static int gPerfV2Used = 0;
 static uint32_t gPreHfiGdscrBefore = 0, gPreHfiGdscrAfter = 0;
 static int preHfiRailOn(void *) __attribute__((unused));
 static int preHfiRailOn(void *) {
@@ -698,8 +699,15 @@ extern "C" void muyu_gpu_power_probe(void) {
             gmuVotes.enable_ifpc = 0;
             gmuDbStatus = (unsigned)ShengGmuCommandDbInputs(gmuCmdDb, sizeof gmuCmdDb,
                                                            SHENG_GMU_COMMAND_DB_VERSION, &gmuVotes);
-            if (gmuDbStatus == ShengGmuDbSuccess)
+            if (gmuDbStatus == ShengGmuDbSuccess) {
                 gmuVoteStatus = (unsigned)ShengGmuBuildStartup(&gmuVotes, &gmuStartup);
+                // Gen7 firmware >= 0x20060001 only answers the performance table as msg 0x0f
+                // (HANDOFF 23.7); the legacy 0x04 table leaves the GPU slumbered.
+                if (mode >= 26) {
+                    gmuStartup.perf_table_v2 = 1;
+                    gPerfV2Used = 1;
+                }
+            }
             if (gmuDbStatus == ShengGmuDbSuccess && gmuVoteStatus == AdrenoHfiStartupSuccess &&
                 gmuColdMap == 0) {
                 __builtin_memset(&gmuConfig, 0, sizeof gmuConfig);
