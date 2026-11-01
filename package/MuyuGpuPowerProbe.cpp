@@ -346,7 +346,7 @@ static int preHfiRailOn(void *) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 23) mode = 23;
+    if (mode > 24) mode = 24;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -1042,12 +1042,52 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11]);
     }
 
+    // mode 24: first real host-side GPU step. gpucc-cliffs.c lists GPUCC_GPU_CC_GX_BCR at 0x9030 and
+    // GPUCC_GPU_CC_GFX3D_AON_BCR at 0x910c, and the core clock branches (gpu_cc_mnd1x_0/1_gfx3d_clk)
+    // at 0x9158/0x915c. Mode 18 enabled those branches without ever deasserting the block resets, and
+    // read back zero. Deassert both block resets first, then the branches, then read RBBM_STATUS.
+    static uint32_t gx24[10] = {0};
+    static unsigned gx24Ran = 0;
+    if (mode >= 24) {
+        if (gmuWinMapped & (1u << MGW_GPU) && mgb_gdsc_on(gxPowerGdscr)) {
+            uint32_t v = 0;
+            gx24Ran = 1;
+            read32(nullptr, MGB_WIN_GPUCC, 0x9030, &gx24[0]);      // GX BCR before
+            write32(nullptr, MGB_WIN_GPUCC, 0x9030, 0);            // deassert GX block reset
+            IODelay(1000);
+            read32(nullptr, MGB_WIN_GPUCC, 0x9030, &gx24[1]);
+            read32(nullptr, MGB_WIN_GPUCC, 0x910c, &gx24[2]);      // GFX3D AON BCR before
+            write32(nullptr, MGB_WIN_GPUCC, 0x910c, 0);            // deassert
+            IODelay(1000);
+            read32(nullptr, MGB_WIN_GPUCC, 0x910c, &gx24[3]);
+            read32(nullptr, MGB_WIN_GPUCC, 0x9158, &v); gx24[4] = v;
+            write32(nullptr, MGB_WIN_GPUCC, 0x9158, v | MGB_CBCR_ENABLE);
+            read32(nullptr, MGB_WIN_GPUCC, 0x915c, &v); gx24[5] = v;
+            write32(nullptr, MGB_WIN_GPUCC, 0x915c, v | MGB_CBCR_ENABLE);
+            for (int i = 0; i < 200; ++i) {
+                read32(nullptr, MGB_WIN_GPUCC, 0x9158, &v);
+                if (!(v & MGB_CBCR_CLK_OFF)) break;
+                IODelay(10);
+            }
+            read32(nullptr, MGB_WIN_GPUCC, 0x9158, &gx24[6]);
+            read32(nullptr, MGB_WIN_GPUCC, 0x915c, &gx24[7]);
+            read32(nullptr, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &gx24[8]);
+            read32(nullptr, MGB_WIN_GPU, 0x0211u * 4u, &gx24[9]);   // RBBM_STATUS1
+            r.rbbm_status = gx24[8];
+        }
+        IOLog("MUYU GPU POWER gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n",
+              gx24Ran, gx24[0], gx24[1], gx24[2], gx24[3],
+              gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "gmu gx23a ran=%u clk=%08x pwr=%08x st=%08x cnt=%08x\n"
               "gmu gx23b rpmh=%08x/%08x fal=%08x/%08x\n"
               "gmu gx23c slum=%08x gx=%02x mx=%02x info=%08x\n"
               "gmu prehfi ran=%u ack=%u gx=%u mx=%u\n"
+              "gmu gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x\n"
+              "gmu gx24 clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
@@ -1080,6 +1120,8 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx23[4], gx23[5], gx23[6], gx23[7],
               gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11],
               gPreHfiRan, gPreHfiAck, gPreHfiGxSel, gPreHfiMxSel,
+              gx24Ran, gx24[0], gx24[1], gx24[2], gx24[3],
+              gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,
