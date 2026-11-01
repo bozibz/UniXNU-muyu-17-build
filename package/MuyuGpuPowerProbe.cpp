@@ -310,7 +310,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 22) mode = 22;
+    if (mode > 23) mode = 23;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -972,8 +972,42 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx22Ran, gx22Ack, gx22[0], gx22[1], gx22[2], gx22[3], gx22[4], gx22[5], gx22[6], gx22[7]);
     }
 
+    // mode 23: read-only GMU state survey. The XML gives two address variants for the same
+    // registers (a6xx_gmu.xml: RPMH_POWER_STATE 0x1f8ec "A6XX" vs 0x1f7e9 "A8XX-"), and A7XX sits
+    // between them, so read both and let the sane value pick the right one. Also reads the
+    // SPTPRAC clock/power control pair (0x1a880/0x1a881) and the power-counter enable, which say
+    // whether the firmware or the CPU owns GX clock control right now.
+    static uint32_t gx23[12] = {0};
+    static unsigned gx23Ran = 0;
+    if (mode >= 23) {
+        if (gmuWinMapped & (1u << MGW_CORE)) {
+            gx23Ran = 1;
+            gxRead(nullptr, 0x1a880, &gx23[0]);   // GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL
+            gxRead(nullptr, 0x1a881, &gx23[1]);   // GMU_GX_SPTPRAC_POWER_CONTROL
+            gxRead(nullptr, 0x1f8d0, &gx23[2]);   // SPTPRAC_PWR_CLK_STATUS
+            gxRead(nullptr, 0x1f840, &gx23[3]);   // GMU_CX_GMU_POWER_COUNTER_ENABLE
+            gxRead(nullptr, 0x1f7e9, &gx23[4]);   // RPMH_POWER_STATE (A8XX- variant)
+            gxRead(nullptr, 0x1f8ec, &gx23[5]);   // RPMH_POWER_STATE (A6XX variant)
+            gxRead(nullptr, 0x1f7ed, &gx23[6]);   // CX_FALNEXT_INTF (A8XX- variant)
+            gxRead(nullptr, 0x1f8f1, &gx23[7]);   // CX_FALNEXT_INTF (A6XX variant)
+            gxRead(nullptr, 0x1cbf8, &gx23[8]);   // BOOT_SLUMBER_OPTION
+            gxRead(nullptr, 0x1cbf9, &gx23[9]);   // GX_VOTE_IDX
+            gxRead(nullptr, 0x1cbfa, &gx23[10]);  // MX_VOTE_IDX
+            gxRead(nullptr, 0x1f992, &gx23[11]);  // GMU2HOST_INTR_INFO
+        }
+        IOLog("MUYU GPU POWER gx23a ran=%u clk=%08x pwr=%08x st=%08x cnt=%08x\n",
+              gx23Ran, gx23[0], gx23[1], gx23[2], gx23[3]);
+        IOLog("MUYU GPU POWER gx23b rpmh=%08x/%08x fal=%08x/%08x\n",
+              gx23[4], gx23[5], gx23[6], gx23[7]);
+        IOLog("MUYU GPU POWER gx23c slum=%08x gx=%02x mx=%02x info=%08x\n",
+              gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
+              "gmu gx23a ran=%u clk=%08x pwr=%08x st=%08x cnt=%08x\n"
+              "gmu gx23b rpmh=%08x/%08x fal=%08x/%08x\n"
+              "gmu gx23c slum=%08x gx=%02x mx=%02x info=%08x\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
@@ -1002,6 +1036,9 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
               r.io_error, r.cfg_ahb, r.cfg_ahb_after, r.enabled_ahb, r.memnoc, r.dvm, r.ddrss_axi, r.pll_vote,
+              gx23Ran, gx23[0], gx23[1], gx23[2], gx23[3],
+              gx23[4], gx23[5], gx23[6], gx23[7],
+              gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,
