@@ -201,9 +201,13 @@ static int publish_page(void *cookie, volatile uint64_t *page, size_t bytes)
  * bounds. Nothing is allocated lazily beyond what the walk asks for. */
 static int a4k_allocate(void *cookie, uint64_t *physical, volatile uint64_t **mapping)
 {
+    /* The first page of the pool is the root table the plan already publishes
+     * (config.table_physical), so allocation starts at page 1: handing the root out again would
+     * make two tables share one frame and ArmSmmu4KLive rejects that as a state mismatch. */
     MuyuGmuSmmu *state = cookie;
     const MuyuGmuSmmuPool *pool = &state->plan.pool;
-    if (!pool->cpu || !pool->capacity_pages) return 1;
+    if (!pool->cpu || pool->capacity_pages < 2) return 1;
+    if (state->pages_taken == 0) state->pages_taken = 1;
     if (state->pages_taken >= pool->capacity_pages) return 1;
     const uint64_t physical_page = pool->physical + (uint64_t)state->pages_taken * PAGE;
     volatile uint64_t *cpu_page =
@@ -217,6 +221,9 @@ static int a4k_allocate(void *cookie, uint64_t *physical, volatile uint64_t **ma
 
 static volatile uint64_t *a4k_find(void *cookie, uint64_t physical)
 {
+    /* The plan owns the whole extent up front, so every page of it is addressable from the start:
+     * the root table (config.table_physical) is asked for before any allocate() has run, and
+     * ArmSmmu4KLive refuses the arena outright when find() cannot answer for it. */
     MuyuGmuSmmu *state = cookie;
     const MuyuGmuSmmuPool *pool = &state->plan.pool;
     if (!pool->cpu || physical < pool->physical) return 0;
