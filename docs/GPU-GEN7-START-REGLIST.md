@@ -90,4 +90,7 @@ vendor-backed and was dropped.
 export PATH=/opt/homebrew/opt/llvm/bin:$PATH
 llvm-objdump -dr --start-address=0x73ba8 --stop-address=0x745f0 \
   fw/android-harvest/msm_kgsl.ko
+# that range has 75 call relocations in total; 51 of them are kgsl_regmap_write:
+llvm-objdump -dr --start-address=0x73ba8 --stop-address=0x745f0 \
+  fw/android-harvest/msm_kgsl.ko | grep -c 'CALL26.*kgsl_regmap_write'   # 51
 ```
