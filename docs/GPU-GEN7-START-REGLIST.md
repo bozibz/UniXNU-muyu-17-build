@@ -94,3 +94,37 @@ llvm-objdump -dr --start-address=0x73ba8 --stop-address=0x745f0 \
 llvm-objdump -dr --start-address=0x73ba8 --stop-address=0x745f0 \
   fw/android-harvest/msm_kgsl.ko | grep -c 'CALL26.*kgsl_regmap_write'   # 51
 ```
+
+## The `multi_write` reglist: NOT resolved (and the obvious guess is wrong)
+
+`gen7_start` starts with `kgsl_regmap_multi_write(regmap, ptr, count)` where
+`ptr = [x21 + 0xa8]`, `count = [x21 + 0xb0]`, `x21 = [dev + 0x1920]`.
+
+Things that were checked and did **not** settle it:
+
+- The static initialisers of every `*_gpudev` struct have **no relocation at `+0xa8`**,
+  so that field is not a statically-initialised table pointer.
+- The device tree node `soc/qcom,kgsl-3d0@3d00000` has **no init reglist property**
+  (only `qcom,initial-pwrlevel`, `qcom,bus-table-*`, `qcom,min-access-length`, ...).
+  The one `of_property_read_variable_u32_array` call that was decoded reads
+  `qcom,min-access-length`, not a reglist.
+- There **are** static symbols named like tables:
+
+  ```
+  gen7_pwrup_reglist          0x1f6a0  size 0x44  (17 u32 words)
+  gen7_0_0_pwrup_reglist      0x1f65c  size 0x44
+  gen7_ifpc_pwrup_reglist     0x1f574  size 0xd8
+  gen7_0_0_ifpc_pwrup_reglist 0x1f4a0  size 0xd4
+  ```
+
+  But **their entry format is not `(offset, value)`**: all 17 words of
+  `gen7_pwrup_reglist` look like register offsets, one word (at `0x1f6c0`) carries a
+  `PREL32` relocation, and pairing them yields "values" such as `0xe0a`/`0xe08`
+  that contradict the real values `gen7_start` writes to the same registers
+  (`0xe08 <- 0x0001ffff`, `0xe0a <- 0x0001ffff`). They are most likely
+  save/restore or mask tables, not the init sequence.
+
+**Conclusion: the `multi_write` table is still unknown.** Do not synthesise one.
+Two honest ways forward: read `[dev+0x1920]+0xa8` / `+0xb0` at runtime on the device
+(the panic screen already proves those reads are safe), or take the table from the
+vendor kernel sources.
