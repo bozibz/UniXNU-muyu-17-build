@@ -362,10 +362,18 @@ static int preHfiRailOn(void *) {
     return 0;
 }
 
+// Byte access into the GMU core window: the gen7 RSCC handshake uses an unaligned register
+// offset (0x23b07), which a 32-bit Device access may fault on.
+static uint32_t rsccByte(uint32_t off) {
+    if (!gGmuWindows[MGW_CORE].base) return 0;
+    if ((uint64_t)off >= gGmuWindows[MGW_CORE].bytes) return 0;
+    return *reinterpret_cast<volatile uint8_t *>(gGmuWindows[MGW_CORE].base + off);
+}
+
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 24) mode = 24;
+    if (mode > 25) mode = 25;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -1106,6 +1114,28 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9]);
     }
 
+    // mode 25: gen7's pre-firmware RSCC wakeup handshake (gen7_rscc_wakeup_sequence):
+    //   write 2 to byte offset 0x23b07, dsb, poll 0x23b08 bit2, read rscc+0x404, write 0 back.
+    // 0x23b07 sits inside the GMU core window (0x37000 bytes), i.e. the RSC sub-block, and our
+    // core_write already takes byte offsets. Read-only unless the mode is requested.
+    static uint32_t rscc25[8] = {0};
+    static unsigned rscc25Ran = 0;
+    if (mode >= 25) {
+        if (gmuWinMapped & (1u << MGW_CORE)) {
+            rscc25Ran = 1;
+            // Read-only: the vendor register offset is unaligned, and an unaligned 32-bit Device
+            // access can fault, so probe the four bytes around it first.
+            rscc25[0] = rsccByte(0x23b04);   // 0x23b04..0x23b07 as one word
+            rscc25[1] = rsccByte(0x23b07);   // the control byte the vendor writes 2 to
+            rscc25[2] = rsccByte(0x23b08);   // the status byte the vendor polls
+            rscc25[3] = rsccByte(0x23b09);
+            rscc25[4] = rsccByte(0x23b0a);
+            rscc25[5] = rsccByte(0x23b0b);
+        }
+        IOLog("MUYU GPU POWER rscc25 ran=%u ctl=%08x>%08x st=%08x/%08x seq=%08x\n",
+              rscc25Ran, rscc25[0], rscc25[4], rscc25[1], rscc25[5], rscc25[3]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -1115,6 +1145,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu prehfi ran=%u ack=%u gx=%u mx=%u gd=%08x>%08x\n"
               "gmu gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x\n"
               "gmu gx24 clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n"
+              "gmu rscc25 ran=%u ctl=%08x>%08x st=%08x/%08x seq=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
               "pll1=%08x/%08x l=%08x user=%08x gmurcgr=%08x gmucfg=%08x hubrcgr=%08x hubcfg=%08x\n"
@@ -1148,6 +1179,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gPreHfiRan, gPreHfiAck, gPreHfiGxSel, gPreHfiMxSel, gPreHfiGdscrBefore, gPreHfiGdscrAfter,
               gx24Ran, gx24[0], gx24[1], gx24[2], gx24[3],
               gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9],
+              rscc25Ran, rscc25[0], rscc25[4], rscc25[1], rscc25[5], rscc25[3],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,
