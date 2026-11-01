@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Power and volume buttons of the muyu board (boot argument muyu-buttons=1), sent as the Consumer
 // Power, Volume Increment and Volume Decrement bits of the HID input device's report 2
-// (drivers/NativeHidInput).
+// (drivers/ShengHidInput).
 //
 // Adapted from UniXNU-sheng/package/ButtonProbe.cpp (Xiaomi Pad 6S Pro) for the Xiaomi Pad 7 Pro
 // (muyu, SM8635 / Snapdragon 8s Gen 3). Devicetree facts:

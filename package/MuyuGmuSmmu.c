@@ -195,6 +195,44 @@ static int publish_page(void *cookie, volatile uint64_t *page, size_t bytes)
         pool->physical + (at - base), bytes) : 1;
 }
 
+/* ArmSmmu4K now takes table pages on demand instead of a preallocated block. The plan still owns one
+ * contiguous extent, so the three callbacks below hand out that extent one page at a time: the first
+ * allocate() returns its base, the next returns base+1 page, and find()/overlaps() answer from the same
+ * bounds. Nothing is allocated lazily beyond what the walk asks for. */
+static int a4k_allocate(void *cookie, uint64_t *physical, volatile uint64_t **mapping)
+{
+    MuyuGmuSmmu *state = cookie;
+    const MuyuGmuSmmuPool *pool = &state->plan.pool;
+    if (!pool->cpu || !pool->capacity_pages) return 1;
+    if (state->pages_taken >= pool->capacity_pages) return 1;
+    const uint64_t physical_page = pool->physical + (uint64_t)state->pages_taken * PAGE;
+    volatile uint64_t *cpu_page =
+        (volatile uint64_t *)((uintptr_t)pool->cpu + (uintptr_t)state->pages_taken * PAGE);
+    memset((void *)cpu_page, 0, PAGE);
+    ++state->pages_taken;
+    if (physical) *physical = physical_page;
+    if (mapping) *mapping = cpu_page;
+    return 0;
+}
+
+static volatile uint64_t *a4k_find(void *cookie, uint64_t physical)
+{
+    MuyuGmuSmmu *state = cookie;
+    const MuyuGmuSmmuPool *pool = &state->plan.pool;
+    if (!pool->cpu || physical < pool->physical) return 0;
+    const uint64_t offset = physical - pool->physical;
+    if (offset >= (uint64_t)pool->capacity_pages * PAGE || (offset & (PAGE - 1))) return 0;
+    return (volatile uint64_t *)((uintptr_t)pool->cpu + (uintptr_t)offset);
+}
+
+static int a4k_overlaps(void *cookie, uint64_t physical, uint64_t bytes)
+{
+    MuyuGmuSmmu *state = cookie;
+    const MuyuGmuSmmuPool *pool = &state->plan.pool;
+    if (!pool->capacity_pages) return 0;
+    return overlaps(physical, bytes, pool->physical, (uint64_t)pool->capacity_pages * PAGE);
+}
+
 MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *plan,
     const MuyuGmuSmmuCache *cache, MuyuGmuSmmu *state)
 {
@@ -232,12 +270,13 @@ MuyuGmuSmmuOutcome MuyuGmuSmmuRun(const ArmSmmu4KIo *io, const MuyuGmuSmmuPlan *
     const uint64_t iova = MUYU_GMU_ICACHE_IOVA;
     const uint64_t bytes = MUYU_GMU_DEBUG_IOVA + MUYU_GMU_DEBUG_BYTES - iova;
 
+    state->pages_taken = 0;
+    state->pages = (ArmSmmu4KTablePages){ state, a4k_allocate, a4k_find, a4k_overlaps };
     state->arena = (ArmSmmu4KLiveArena){
         .config = { MUYU_GMU_INPUT_BITS, MUYU_GMU_OUTPUT_BITS, pool->physical,
                     (size_t)(bytes / PAGE) },
         .iova = iova, .bytes = bytes, .upper_region = 0,
-        .mapping = (volatile uint64_t *)pool->cpu,
-        .capacity_pages = pool->capacity_pages,
+        .pages = &state->pages,
         .alias_scratch = state->alias_scratch,
         .alias_scratch_entries = MUYU_GMU_EXTENTS,
     };

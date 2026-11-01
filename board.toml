@@ -98,7 +98,13 @@ slide = "-0x1000000"
 early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
 # The board's display audits read build/xnu-prelink/<name>.{macho,json}; the prelink stage
 # republishes its plan under this name because the fields they verify are the same.
-reference_candidate = "native-owner-mobile-graphics-candidate"
+reference_candidate = [
+  "native-owner-mobile-graphics-candidate",
+  "native-owner-ufs-rootauth3-candidate",
+  "native-owner-ufs-cpu-desktop-v9-hid-init-candidate",
+  "native-owner-renderbox-presentation-candidate",
+  "native-owner-metal-shared-events-candidate",
+]
 roots = [
   "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
   "com.apple.driver.AppleARMPlatform",

@@ -23,9 +23,9 @@ extern "C" {
 // Weak so a build without one still links; stage 35 checks the address before using the bytes.
 extern const uint8_t native_touch_firmware[] __attribute__((weak_import));
 extern const uint32_t native_touch_firmware_size __attribute__((weak_import));
-#include "../../drivers/NativeGeniSpi/GeniSpi.h"
-#include "../../drivers/NativeNovatekTouch/NvtProtocol.h"
-#include "../../drivers/NativeNovatekTouch/NvtTouchCore.h"
+#include "../../drivers/QcomGeniSpi/GeniSpi.h"
+#include "../../drivers/ShengNovatekTouch/NvtProtocol.h"
+#include "../../drivers/ShengNovatekTouch/NvtTouchCore.h"
 #include "TouchBoardMuyu.h"
 #include "SmmuBypass.h"
 }

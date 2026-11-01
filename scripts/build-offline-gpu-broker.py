@@ -40,7 +40,7 @@ if options.accelerator_abi:
     run(['xcrun','libtool','-static','-o',archive,late,OUT/'OfflineGPUBrokerProbe.o',ROOT/'build/native-offline-accelerator/libNativeOfflineAccelerator.late.a',*([ROOT/'build/native-original-provider/libNativeIOGPUProviderProbe.late.a'] if options.provider_probe else [])])
 else:run(['xcrun','ar','rcs',archive,late,OUT/'OfflineGPUBrokerProbe.o'])
 sysroot=ROOT/'drivers/AdrenoMetal';sources=[source,*(sysroot/n for n in ('NativeOfflineGPU.cpp','OfflineMetalWire.h','OfflineMetalQueueWire.h','OfflineMetalTextureWire.h','OfflineMetalDepthStencilWire.h','OfflineMetalFenceWire.h','OfflineMetalCommandWire.h','OfflineMetalEventWire.h','OfflineMetalSharedEventWire.h','OfflineMetalSessionWire.h')),
-    ROOT/'drivers/VirtioMmioConsole/VirtioMmioConsole.cpp',ROOT/'drivers/VirtioMmioConsole/NativeVirtioConsoleTransport.h']
+    ROOT/'drivers/VirtioMmioConsole/NativeVirtioConsole.cpp',ROOT/'drivers/VirtioMmioConsole/NativeVirtioConsoleTransport.h']
 if options.accelerator_abi:sources.extend([ROOT/'drivers/AdrenoMetal/NativeOfflineAccelerator.cpp',ROOT/'drivers/AdrenoMetal/OriginalAcceleratorABI.h',ROOT/'kits/braveark/AcceleratorABIProbe.cpp',ROOT/'kits/braveark/OriginalGPUClientABIProbe.cpp'])
 if options.provider_probe:sources.extend([ROOT/'kits/braveark/OriginalGPUProviderProbe.cpp',ROOT/'drivers/AdrenoMetal/OriginalGPUProviderABI.h',ROOT/'drivers/AdrenoMetal/NativeIOGPUProviderProbe.cpp'])
 (OUT/'build-report.json').write_text(json.dumps(dict(source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},

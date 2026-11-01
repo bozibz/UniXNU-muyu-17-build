@@ -126,6 +126,9 @@ typedef struct {
 
 typedef struct {
     MuyuGmuSmmuPlan plan;           /* a copy: callers may free their own */
+    /* ArmSmmu4K asks for table pages one at a time; these serve them out of plan.pool. */
+    ArmSmmu4KTablePages pages;
+    unsigned pages_taken;
     ArmSmmu4KLiveArena arena;
     ArmSmmu4KLiveState state;
     ArmSmmu4KContextConfig context;
