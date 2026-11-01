@@ -16,7 +16,7 @@
 
 | 项 | 事实 |
 | --- | --- |
-| 显示路径 | `drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp`（41 KB），`kickOnce()` 里用 `memcpy` 逐帧拷贝 |
+| 显示路径 | `drivers/GopFramebuffer/NativeLegacyDisplay.cpp`（41 KB），`kickOnce()` 里用 `memcpy` 逐帧拷贝 |
 | 帧率 | ~1.4 fps（HANDOFF-2026-10-27 §H.1 用 swap 计数实测：每分钟 +60~80 帧） |
 | GPU 加速 | **完全没有**。没有 GMU、没有 CP、没有 Adreno 驱动被编进 muyu 内核 |
 | 现有 GPU 探针 | `kits/AdrenoFirmware`、`kits/AdrenoPM4` 已在本机构建（`build-adreno-firmware-probe.py` 等），只是**只读探针** |

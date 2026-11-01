@@ -1189,7 +1189,7 @@ uid=2000(shell) ... context=u:r:shell:s0      # 不是 root，但 shell 可用
 
 ### 26.5 下一步（真正的移植工作，不是调试了）
 
-1. `NativeNovatekTouch` 已经在仓库里（`drivers/NativeNovatekTouch/NvtProtocol.c` + `NvtTouchCore.c`），
+1. `NativeNovatekTouch` 已经在仓库里（`drivers/ShengNovatekTouch/NvtProtocol.c` + `NvtTouchCore.c`），
    sheng 的 `package/TouchProbe.cpp` 第 4 级有完整的 bring-up + `publish()` 范例；
 2. 要补的正是这次验证过的那几步：`setSpiPins` → GCC 投票 → RCG → GENI init/clock/setup →
    SE DMA + apps-SMMU → `nvt_identify`（**已验证**）→ 然后 `nvt_bus` 读帧；
@@ -1599,7 +1599,7 @@ bring-up 也只能从探针里调。
 
 ### 34.2 现在是什么样
 
-新增 `drivers/NativeNovatekTouch/NativeNovatekTouch.{h,cpp}`：真正的 `IOService`
+新增 `drivers/ShengNovatekTouch/NativeNovatekTouch.{h,cpp}`：真正的 `IOService`
 
 ```cpp
 class NativeNovatekTouch : public IOService {
