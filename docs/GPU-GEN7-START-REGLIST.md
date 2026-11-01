@@ -125,6 +125,13 @@ Things that were checked and did **not** settle it:
   save/restore or mask tables, not the init sequence.
 
 **Conclusion: the `multi_write` table is still unknown.** Do not synthesise one.
-Two honest ways forward: read `[dev+0x1920]+0xa8` / `+0xb0` at runtime on the device
-(the panic screen already proves those reads are safe), or take the table from the
-vendor kernel sources.
+
+Two honest ways forward:
+
+1. **From the vendor kernel sources** (the MiCode muyu tree) — cheapest and exact.
+2. **Read the pointer on Android** while kgsl is loaded: `[dev+0x1920]+0xa8` and
+   `+0xb0` are live values there, and a read-only kprobe can print them.
+
+   Note this is **not** something the XNU probe can do: `[dev+0x1920]` is a kgsl
+   kernel structure that does not exist in the XNU address space, so the panic
+   screen cannot show it. Do not plan a mode for it.
