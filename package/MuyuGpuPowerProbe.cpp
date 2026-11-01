@@ -348,13 +348,15 @@ static int preHfiRailOn(void *) {
     }
     gxWrite(nullptr, 0x1f991, 0xffffffffu);             // GMU2HOST_INTR_CLR: drop pending before OOB
     IODelay(100);
-    gxWrite(nullptr, 0x1cbf8, 0);                       // BOOT_SLUMBER_OPTION = 0 (wake)
-    gxWrite(nullptr, 0x1cbf9, gPreHfiGxSel & 0xff);     // GX_VOTE_IDX
+    // gen7_gmu_oob_set uses set = 30 - (state<<1), ack = 31 - state, and gen7_gpu_boot issues
+    // state 0 (GPU_SET) right before HFI START: set bit 30, ack bit 31. The a6xx BOOT_SLUMBER
+    // bits (22/30) that were tried here first do not exist on this firmware.
+    gxWrite(nullptr, 0x1cbf9, gPreHfiGxSel & 0xff);     // GX_VOTE_IDX (kept: harmless, matches 17b)
     gxWrite(nullptr, 0x1cbfa, gPreHfiMxSel & 0xff);     // MX_VOTE_IDX
-    gxWrite(nullptr, 0x1f994, 1u << 22);                // HOST2GMU_INTR_SET: BOOT_SLUMBER
-    for (int i = 0; i < 10000; ++i) {
+    gxWrite(nullptr, 0x1f994, 1u << 30);                // HOST2GMU_INTR_SET: GPU_SET
+    for (int i = 0; i < 2000; ++i) {
         gxRead(nullptr, 0x1f992, &v);
-        if (v & (1u << 30)) { gPreHfiAck = 1; break; }
+        if (v & (1u << 31)) { gPreHfiAck = 1; break; }
         IODelay(100);
     }
     return 0;
@@ -703,8 +705,9 @@ extern "C" void muyu_gpu_power_probe(void) {
                 // selectors (gx=12 mx=9), pending interrupts cleared and a 1 s wait, the GMU still
                 // never acks BOOT_SLUMBER here, and the attempt leaves GX_HM_GDSC_POWER_OFF set
                 // (st 2 -> 3). Keep the hook available but do not arm it by default.
-                // 2026-11-01: arming this made ShengGmuColdStart time out (cold=6), so it stays
-                // off until the panic-order bug is fixed and the budget is re-measured.
+                // 2026-11-01: gen7's OOB bits are set=30-(state<<1)/ack=31-state (state 0 = GPU_SET),
+                // and gen7_gpu_boot issues it after kgsl_mmu_start, not inside the cold start. Arming
+                // it here times ShengGmuColdStart out (cold=6) and still gets ack=0, so it stays off.
                 // gmuConfig.pre_hfi = preHfiRailOn;
                 gmuConfig.pre_hfi_cookie = nullptr;
                 gmuConfig.poll_budget = 1000;
