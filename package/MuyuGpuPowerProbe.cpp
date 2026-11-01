@@ -377,7 +377,7 @@ static uint32_t rsccByte(uint32_t off) {
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 26) mode = 26;
+    if (mode > 27) mode = 27;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
