@@ -43,7 +43,7 @@ def main():
             require(sha(ROOT/name) == digest, 'Changed '+field+': '+name)
     require(sha(ROOT/r['candidate']) == r['candidate_sha256'], 'Candidate changed')
     require(sha(ROOT/r['image']) == r['image_sha256'], 'Boot image changed')
-    require(subprocess.check_output(['git','-C',str(ROOT/'drivers/NativeUfs'),'rev-parse','HEAD'],text=True).strip()
+    require(subprocess.check_output(['git','-C',str(ROOT/'drivers/ShengUfs'),'rev-parse','HEAD'],text=True).strip()
             == r['native_ufs_commit'], 'UFS revision changed')
     package = load(BASE/'package-audit/report.json')
     for name in ('candidate_sha256','image_sha256','data_seed_sha256','embedded_kernel_sha256'):

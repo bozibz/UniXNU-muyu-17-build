@@ -9,13 +9,13 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'build/native-mobile-display'
-sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset,exports
 def run(cmd,**kw):return subprocess.check_output([str(x) for x in cmd],timeout=90,**kw)
 def require(v,why):
     if not v:raise SystemExit(why)
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
-print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeMobileDisplay'],text=True),end='')
+print(run(['python3',ROOT/'scripts/build-arm-driver.py','GopFramebuffer'],text=True),end='')
 candidate=ROOT/'build/native-prelink/native-owner-mobile-graphics-candidate.macho'
 require(sha(candidate)=='aded28d3c61dafaf7b8a7c96b14427a798e9e95470ae6f287bcd038c07626798','Exact qualified original parent candidate')
 b=candidate.read_bytes();m=macho(b);names={n:v for v,ns in exports(b,m).items() for n in ns}
@@ -35,7 +35,7 @@ require(resolve_stub(branch(0xfffffff00577b348))==names['__ZN9IOServiceC2EPK11OS
 require(resolve_stub(branch(0xfffffff00577b37c))==names['__ZN9IOServiceD2Ev'],'Original base D2 really calls native IOService D2')
 # Verify compiled dispatch layout separately from the still-unclassified
 # entry signatures. Only three extension entries currently have behavior.
-obj=OUT/'NativeMobileDisplay.o';raw=obj.read_bytes();parsed=macho(raw)
+obj=OUT/'GopFramebuffer.o';raw=obj.read_bytes();parsed=macho(raw)
 at=next(p for cmd,p,_ in parsed['commands'] if cmd==2)
 sy,count,st,_=struct.unpack_from('<4I',raw,at+8);symbols=[]
 for i in range(count):
@@ -69,7 +69,7 @@ asm=OUT/'original-bindings.S';asm.write_text(''.join(f'.globl {n}\n.set {n}, {v:
 sdk=run(['xcrun','--sdk','iphoneos','--show-sdk-path'],text=True).strip()
 run(['xcrun','clang','-target','arm64-apple-ios17.0','-isysroot',sdk,'-Werror','-c',asm,'-o',OUT/'original-bindings.o'])
 llvm=Path(run(['brew','--prefix','llvm'],text=True).strip())/'bin'
-late=OUT/'NativeMobileDisplay.late.o'
+late=OUT/'GopFramebuffer.late.o'
 run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
      '--globalize-symbol=__GLOBAL__sub_I_NativeMobileDisplay.cpp',obj,late])
 late_raw=late.read_bytes();late_parsed=macho(late_raw)
@@ -93,9 +93,9 @@ cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virt
 run(cmd,cwd=r['directory'])
 archive=OUT/'libNativeMobileDisplay.late.a';archive.unlink(missing_ok=True)
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'MobileDisplayProviderProbe.o'])
-sources=[ROOT/'drivers/NativeMobileDisplay/NativeMobileDisplay.cpp',ROOT/'drivers/NativeMobileDisplay/OriginalMobileFramebufferABI.h',source]
+sources=[ROOT/'drivers/GopFramebuffer/GopFramebuffer.cpp',ROOT/'drivers/GopFramebuffer/OriginalMobileFramebufferABI.h',source]
 (OUT/'build-report.json').write_text(json.dumps(dict(
-    kit_revision=run(['git','-C',ROOT/'drivers/NativeMobileDisplay','rev-parse','HEAD'],text=True).strip(),
+    kit_revision=run(['git','-C',ROOT/'drivers/GopFramebuffer','rev-parse','HEAD'],text=True).strip(),
     source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},
     original_parent_candidate_sha256=sha(candidate),compiled_object_sha256=sha(obj),
     late_object_sha256=sha(late),archive_sha256=sha(archive),

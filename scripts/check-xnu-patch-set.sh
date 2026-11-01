@@ -7,9 +7,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 FORK_PATCHES=${UNIXNU_FORK_PATCHES:-$ROOT/../UniXNU/patches/xnu}
 DEVICE_PATCHES=$ROOT/patches/xnu
-KIT_PATCHES=$ROOT/kits/NativePrelink/patches
+KIT_PATCHES=$ROOT/kits/XnuPrelink/patches
 if [ ! -d "$KIT_PATCHES" ]; then
-  KIT_PATCHES=${UNIXNU_KIT_PATCHES:-$ROOT/../UniXNU/kits/NativePrelink/patches}
+  KIT_PATCHES=${UNIXNU_KIT_PATCHES:-$ROOT/../UniXNU/kits/XnuPrelink/patches}
 fi
 XNU_TAG=${XNU_TAG:-xnu-10063.141.1}
 XNU_COMMIT=${XNU_COMMIT:-}

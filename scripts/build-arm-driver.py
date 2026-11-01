@@ -8,39 +8,39 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('component', choices=['ArmVirtPlatform', 'ArmDTPlatform', 'ArmCpu', 'NativeAES', 'NativeVirtioBlock', 'NativeRamBlock', 'NativeMobileDisplay', 'NativeVirtioConsole', 'NativeLegacyDisplay', 'NativeGOPPresenter', 'NativeOfflineGPU', 'NativeOfflineAccelerator', 'NativeIOGPUProviderProbe', 'NativeUfs', 'NativeHidInput', 'NativeKeyStoreEvents', 'NativeAdreno'])
+parser.add_argument('component', choices=['ArmVirtPlatform', 'ArmDTPlatform', 'ArmCpu', 'SoftwareAES', 'VirtioMmioBlock', 'RamBlock', 'GopFramebuffer', 'VirtioMmioConsole', 'NativeLegacyDisplay', 'NativeGOPPresenter', 'NativeOfflineGPU', 'NativeOfflineAccelerator', 'NativeIOGPUProviderProbe', 'ShengUfs', 'ShengHidInput', 'AppleKeyStoreState', 'Adreno740'])
 parser.add_argument('--negative-aes-kat', action='store_true', help='Isolated own-source wrong-answer refusal control; never changes original inputs')
 parser.add_argument('--verified-root', action='store_true', help='Authenticate all actual disk reads against an independently signed immutable policy')
 parser.add_argument('--verified-root-bundle', action='store_true', help='Select exactly one capacity-matching policy per device, then independently authenticate it')
 parser.add_argument('--negative-verified-block', action='store_true', help='Negative own-buffer control: corrupt only the completed DMA snapshot')
-parser.add_argument('--unverified', action='store_true', help='NativeUfs: compile the bring-up transport without the verified-root policy bundle')
+parser.add_argument('--unverified', action='store_true', help='ShengUfs: compile the bring-up transport without the verified-root policy bundle')
 args = parser.parse_args()
 if args.verified_root_bundle and not args.verified_root:
     parser.error('A policy bundle requires verified block mode')
 if args.verified_root_bundle and args.negative_verified_block:
     parser.error('Select either bundle policy qualification or the isolated DMA snapshot fault')
-if (args.verified_root or args.negative_verified_block) and args.component != 'NativeVirtioBlock':
+if (args.verified_root or args.negative_verified_block) and args.component != 'VirtioMmioBlock':
     parser.error('Verified block mode requires the concrete read-only block transport')
 if args.negative_verified_block and not args.verified_root:
     parser.error('The isolated input fault requires verified block mode')
-if args.unverified and args.component != 'NativeUfs':
-    parser.error('--unverified currently applies to the NativeUfs bring-up transport only')
+if args.unverified and args.component != 'ShengUfs':
+    parser.error('--unverified currently applies to the ShengUfs bring-up transport only')
 component = args.component
 recipe = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
 record = json.loads(recipe.read_text().strip().rstrip(','))
-source = ROOT / 'drivers' / ('NativeMobileDisplay' if component in ('NativeLegacyDisplay','NativeGOPPresenter') else 'NativeMetal' if component in ('NativeOfflineGPU','NativeOfflineAccelerator','NativeIOGPUProviderProbe') else component) / {'NativeAdreno':'NativeAdrenoService.cpp'}.get(component, component + '.cpp')
-out = ROOT / 'build' / {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platform', 'ArmCpu': 'armcpu', 'NativeAES': 'native-aes',
-                        'NativeVirtioBlock': 'native-virtio-block', 'NativeRamBlock': 'native-ram-block',
-                        'NativeMobileDisplay': 'native-mobile-display', 'NativeVirtioConsole': 'native-virtio-console',
-                        'NativeLegacyDisplay': 'native-legacy-display', 'NativeGOPPresenter': 'native-gop-presenter', 'NativeOfflineGPU':'native-offline-gpu','NativeOfflineAccelerator':'native-offline-accelerator','NativeIOGPUProviderProbe':'native-original-provider', 'NativeUfs':'native-ufs', 'NativeHidInput':'native-hid-input', 'NativeKeyStoreEvents':'native-keystore-events', 'NativeAdreno':'native-adreno'}[component]
+source = ROOT / 'drivers' / ('GopFramebuffer' if component in ('NativeLegacyDisplay','NativeGOPPresenter') else 'AdrenoMetal' if component in ('NativeOfflineGPU','NativeOfflineAccelerator','NativeIOGPUProviderProbe') else component) / {'Adreno740':'NativeAdrenoService.cpp'}.get(component, component + '.cpp')
+out = ROOT / 'build' / {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platform', 'ArmCpu': 'armcpu', 'SoftwareAES': 'native-aes',
+                        'VirtioMmioBlock': 'native-virtio-block', 'RamBlock': 'native-ram-block',
+                        'GopFramebuffer': 'native-mobile-display', 'VirtioMmioConsole': 'native-virtio-console',
+                        'NativeLegacyDisplay': 'native-legacy-display', 'NativeGOPPresenter': 'native-gop-presenter', 'NativeOfflineGPU':'native-offline-gpu','NativeOfflineAccelerator':'native-offline-accelerator','NativeIOGPUProviderProbe':'native-original-provider', 'ShengUfs':'native-ufs', 'ShengHidInput':'native-hid-input', 'AppleKeyStoreState':'native-keystore-events', 'Adreno740':'native-adreno'}[component]
 if args.verified_root:
     out = ROOT / ('build/native-virtio-block-verified-fault' if args.negative_verified_block else 'build/native-virtio-block-verified')
     if args.verified_root_bundle:
         out = ROOT / 'build/native-virtio-block-verified-bundle'
 out.mkdir(parents=True, exist_ok=True)
 if args.negative_aes_kat:
-    if component != 'NativeAES':
-        parser.error('The own-source KAT control requires NativeAES')
+    if component != 'SoftwareAES':
+        parser.error('The own-source KAT control requires SoftwareAES')
     out = ROOT / 'build/native-aes-kat-negative'
     out.mkdir(parents=True, exist_ok=True)
     text = source.read_text()
@@ -48,7 +48,7 @@ if args.negative_aes_kat:
     if text.count(marker) != 1:
         raise SystemExit('The exact own-source NIST answer was not uniquely identified')
     (out / 'OriginalAESABI.h').write_bytes(source.with_name('OriginalAESABI.h').read_bytes())
-    source = out / 'NativeAES.cpp'
+    source = out / 'SoftwareAES.cpp'
     source.write_text(text.replace(marker, '0x77,0x49,0xab,0xac'))
 destination = out / (component + '.o')
 arguments = record['arguments']
@@ -69,7 +69,7 @@ while index < len(arguments):
 command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-incompatible-sysroot', '-Wno-unused-parameter',
                 '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier', '-I', str(ROOT / '.cache/xnu-work/osfmk')])
-if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
+if component in ('VirtioMmioBlock', 'RamBlock', 'ShengUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:
         command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-DNATIVE_VERIFIED_BLOCK=1']
@@ -77,16 +77,16 @@ if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
         command += ['-DNATIVE_VERIFIED_BLOCK_INJECT_FAULT=1']
     if args.verified_root_bundle:
         command += ['-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
-if component == 'NativeUfs':
-    command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/NativeVirtioBlock'),
+if component == 'ShengUfs':
+    command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/VirtioMmioBlock'),
                 '-mgeneral-regs-only']
     if not args.unverified:
         command += ['-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
 if component=='NativeOfflineGPU':
-    command += ['-I',str(ROOT/'drivers/NativeVirtioConsole')]
-if component in ('NativeLegacyDisplay','NativeHidInput'):
+    command += ['-I',str(ROOT/'drivers/VirtioMmioConsole')]
+if component in ('NativeLegacyDisplay','ShengHidInput'):
     command += ['-I', str(out)]
-if component == 'NativeAdreno':
+if component == 'Adreno740':
     command += ['-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'),
                 '-I', str(ROOT / 'kits/braveark'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
                 '-I', str(ROOT / 'build/sheng-gmu')]

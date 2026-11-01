@@ -11,16 +11,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]          # the kit (UniXNU-muyu)
 REPO = ROOT.parent                                  # the workspace root
 # The GENI SPI host library lives in the main checkout, not in the kit: this script used to assume the sheng
-# layout (drivers/NativeGeniSpi inside the kit) and failed before it reached the touch cases.
-GENI = REPO / 'UniXNU/drivers/NativeGeniSpi'
+# layout (drivers/QcomGeniSpi inside the kit) and failed before it reached the touch cases.
+GENI = REPO / 'UniXNU/drivers/QcomGeniSpi'
 FW = ROOT / '.cache/firmware/novatek/novatek_nt36532_n81a_fw_csot.bin'
 CASES = [
     ('geni-spi', [GENI / 'Test/geni-spi.c', GENI / 'GeniSpi.c', '-I', str(GENI)], []),
-    ('nvt-protocol', [ROOT / 'drivers/NativeNovatekTouch/Test/nvt-protocol.c',
-                      ROOT / 'drivers/NativeNovatekTouch/NvtProtocol.c'],
+    ('nvt-protocol', [ROOT / 'drivers/ShengNovatekTouch/Test/nvt-protocol.c',
+                      ROOT / 'drivers/ShengNovatekTouch/NvtProtocol.c'],
      [str(FW)] if FW.is_file() else []),
-    ('touch-core', [ROOT / 'drivers/NativeNovatekTouch/Test/touch-core.c',
-                    ROOT / 'drivers/NativeNovatekTouch/NvtTouchCore.c'], []),
+    ('touch-core', [ROOT / 'drivers/ShengNovatekTouch/Test/touch-core.c',
+                    ROOT / 'drivers/ShengNovatekTouch/NvtTouchCore.c'], []),
     ('touch-board', [ROOT / 'package/TouchBoardTests.c'], []),
 ]
 

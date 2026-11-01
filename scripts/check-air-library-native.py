@@ -11,7 +11,7 @@ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fragment-inputs
 OUT=ROOT/('build/air-fragment-inputs-diagnostic' if args.fragment_inputs else 'build/air-library-diagnostic')
 manifest=ROOT/('scripts/data/native-air-fragment-inputs.json' if args.fragment_inputs else 'scripts/data/native-air-diagnostic-inputs.json')
 metadata=json.loads(manifest.read_text());count=len(metadata['cases'])
-sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho
 def require(v,why):
  if not v:raise SystemExit(why)

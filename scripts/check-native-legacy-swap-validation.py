@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import sys
 ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'build/native-legacy-display'
-sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset
 def require(v,s):
     if not v:raise SystemExit(s)

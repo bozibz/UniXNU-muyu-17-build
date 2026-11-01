@@ -17,18 +17,18 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'kits/NativePrelink'))
+sys.path.insert(0, str(ROOT / 'kits/XnuPrelink'))
 import native_prelink as np
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--candidate', type=Path,
                     default=ROOT / 'build/native-prelink/native-owner-mobile-graphics-candidate.macho')
-parser.add_argument('--component', choices=('NativeUfs', 'NativeRamBlock'), default='NativeUfs')
+parser.add_argument('--component', choices=('ShengUfs', 'RamBlock'), default='ShengUfs')
 parser.add_argument('--objects-dir', type=Path, default=None)
 args = parser.parse_args()
 component = args.component
 args.objects_dir = (args.objects_dir or
-                    ROOT / ('build/native-ufs' if component == 'NativeUfs' else 'build/native-ram-block'))
+                    ROOT / ('build/native-ufs' if component == 'ShengUfs' else 'build/native-ram-block'))
 
 KERNELCACHE_SHA256 = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
 SOURCE_REVISION = 'e45fbe30a7879e0b16e26dddb78538f1b00e0bff'

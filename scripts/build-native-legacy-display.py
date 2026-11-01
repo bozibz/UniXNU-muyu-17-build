@@ -7,7 +7,7 @@ import struct
 import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'build/native-legacy-display';OUT.mkdir(parents=True,exist_ok=True)
-sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset,exports
 def run(cmd,**kw):
     c=[str(x) for x in cmd]
@@ -227,9 +227,9 @@ run([str(stub_source) if arg==str(process_source) else str(stub_obj) if arg==str
 touch_dir=OUT/'touch';touch_dir.mkdir(exist_ok=True)
 touch_cpp=ROOT/'kits/muyu/TouchProbe.cpp';touch_cpp_obj=touch_dir/'TouchProbe.o'
 muyu_touch_cpp=ROOT/'kits/muyu/TouchProbeMuyu.cpp';muyu_touch_obj=touch_dir/'TouchProbeMuyu.o'
-# The production driver: NativeNovatekTouch (IOService). Same archive as the probe, because both need the
+# The production driver: ShengNovatekTouch (IOService). Same archive as the probe, because both need the
 # GENI SPI and Novatek protocol objects; only the driver runs by default (muyu-touch-drv=1).
-nvt_driver_cpp=ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp';nvt_driver_obj=touch_dir/'NativeNovatekTouch.o'
+nvt_driver_cpp=ROOT/'drivers/ShengNovatekTouch/ShengNovatekTouch.cpp';nvt_driver_obj=touch_dir/'ShengNovatekTouch.o'
 cpufreq_cpp=ROOT/'kits/muyu/CpuFreqProbe.cpp';cpufreq_obj=touch_dir/'CpuFreqProbe.o'
 # uke first-console: NATIVE_ADRENO is off, so the sheng GpuPowerProbe's Adreno and
 # GPU-addon imports would be undefined; omit it from this archive until the Adreno kit
@@ -291,9 +291,9 @@ for _src in cold_sources:
     _obj=cold_dir/(_src.stem+'.o');cold_objs.append(_obj)
     run([str(_src) if str(arg)==str(process_source) else str(_obj) if str(arg)==str(process_obj) else arg for arg in process_cmd]+gmu_include,cwd=pr['directory'])
 run([str(gpupower_cpp) if str(arg)==str(source) else str(gpupower_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+gmu_include,cwd=r['directory'])
-# The driver lives in drivers/NativeNovatekTouch but needs the GENI SPI library and the board headers;
+# The driver lives in drivers/ShengNovatekTouch but needs the GENI SPI library and the board headers;
 # give it those two include directories explicitly instead of relative paths through symlinked trees.
-nvt_include=['-I',str(ROOT/'drivers/NativeGeniSpi'),'-I',str(ROOT/'kits/muyu')]
+nvt_include=['-I',str(ROOT/'drivers/QcomGeniSpi'),'-I',str(ROOT/'kits/muyu')]
 # Live-Data probe (package/MuyuDataProbe.c): asks the kernel's VFS what /private/var really holds, which no
 # host tool can see because the persistent overlay only exists on the tablet.
 data_probe_src=ROOT/'kits/muyu/MuyuDataProbe.c';data_probe_obj=touch_dir/'MuyuDataProbe.o'
@@ -307,8 +307,8 @@ data_cmd+=['-std=gnu11']
 run(data_cmd,cwd=r['directory'])
 run([str(nvt_driver_cpp) if str(arg)==str(source) else str(nvt_driver_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+nvt_include,cwd=r['directory'])
 print(run(['python3',ROOT/'scripts/gen-touch-firmware.py'],text=True),end='')
-touch_c=[ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
-         ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'build/native-touch/NvtFirmware.c']
+touch_c=[ROOT/'drivers/QcomGeniSpi/GeniSpi.c',ROOT/'drivers/ShengNovatekTouch/NvtProtocol.c',
+         ROOT/'drivers/ShengNovatekTouch/NvtTouchCore.c',ROOT/'build/native-touch/NvtFirmware.c']
 touch_objs=[]
 for src in touch_c:
     obj=touch_dir/(src.stem+'.o');touch_objs.append(obj)
@@ -316,22 +316,22 @@ for src in touch_c:
 archive=OUT/'libNativeLegacyDisplay.late.a';archive.unlink(missing_ok=True)
 print(run(['python3',ROOT/'scripts/build-native-hid-input.py'],text=True),end='')
 hid_dir=ROOT/'build/native-hid-input'
-print(run(['python3',ROOT/'scripts/build-arm-driver.py','NativeKeyStoreEvents'],text=True),end='')
+print(run(['python3',ROOT/'scripts/build-arm-driver.py','AppleKeyStoreState'],text=True),end='')
 keyevents=ROOT/'build/native-keystore-events'
-keyevents_late=keyevents/'NativeKeyStoreEvents.late.o'
+keyevents_late=keyevents/'AppleKeyStoreState.late.o'
 run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
      '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp',
-     keyevents/'NativeKeyStoreEvents.o',keyevents_late])
-require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
+     keyevents/'AppleKeyStoreState.o',keyevents_late])
+require(code((keyevents/'AppleKeyStoreState.o').read_bytes(),macho((keyevents/'AppleKeyStoreState.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,keystore_obj,process_obj,trace_obj,
-     hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs,*cold_objs])
-sources=[ROOT/'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp',
-         ROOT/'drivers/NativeMobileDisplay/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
-         ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
-         ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/NativeNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
-         ROOT/'drivers/NativeGeniSpi/GeniSpi.c',ROOT/'drivers/NativeGeniSpi/GeniSpi.h',ROOT/'drivers/NativeNovatekTouch/NvtProtocol.c',
-         ROOT/'drivers/NativeNovatekTouch/NvtProtocol.h',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.c',ROOT/'drivers/NativeNovatekTouch/NvtTouchCore.h',
+     hid_dir/'ShengHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs,*cold_objs])
+sources=[ROOT/'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
+         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
+         ROOT/'drivers/ShengHidInput/ShengHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
+         ROOT/'drivers/AppleKeyStoreState/AppleKeyStoreState.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/ShengNovatekTouch/ShengNovatekTouch.cpp',ROOT/'drivers/ShengNovatekTouch/ShengNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
+         ROOT/'drivers/QcomGeniSpi/GeniSpi.c',ROOT/'drivers/QcomGeniSpi/GeniSpi.h',ROOT/'drivers/ShengNovatekTouch/NvtProtocol.c',
+         ROOT/'drivers/ShengNovatekTouch/NvtProtocol.h',ROOT/'drivers/ShengNovatekTouch/NvtTouchCore.c',ROOT/'drivers/ShengNovatekTouch/NvtTouchCore.h',
          ROOT/'kits/muyu/MuyuGmuSmmu.c',ROOT/'kits/muyu/MuyuGmuSmmu.h',ROOT/'kits/muyu/ShengGpuSmmu.c',ROOT/'kits/muyu/ShengGpuSmmu.h',*smmu_sources,
          *cold_sources,ROOT/'kits/muyu/ShengGmu.h',ROOT/'kits/muyu/ShengGmuVotes.h',ROOT/'kits/muyu/ShengGmuCommandDb.h',ROOT/'kits/muyu/MuyuRpmhRsc.h',
          ROOT/'kits/muyu/MuyuRpmhRscHostTests.c',
@@ -344,7 +344,7 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func','--globalize-
 require(code((gop/'NativeGOPPresenter.o').read_bytes(),macho((gop/'NativeGOPPresenter.o').read_bytes()))==
         code(gop_late.read_bytes(),macho(gop_late.read_bytes())),'Owned presenter instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,gop_late])
-sources.extend([ROOT/'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp',ROOT/'drivers/NativeMobileDisplay/NativeGOPWire.h'])
+sources.extend([ROOT/'drivers/GopFramebuffer/NativeGOPPresenter.cpp',ROOT/'drivers/GopFramebuffer/NativeGOPWire.h'])
 (OUT/'build-report.json').write_text(json.dumps(dict(
     source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},generated_abi_sha256=sha(OUT/'OriginalLegacyFramebufferABI.h'),
     original_candidate_sha256=sha(candidate),original_audit_sha256=sha(ROOT/'build/display-analysis/mobile-graphics-legacy-abi.json'),

@@ -38,7 +38,7 @@ PATCH_SET_HASH=$(
   {
     find "$FORK_PATCHES/" -maxdepth 1 -name '*.patch' -print 2>/dev/null || true
     find "$ROOT/patches/xnu/" -maxdepth 1 -name '*.patch' -print 2>/dev/null || true
-    find "$ROOT/kits/NativePrelink/patches/" -maxdepth 1 -name '*.patch' -print 2>/dev/null || true
+    find "$ROOT/kits/XnuPrelink/patches/" -maxdepth 1 -name '*.patch' -print 2>/dev/null || true
   } | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
 )
 PATCH_STAMP=.cache/xnu-work/.unixnu-patch-set
@@ -65,7 +65,7 @@ AUDIT_PATCH=$FORK_PATCHES/offline-owner-root-binding-audit.patch
 if [ -f "$AUDIT_PATCH" ] && ! grep -q 'native_owner_root_apple_autherr' "$ROOT/.cache/xnu-work/bsd/kern/bsd_init.c"; then
   apply_xnu_patch "$AUDIT_PATCH"
 fi
-for PATCH_DIR in "$FORK_PATCHES" "$ROOT/patches/xnu" "$ROOT/kits/NativePrelink/patches"; do
+for PATCH_DIR in "$FORK_PATCHES" "$ROOT/patches/xnu" "$ROOT/kits/XnuPrelink/patches"; do
   for PATCH in $(find "$PATCH_DIR/" -maxdepth 1 -name '*.patch' -print 2>/dev/null | sort); do
     if [ "$PATCH" = "$AUDIT_PATCH" ]; then
       continue
@@ -207,7 +207,7 @@ else
 fi
 if [ "${XNU_NATIVE_AES:-0}" = 1 ]; then
   if [ "$CRYPTO_BOOTSTRAP_MODE" != prelinked ] || [ "${XNU_SOURCE_CORECRYPTO14:-0}" != 1 ]; then
-    echo 'NativeAES currently requires the qualified original AES/crypto prelink closure' >&2
+    echo 'SoftwareAES currently requires the qualified original AES/crypto prelink closure' >&2
     exit 1
   fi
   PERSONALITY_CFLAGS=-DXNU_NATIVE_AES=1
@@ -216,7 +216,7 @@ else
 fi
 if [ "${XNU_NATIVE_VIRTIO_BLOCK:-0}" = 1 ]; then
   if [ "${XNU_NATIVE_AES:-0}" != 1 ]; then
-    echo 'NativeVirtioBlock currently requires the qualified NativeAES/original-storage prelink baseline' >&2
+    echo 'VirtioMmioBlock currently requires the qualified SoftwareAES/original-storage prelink baseline' >&2
     exit 1
   fi
   PERSONALITY_CFLAGS="$PERSONALITY_CFLAGS -DXNU_NATIVE_VIRTIO_BLOCK=1"
@@ -228,7 +228,7 @@ if [ "$NATIVE_RAM_BLOCK" != 0 ] && [ "$NATIVE_RAM_BLOCK" != 1 ]; then
 fi
 if [ "$NATIVE_RAM_BLOCK" = 1 ]; then
   if [ "${XNU_NATIVE_AES:-0}" != 1 ]; then
-    echo 'NativeRamBlock requires the qualified original storage/AES prelink closure' >&2
+    echo 'RamBlock requires the qualified original storage/AES prelink closure' >&2
     exit 1
   fi
   PERSONALITY_CFLAGS="$PERSONALITY_CFLAGS -DXNU_NATIVE_RAM_BLOCK=1"
@@ -642,7 +642,7 @@ if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ]; then
     KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $UFS_ARCHIVE"
   fi
   if [ "${XNU_NATIVE_ADRENO:-0}" = 1 ]; then
-    # NativeAdreno plus its kits (scripts/build-native-adreno-kits.py). No personality is installed: the
+    # Adreno740 plus its kits (scripts/build-native-adreno-kits.py). No personality is installed: the
     # board probe calls NativeAdrenoGmuContextBringup directly once it has powered the GPU CX domain.
     ADRENO_ARCHIVE=$ROOT/build/native-adreno/libNativeAdreno.a
     test -f "$ADRENO_ARCHIVE"
@@ -736,7 +736,7 @@ first, second = [record['bindings'] for record in records]
 if any(first.get(name) != value for name, value in second.items()):
     raise SystemExit('RAM transport imports must match the already linked original storage bindings')
 PY_BINDINGS
-      RAM_BLOCK_OBJECT=$ROOT/build/native-ram-block/NativeRamBlock.o
+      RAM_BLOCK_OBJECT=$ROOT/build/native-ram-block/RamBlock.o
       test -f "$RAM_BLOCK_OBJECT"
       KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES $RAM_BLOCK_OBJECT"
     else

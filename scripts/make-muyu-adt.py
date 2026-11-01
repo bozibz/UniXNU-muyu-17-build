@@ -223,7 +223,7 @@ def main():
                                                 GIC_REDIST - ARMIO_BASE, GIC_REDIST_SIZE)),
                             ('redistributor-stride', struct.pack('<Q', 0x40000))]),
               # UFS (0x1d84000) lies below the arm-io window, so a child reg offset would be
-              # negative. The node exists only for class matching; NativeUfs takes its
+              # negative. The node exists only for class matching; ShengUfs takes its
               # physical windows from the board DT constants in GccUfs.h.
               node('ufshc', [('compatible', b'qcom,sm8550-ufshc\0')])]),
     ])

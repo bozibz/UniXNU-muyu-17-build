@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'kits/NativePrelink'))
+sys.path.insert(0, str(ROOT / 'kits/XnuPrelink'))
 from native_prelink import macho
-kit = ROOT / 'drivers/NativeAdreno'
+kit = ROOT / 'drivers/Adreno740'
 out = ROOT / 'build/native-adreno-memory'
 out.mkdir(parents=True, exist_ok=True)
 (out / 'report.json').unlink(missing_ok=True)

@@ -29,14 +29,14 @@ json.dump(c,open(f'build/session-image/payload-{tag}.json','w'),indent=1)
 P
 export PATH=/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH
 # libNativeUfs.a and libNativeRamBlock.a are linked into the kernel; rebuild them from the driver sources (stale archives once hid new symbols).
-python3 scripts/build-arm-driver.py NativeUfs
-python3 scripts/build-arm-driver.py NativeRamBlock
+python3 scripts/build-arm-driver.py ShengUfs
+python3 scripts/build-arm-driver.py RamBlock
 # libArmCpu.a (XNU_ARMCPU) carries the SPI attach/dispatch the GPU probe calls.
 python3 scripts/build-arm-driver.py ArmCpu
-python3 scripts/build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block
+python3 scripts/build-native-virtio-bindings.py --component RamBlock --directory build/native-ram-block
 python3 scripts/build-native-legacy-display.py
-# NativeAdreno is linked into the kernel (XNU_NATIVE_ADRENO); the kits step appends to the service archive.
-python3 scripts/build-arm-driver.py NativeAdreno
+# Adreno740 is linked into the kernel (XNU_NATIVE_ADRENO); the kits step appends to the service archive.
+python3 scripts/build-arm-driver.py Adreno740
 python3 scripts/build-native-adreno-kits.py
 # The staged AGXAccelerator (original IOAcceleratorES descendant for the Metal discovery) is appended to that archive.
 python3 scripts/build-native-adreno-accelerator.py

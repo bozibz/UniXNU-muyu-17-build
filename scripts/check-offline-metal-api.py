@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
-ROOT=Path(__file__).resolve().parents[1];KIT=ROOT/'drivers/NativeMetal'
+ROOT=Path(__file__).resolve().parents[1];KIT=ROOT/'drivers/AdrenoMetal'
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--iosurface',action='store_true');p.add_argument('--bgra',action='store_true');a=p.parse_args()
 if a.bgra:a.iosurface=True
 kind='offline-metal-bgra' if a.bgra else 'offline-metal-iosurface' if a.iosurface else 'offline-metal-api';OUT=ROOT/'build'/kind

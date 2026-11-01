@@ -1152,11 +1152,39 @@ extern "C" void muyu_gpu_power_probe(void) {
     // before it ever issues an OOB. Our cold start never touched these, which is the prime suspect
     // for GPU_SET never being acknowledged. Register numbers are a6xx_gmu.xml dword offsets; the
     // GMU window is 0x37000 bytes, so 0x23b04 lands at byte 0x26c10 inside it.
-    static uint32_t ao26[6] = {0};
+    static uint32_t ao26[10] = {0};
+    static MuyuRpmhRscResult ao26Vote;
     static unsigned ao26Ran = 0, ao26Ack = 0;
     if (mode >= 26) {
         if (gmuWinMapped & (1u << MGW_CORE)) {
             ao26Ran = 1;
+            // The vendor's Linux never enables the three GPU rails (the GMU owns them), but the
+            // cold path may still need the CX rail voted before the firmware may power GX. Vote
+            // cx.lvl alone (both slots point at it; duplicate ARC writes are idempotent).
+            {
+                static MuyuRpmhRscEntry entries[32];
+                unsigned n = MuyuRpmhRscListArcs(gmuCmdDb, sizeof gmuCmdDb,
+                                                 SHENG_GMU_COMMAND_DB_VERSION, entries, 32);
+                for (unsigned i = 0; i < n; ++i) {
+                    if (entries[i].id[0]=='c' && entries[i].id[1]=='x' && entries[i].id[2]=='.') {
+                        MuyuRpmhRscArc cx;
+                        memset(&cx, 0, sizeof cx);
+                        cx.address = entries[i].address;
+                        cx.count = entries[i].count;
+                        cx.selector = entries[i].count > 1 ? entries[i].count - 1 : 0;
+                        MuyuRpmhRscArcs pair;
+                        memset(&pair, 0, sizeof pair);
+                        pair.gfx = cx; pair.mxc = cx; pair.both_present = 1;
+                        MuyuRpmhRscIo io = { nullptr, read32, write32, delayUs };
+                        ao26[6] = (uint32_t)MuyuRpmhRscVoteGx(&io, gmuWinMapped, &pair, &ao26Vote);
+                        ao26[7] = cx.address;
+                        ao26[8] = cx.selector;
+                        ao26[9] = (uint32_t)ao26Vote.tcs;
+                        break;
+                    }
+                }
+            }
+            IODelay(1000);
             gxRead(nullptr, 0x23b05, &ao26[0]);            // AO status before
             gxWrite(nullptr, 0x23b04, 0xffffffffu);        // AO_HOST_INTERRUPT_CLR
             gxWrite(nullptr, 0x23b06, ~0x29u);             // AO_HOST_INTERRUPT_MASK
@@ -1189,7 +1217,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx24 ran=%u bcr=%08x/%08x aon=%08x/%08x\n"
               "gmu gx24 clk=%08x/%08x/%08x/%08x rbbm=%08x/%08x\n"
               "gmu rscc25 ran=%u ctl=%08x>%08x st=%08x/%08x seq=%08x\n"
-              "gmu ao26 ran=%u ack=%u ao=%08x>%08x>%08x mask=%08x intr=%08x sptp=%08x\n"
+              "gmu ao26 ran=%u ack=%u ao=%08x>%08x>%08x mask=%08x intr=%08x sptp=%08x vote=%d cx=%08x/%u tcs=%u\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
               "pll1=%08x/%08x l=%08x user=%08x gmurcgr=%08x gmucfg=%08x hubrcgr=%08x hubcfg=%08x\n"
@@ -1225,6 +1253,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx24[4], gx24[5], gx24[6], gx24[7], gx24[8], gx24[9],
               rscc25Ran, rscc25[0], rscc25[4], rscc25[1], rscc25[5], rscc25[3],
               ao26Ran, ao26Ack, ao26[0], ao26[1], ao26[5], ao26[2], ao26[3], ao26[4],
+              (int)ao26[6], ao26[7], ao26[8], ao26[9],
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,

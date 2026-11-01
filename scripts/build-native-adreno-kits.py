@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add the GMU kit and firmware planner objects to the NativeAdreno archive."""
+"""Add the GMU kit and firmware planner objects to the Adreno740 archive."""
 import json, subprocess, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,10 +15,10 @@ sources += [ROOT / 'kits/AdrenoFirmware' / name for name in
 sources += sorted(p for p in (ROOT / 'kits/ArmSmmu4K').glob('ArmSmmu4K*.c'))
 sources += [ROOT / 'kits/AdrenoPM4/AdrenoPM4.c']
 objects = []
-sources += sorted(p for p in (ROOT / 'drivers/NativeAdreno').glob('NativeAdreno*.cpp')
+sources += sorted(p for p in (ROOT / 'drivers/Adreno740').glob('Adreno740*.cpp')
                   if p.name not in ('NativeAdrenoClient.cpp', 'NativeAdrenoService.cpp', 'NativeAdrenoAccelerator.cpp'))
 # NativeAdrenoAccelerator.cpp is built staged by build-native-adreno-accelerator.py (its initializer must not run at boot).
-# NativeAdrenoService.cpp is the archive's NativeAdreno.o from build-arm-driver.py; start from that object only.
+# NativeAdrenoService.cpp is the archive's Adreno740.o from build-arm-driver.py; start from that object only.
 for source in sources:
     recipe = c_recipe if source.suffix == '.c' else cxx_recipe
     obj = out / (source.stem + ('.kit.o' if source.suffix == '.c' else '.o'))
@@ -39,7 +39,7 @@ for source in sources:
         i += 1
     command += ['-I', str(ROOT / 'kits/braveark'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
                 '-I', str(ROOT / 'build/sheng-gmu'), '-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
-                '-I', str(ROOT / 'drivers/NativeAdreno'), '-Wall', '-Wextra', '-Werror',
+                '-I', str(ROOT / 'drivers/Adreno740'), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier']

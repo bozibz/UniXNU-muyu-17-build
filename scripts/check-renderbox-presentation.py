@@ -2,7 +2,7 @@
 """Verify genuine original RenderBox GPU images, repeated swaps and actual QEMU scanout."""
 import hashlib,json,re,struct,subprocess,sys,zlib
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset
 def require(value,why):
  if not value:raise SystemExit(why)

@@ -56,15 +56,15 @@ archives = [
   "build-arm-driver.py ArmDTPlatform",
   "build-arm-driver.py ArmCpu",
   # Userland stage: the AES subclass the storage stack wants (CONFIG_XNU_NATIVE_AES).
-  "build-arm-driver.py NativeAES",
+  "build-arm-driver.py SoftwareAES",
   "build-native-aes-bindings.py",
   "prepare-storage-headers.py",
-  "build-arm-driver.py NativeUfs --unverified",
+  "build-arm-driver.py ShengUfs --unverified",
   "build-ufs-original-bindings.py",
   # The Data seed's typed provider: the packed DBRDISK1 that DarwinBoot hands over is
-  # published by NativeRamBlock, which native_owner_data_prepare() mounts on /private/var.
-  "build-arm-driver.py NativeRamBlock",
-  # NativeRamBlock needs the original IOBlockStorageDevice aliases, but the UFS binder
+  # published by RamBlock, which native_owner_data_prepare() mounts on /private/var.
+  "build-arm-driver.py RamBlock",
+  # RamBlock needs the original IOBlockStorageDevice aliases, but the UFS binder
   # below already emits them (same pinned candidate, same class, identical .set values).
   # A second copy of original-bindings.o is 11 duplicate symbols at link time, so the
   # RAM block archive keeps only its own object and resolves the aliases from libNativeUfs.a.
@@ -91,7 +91,7 @@ archives = [
 # The native GPU driver knows only the Adreno 740; the A735 values are still to be collected, so no [gpu] table yet.
 
 [kernel.prelink]
-tool = "kits/NativePrelink/emit_prelink.py"
+tool = "kits/XnuPrelink/emit_prelink.py"
 kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
 kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
 slide = "-0x1000000"
@@ -213,7 +213,7 @@ kernel_args = [
   # UniXNU-muyu/docs/USB-DEBUG-PORT.md. Inert unless the driver is built.
   # Boot log into the board ramoops record; Android pstore reads it back as
   # /sys/fs/pstore/console-ramoops-0 after the reboot (no root needed).
-  # NativeUfs adopts the controller the firmware left running and, for probe 9,
+  # ShengUfs adopts the controller the firmware left running and, for probe 9,
   # leaves the console log in the unused tail of vendor_boot_a.
   # native-ufs-probe=9 is the read-only GPT survey: it panics on purpose to print the
   # table. The table was verified on 2026-10-24 (super 33000-2d2fff, userdata
@@ -222,7 +222,7 @@ kernel_args = [
   # 11 = after the root image is flashed: manifest + each window's GPT (read-only).
   # "native-ufs-probe=11",
   # Panic with the full root-publication diagnostics (stage, reason, media text).
-  # NativeUfs is built with --unverified (no NATIVE_VERIFIED_BLOCK), and in that build
+  # ShengUfs is built with --unverified (no NATIVE_VERIFIED_BLOCK), and in that build
   # root publication refuses to run unless this says so ("signed window identities
   # rejected" otherwise).
   "native-ufs-allow-unverified=1",
@@ -253,7 +253,7 @@ kernel_args = [
   "offline-legacy-stall-guard=1",
   "offline-hid-home=1",
   "offline-hid-input=1",
-  # Touch digitizer: NativeHidInput arms its HID digitizer source when this is 1 and reads the finger set
+  # Touch digitizer: ShengHidInput arms its HID digitizer source when this is 1 and reads the finger set
   # that the muyu frame pump publishes (native_touch_seq seqlock, twelve slots).
   "sheng-touch-hid=1",
   # Separate digitizer-only HID service (primary usage Digitizer/Touch Screen, product "Offline touch
@@ -298,8 +298,8 @@ kernel_args = [
   # bytes=0), so re-enable it only together with a working reader experiment.
   # "muyu_pstore=1",
   "sheng-pmgr=2",
-  # 2 = keep Data writes in the persistent store window at the end of userdata (NativeUfs store +
-  # NativeRamBlock overlay); pairs with [payload.adt] persistent_data = true and a large seed.
+  # 2 = keep Data writes in the persistent store window at the end of userdata (ShengUfs store +
+  # RamBlock overlay); pairs with [payload.adt] persistent_data = true and a large seed.
   # 2026-10-27: ephemeral Data (sheng configuration). With AKS published the boot reaches the
   # progress bar; the persistent store is what leaves it stuck at the end.
   "sheng-data-persist=2",
@@ -309,7 +309,7 @@ kernel_args = [
   # reset, no lite. Re-enable only for a deliberate one-boot experiment.
   # "sheng-data-reset=2",
   # "sheng-lite=1",
-  # Owned AppleKeyStore (NativeKeyStoreEvents): answer libaks truthfully - no keybag, no passcode.
+  # Owned AppleKeyStore (AppleKeyStoreState): answer libaks truthfully - no keybag, no passcode.
   # Without these two the port has no AppleKeyStore at all and PreBoard asks for a passcode forever.
   "sheng-aks=1",
   # sls 3 = MobileKeyBag "no passcode" (PreBoard gone; progress bar then stalls at the very end).

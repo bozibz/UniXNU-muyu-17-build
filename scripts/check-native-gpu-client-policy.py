@@ -2,7 +2,7 @@
 """Qualify original Sandbox exact, parent and unrelated signed client policies."""
 import argparse,hashlib,json,plistlib,re,struct,subprocess,sys
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'kits/NativePrelink'))
+ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset
 def require(value,why):
  if not value:raise SystemExit(why)
