@@ -310,7 +310,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
-    if (mode > 21) mode = 21;
+    if (mode > 22) mode = 22;
     unsigned panicDump = (mode >= 3);
     unsigned runMode = (mode == 2 || mode == 3) ? 2 : 1;
 
@@ -927,6 +927,51 @@ extern "C" void muyu_gpu_power_probe(void) {
               dbFind[2][0], dbFind[2][1], dbFind[3][0], dbFind[3][1]);
     }
 
+    // mode 22: the A7XX bit meanings say GMU_SPTPRAC_PWR_CLK_STATUS bit0 = GX_HM_GDSC_POWER_OFF and
+    // bit1 = GX_HM_CLK_OFF, so the 0x2 we kept reading means "GDSC is on, GX clock is off" — not
+    // "still powering on" (that interpretation came from the A6XX variant of the same register).
+    // The GX clock is switched by the GMU, and the BOOT_SLUMBER OOB never acked while
+    // GMU2HOST_INTR_INFO bit0 was set, so clear pending GMU interrupts first and retry the OOB.
+    static uint32_t gx22[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static unsigned gx22Ack = 0, gx22Ran = 0;
+    if (mode >= 22) {
+        if (gmuWinMapped & (1u << MGW_CORE)) {
+            uint32_t v = 0;
+            gx22Ran = 1;
+            gxRead(nullptr, 0x1f992, &gx22[0]);              // GMU2HOST_INTR_INFO before clear
+            gxWrite(nullptr, 0x1f991, 0xffffffffu);          // GMU2HOST_INTR_CLR: clear all pending
+            IODelay(100);
+            gxRead(nullptr, 0x1f992, &gx22[1]);              // after clear
+            gxWrite(nullptr, 0x1cbf8, 0);                    // BOOT_SLUMBER_OPTION
+            gxWrite(nullptr, 0x1cbf9, rpmhGfxSel & 0xff);    // GX_VOTE_IDX
+            gxWrite(nullptr, 0x1cbfa, rpmhMxcSel & 0xff);    // MX_VOTE_IDX
+            gxWrite(nullptr, 0x1f994, 1u << 22);             // OOB BOOT_SLUMBER
+            for (int i = 0; i < 2000; ++i) {
+                gxRead(nullptr, 0x1f992, &v);
+                if (v & (1u << 30)) { gx22Ack = 1; break; }
+                IODelay(100);
+            }
+            gxRead(nullptr, 0x1f992, &gx22[2]);              // info after
+            gxWrite(nullptr, 0x1a881, 0x778000);             // CPU-controlled SPTPRAC on
+            for (int i = 0; i < 500; ++i) {
+                gxRead(nullptr, 0x1f8d0, &v);
+                gx22[3] = v;
+                if (!(v & 0x3u)) break;                      // bit0 GDSC off, bit1 GX clk off
+                IODelay(500);
+            }
+            gxRead(nullptr, 0x1f8d0, &gx22[4]);
+            read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_GDSCR, &gx22[5]);
+            read32(nullptr, MGB_WIN_GPUCC, MGB_CC_GX_CFG_GDSCR, &gx22[6]);
+            if (mgb_gdsc_on(gx22[5])) {
+                read32(nullptr, MGB_WIN_GPU, MGB_RBBM_STATUS_BYTES, &gx22[7]);
+                r.rbbm_status = gx22[7];
+                r.gx_gdscr = gx22[5];
+            }
+        }
+        IOLog("MUYU GPU POWER gx22 ran=%u ack=%u info=%08x>%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x\n",
+              gx22Ran, gx22Ack, gx22[0], gx22[1], gx22[2], gx22[3], gx22[4], gx22[5], gx22[6], gx22[7]);
+    }
+
     if (panicDump) {
         panic("MUYU GPU POWER m%u gcc=%s cc=%s smmu=%s gpu=%s ioerr=%d\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
@@ -952,6 +997,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx19 ran=%u ack=%u info=%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x now=%08x\n"
               "gmu dbarc n=%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u %08x%08x:%08x/%u\n"
               "gmu dbfind gfx=%08x/%u mx=%08x/%u mxc=%08x/%u gmxc=%08x/%u\n"
+              "gmu gx22 ran=%u ack=%u info=%08x>%08x>%08x sptp=%08x/%08x gdscr=%08x cfg=%08x rbbm=%08x\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n"
               "gmu log %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
               mode, mgb_state_text(r.gcc), mgb_state_text(r.cc), mgb_state_text(r.smmu), mgb_state_text(r.gpu),
@@ -1010,6 +1056,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               dbArcW[7][0], dbArcW[7][1], dbArcW[7][2] & 0x00ffffffu, (dbArcW[7][2] >> 24) & 0xffu,
               dbFind[0][0], dbFind[0][1], dbFind[1][0], dbFind[1][1],
               dbFind[2][0], dbFind[2][1], dbFind[3][0], dbFind[3][1],
+              gx22Ran, gx22Ack, gx22[0], gx22[1], gx22[2], gx22[3], gx22[4], gx22[5], gx22[6], gx22[7],
               gmuLogWords[0], gmuLogWords[1], gmuLogWords[2], gmuLogWords[3],
               gmuLogWords[4], gmuLogWords[5], gmuLogWords[6], gmuLogWords[7],
               gmuLogWords[8], gmuLogWords[9], gmuLogWords[10], gmuLogWords[11],
