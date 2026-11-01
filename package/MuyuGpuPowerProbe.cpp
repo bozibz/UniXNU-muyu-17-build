@@ -365,9 +365,11 @@ static int preHfiRailOn(void *) {
 // Byte access into the GMU core window: the gen7 RSCC handshake uses an unaligned register
 // offset (0x23b07), which a 32-bit Device access may fault on.
 static uint32_t rsccByte(uint32_t off) {
-    if (!gGmuWindows[MGW_CORE].base) return 0;
-    if ((uint64_t)off >= gGmuWindows[MGW_CORE].bytes) return 0;
-    return *reinterpret_cast<volatile uint8_t *>(gGmuWindows[MGW_CORE].base + off);
+    // _do_gbif_halt uses the same embedded regmap (gmu+0x1500) for GBIF registers, and GBIF lives
+    // in the GPU aperture, not the GMU core window: 0x23b07 fits the 0x40000 GPU window.
+    if (!gGmuWindows[MGW_GPU].base) return 0;
+    if ((uint64_t)off + 1 > gGmuWindows[MGW_GPU].bytes) return 0;
+    return *reinterpret_cast<volatile uint8_t *>(gGmuWindows[MGW_GPU].base + off);
 }
 
 extern "C" void muyu_gpu_power_probe(void) {
