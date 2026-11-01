@@ -1,0 +1,174 @@
+From b8889633811b977af5436b46f23c5702d634b70d Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 1 Nov 2026 15:19:47 +0800
+Subject: [PATCH] muyu bring-up
+
+---
+ AdrenoHfi.c        | 20 +++++++++++++++++
+ AdrenoHfi.h        |  5 +++++
+ AdrenoHfiStartup.c | 56 ++++++++++++++++++++++++++++++++++++++++++++++
+ AdrenoHfiStartup.h |  9 ++++++++
+ 4 files changed, 90 insertions(+)
+
+diff --git a/AdrenoHfi.c b/AdrenoHfi.c
+index a398d2f..6a6e19f 100644
+--- a/AdrenoHfi.c
++++ b/AdrenoHfi.c
+@@ -63,6 +63,26 @@ AdrenoHfiStatus AdrenoHfiSend(AdrenoHfi *h,unsigned id,const uint32_t *payload,
+     if(h->notify(h->cookie))return poison(h,AdrenoHfiNotifyError);
+     return AdrenoHfiSuccess;
+ }
++AdrenoHfiStatus AdrenoHfiSendOneWay(AdrenoHfi *h,unsigned id,const uint32_t *payload,
++    size_t words)
++{
++    if(id>255 || words>254 || (words && !payload))return AdrenoHfiInvalid;
++    volatile uint32_t *v,*data;uint32_t read,write;
++    AdrenoHfiStatus status=valid(h,0,&v,&data,&read,&write);
++    if(status!=AdrenoHfiSuccess)return status;
++    if(h->pending_header)return AdrenoHfiBusy;
++    unsigned count=(unsigned)words+1,padded=(count+3)&~3u;
++    if(((read-write-1)&(WORDS-1))<padded)return AdrenoHfiNoSpace;
++    uint32_t sequence=(h->sequence+1)%4095;
++    uint32_t header=(sequence<<20)|(count<<8)|id;
++    data[write]=header;
++    for(unsigned i=0;i<words;++i)data[(write+1+i)&(WORDS-1)]=payload[i];
++    for(unsigned i=count;i<padded;++i)data[(write+i)&(WORDS-1)]=UINT32_C(0xfafafafa);
++    publish();v[11]=(write+padded)&(WORDS-1);publish();
++    h->sequence=sequence;
++    if(h->notify(h->cookie))return poison(h,AdrenoHfiNotifyError);
++    return AdrenoHfiSuccess;
++}
+ AdrenoHfiStatus AdrenoHfiPoll(AdrenoHfi *h,uint32_t *payload,size_t capacity,
+     size_t *payload_words,uint32_t *error)
+ {
+diff --git a/AdrenoHfi.h b/AdrenoHfi.h
+index 15986b5..d7d2842 100644
+--- a/AdrenoHfi.h
++++ b/AdrenoHfi.h
+@@ -37,6 +37,11 @@ AdrenoHfiStatus AdrenoHfiInitializeStopped(AdrenoHfi *,volatile uint32_t *,
+  * NoSpace/Busy refuse before publishing. No firmware readiness is inferred. */
+ AdrenoHfiStatus AdrenoHfiSend(AdrenoHfi *,unsigned id,const uint32_t *payload,
+     size_t payload_words,uint32_t *wire_header);
++/* Same wire write, but no acknowledgement is expected or tracked: the gen7 firmware does not
++ * answer some configuration messages (HFI 0x0d set-value) on their own sequence, so waiting would
++ * stall the startup sequence. */
++AdrenoHfiStatus AdrenoHfiSendOneWay(AdrenoHfi *,unsigned id,const uint32_t *payload,
++    size_t payload_words);
+ /* Poll the response queue. As a6xx_hfi_wait_for_ack: the reply whose return
+  * header carries the pending command's sequence number completes it (error=0
+  * succeeds, otherwise FirmwareError); F2H error messages and replies to other
+diff --git a/AdrenoHfiStartup.c b/AdrenoHfiStartup.c
+index a136768..88d5a4d 100644
+--- a/AdrenoHfiStartup.c
++++ b/AdrenoHfiStartup.c
+@@ -56,6 +56,28 @@ AdrenoHfiStartupStatus AdrenoHfiStartupEncode(const AdrenoHfiStartupConfig *c,
+     size_t n=0;unsigned message=0;
+     switch(stage) {
+     case AdrenoHfiStagePerformance:
++        if(c->perf_table_v2) {
++            /* msg 0x0f: [1]=1 [2]=gpu_count [3]=3, 3 words/GPU level, gap, gmu_count, 2,
++             * 2 words/GMU level. The wire header carries the total word count. */
++            n=3u*c->gpu_count+2u*c->gmu_count+6u;
++            message=15;
++            for(size_t i=0;i<n;++i)p[i]=0;
++            /* Verified against a kprobe capture of the vendor payload on A735: the header is
++             * four words {0, 1, gpu_count, 3} and levels start at word 5, i.e. payload index 4.
++             * An earlier three-word header shifted every field by one word and the GMU timed out
++             * instead of acknowledging the command. */
++            p[0]=0;p[1]=1;p[2]=c->gpu_count;p[3]=3;
++            for(unsigned i=0;i<c->gpu_count;++i) {
++                p[4+3*i]=c->gpu[i].vote;p[5+3*i]=UINT32_MAX;p[6+3*i]=(uint32_t)(c->gpu[i].hz/1000);
++            }
++            p[3*c->gpu_count+4]=c->gmu_count;
++            p[3*c->gpu_count+5]=2;
++            for(unsigned i=0;i<c->gmu_count;++i) {
++                p[3*c->gpu_count+6+2*i]=c->gmu[i].vote;
++                p[3*c->gpu_count+7+2*i]=(uint32_t)(c->gmu[i].hz/1000);
++            }
++            break;
++        }
+         message=4;n=58;
+         for(size_t i=0;i<n;++i)p[i]=0;
+         p[0]=c->gpu_count;p[1]=c->gmu_count;
+@@ -66,6 +88,16 @@ AdrenoHfiStartupStatus AdrenoHfiStartupEncode(const AdrenoHfiStartupConfig *c,
+             p[50+2*i]=c->gmu[i].vote;p[51+2*i]=(uint32_t)(c->gmu[i].hz/1000);
+         }
+         break;
++    case AdrenoHfiStageSetValue0:
++    case AdrenoHfiStageSetValue1:
++    case AdrenoHfiStageSetValue2: {
++        static const uint32_t tri[3][4]={{111,0,0,3},{112,44,0,0},{117,1,0,160015}};
++        unsigned k=(stage==AdrenoHfiStageSetValue0)?0:(stage==AdrenoHfiStageSetValue1)?1:2;
++        message=13;n=16;
++        for(size_t i=0;i<n;++i)p[i]=0;
++        p[0]=13;p[1]=tri[k][0];p[2]=tri[k][1];p[3]=tri[k][2];p[4]=tri[k][3];
++        break;
++    }
+     case AdrenoHfiStageBandwidth:
+         message=3;n=159;
+         p[0]=c->bandwidth_count;p[1]=c->cnoc_count;p[2]=c->ddr_count;
+@@ -123,6 +155,23 @@ AdrenoHfiStartupStatus AdrenoHfiStartupRun(AdrenoHfiStartup *state,AdrenoHfi *h,
+     AdrenoHfiStartupStatus status=AdrenoHfiStartupSuccess;
+     uint32_t payload[159],output[16],id;size_t words,returned;
+     for(unsigned step=AdrenoHfiStagePerformance;step<=AdrenoHfiStageStart;++step) {
++        if(!c->perf_table_v2 && step>=AdrenoHfiStageSetValue0 && step<=AdrenoHfiStageSetValue2)
++            continue;
++        if(c->perf_table_v2 && step==AdrenoHfiStageCoreStart) {
++            /* The gen7 firmware is told eight feature controls (msg 0x0b) before the core start;
++             * the vendor driver was observed sending exactly these subtypes, each as
++             * {11, subtype, 1, 0, ...}. None is acknowledged, so they go out one-way. */
++            static const uint32_t feats[8][2]={{1,0},{2,13},{9,5760},{11,1},
++                {12,0},{16,0},{17,0},{27,0}};
++            for(unsigned k=0;k<8;++k) {
++                uint32_t fp[16]={0};
++                fp[0]=11;fp[1]=feats[k][0];fp[2]=1;fp[3]=feats[k][1];
++                if(AdrenoHfiSendOneWay(h,11,fp,16)!=AdrenoHfiSuccess) {
++                    status=AdrenoHfiStartupTransportError;goto failed;
++                }
++                ++r->published_commands;
++            }
++        }
+         if((step==AdrenoHfiStageAcdEnable || step==AdrenoHfiStageAcdTable) && !c->acd_enable_mask)continue;
+         if(step==AdrenoHfiStageIfpc && !c->enable_ifpc)continue;
+         r->stage=(AdrenoHfiStartupStage)step;command=last;
+@@ -130,6 +179,13 @@ AdrenoHfiStartupStatus AdrenoHfiStartupRun(AdrenoHfiStartup *state,AdrenoHfi *h,
+         if(s->check_health(s->cookie)) {status=AdrenoHfiStartupPlatformFault;goto failed;}
+         status=AdrenoHfiStartupEncode(c,r->stage,&id,payload,159,&words);if(status)goto failed;
+         r->wire_header=0;
++        if(step>=AdrenoHfiStageSetValue0 && step<=AdrenoHfiStageSetValue2) {
++            /* Configuration only: the firmware does not acknowledge it on this sequence. */
++            r->transport_status=AdrenoHfiSendOneWay(h,id,payload,words);
++            if(r->transport_status!=AdrenoHfiSuccess) {status=AdrenoHfiStartupTransportError;goto failed;}
++            ++r->published_commands;
++            continue;
++        }
+         r->transport_status=AdrenoHfiSend(h,id,payload,words,&r->wire_header);
+         if(r->wire_header)++r->published_commands;
+         if(r->transport_status!=AdrenoHfiSuccess) {status=AdrenoHfiStartupTransportError;goto failed;}
+diff --git a/AdrenoHfiStartup.h b/AdrenoHfiStartup.h
+index 0496c6f..5a4b0e6 100644
+--- a/AdrenoHfiStartup.h
++++ b/AdrenoHfiStartup.h
+@@ -16,10 +16,19 @@ typedef struct {
+     uint32_t ddr_addresses[8],ddr_data[16][8];
+     uint32_t acd_version,acd_enable_mask,acd_stride,acd_count,acd_data[32];
+     unsigned enable_ifpc;
++    /* Gen7 firmware >= 0x20060001 answers the performance table only as message 0x0f with its
++     * own header layout: [1]=1, [2]=gpu_count, [3]=3, then 3 words/GPU level, then a gap,
++     * gmu_count, 2, and 2 words/GMU level. The legacy 0x04 table is ignored by that firmware,
++     * so a board whose GPU never leaves the slumber state must set this. */
++    unsigned perf_table_v2;
+ } AdrenoHfiStartupConfig;
+ typedef enum {
+     AdrenoHfiStageNone,AdrenoHfiStagePerformance,AdrenoHfiStageBandwidth,
+     AdrenoHfiStageAcdEnable,AdrenoHfiStageAcdTable,AdrenoHfiStageIfpc,
++    /* The gen7 firmware is also told three feature values (msg 0x0d) between the ACD table and
++     * the core start; without them it keeps the GPU core slumbered. Values are the ones the
++     * vendor driver was observed sending (kprobe capture, A735). */
++    AdrenoHfiStageSetValue0,AdrenoHfiStageSetValue1,AdrenoHfiStageSetValue2,
+     AdrenoHfiStageCoreStart,AdrenoHfiStageStart,AdrenoHfiStageComplete
+ } AdrenoHfiStartupStage;
+ typedef enum {
+-- 
+2.54.0 (Apple Git-157)
+
