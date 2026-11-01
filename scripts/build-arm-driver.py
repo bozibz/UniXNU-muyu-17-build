@@ -28,7 +28,7 @@ if args.unverified and args.component != 'ShengUfs':
 component = args.component
 recipe = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
 record = json.loads(recipe.read_text().strip().rstrip(','))
-source = ROOT / 'drivers' / ('GopFramebuffer' if component in ('NativeLegacyDisplay','NativeGOPPresenter') else 'AdrenoMetal' if component in ('NativeOfflineGPU','NativeOfflineAccelerator','NativeIOGPUProviderProbe') else component) / {'Adreno740':'NativeAdrenoService.cpp'}.get(component, component + '.cpp')
+source = ROOT / 'drivers' / ('GopFramebuffer' if component in ('NativeLegacyDisplay','NativeGOPPresenter') else 'AdrenoMetal' if component in ('NativeOfflineGPU','NativeOfflineAccelerator','NativeIOGPUProviderProbe') else component) / {'Adreno740':'NativeAdrenoService.cpp','SoftwareAES':'NativeAES.cpp','RamBlock':'NativeRamBlock.cpp','VirtioMmioBlock':'NativeVirtioBlock.cpp','VirtioMmioConsole':'NativeVirtioConsole.cpp','ShengUfs':'NativeUfs.cpp','AppleKeyStoreState':'NativeKeyStoreEvents.cpp','ShengHidInput':'NativeHidInput.cpp'}.get(component, component + '.cpp')
 out = ROOT / 'build' / {'ArmVirtPlatform': 'armvirt-platform', 'ArmDTPlatform': 'armdt-platform', 'ArmCpu': 'armcpu', 'SoftwareAES': 'native-aes',
                         'VirtioMmioBlock': 'native-virtio-block', 'RamBlock': 'native-ram-block',
                         'GopFramebuffer': 'native-mobile-display', 'VirtioMmioConsole': 'native-virtio-console',

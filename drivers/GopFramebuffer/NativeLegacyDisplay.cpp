@@ -27,23 +27,12 @@ extern "C" uint32_t native_legacy_surface_format(OSObject *),native_legacy_surfa
 extern "C" void native_legacy_frame_observed(unsigned kind,uint64_t count,uint64_t minx,uint64_t miny,uint64_t maxx,uint64_t maxy);
 extern "C" void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *counts,uint64_t other);
 extern "C" void native_legacy_swap_validation_observed(bool,unsigned,const void *,const void *);
-// Bring-up: set by the dump path just before it prints. A late dump lands on a panel whose UI is still
-// presenting frames, so the text was painted over within a frame and only flashed. While this is set the
-// transfer stage drops frames instead of copying them, which freezes the scanout on the console text.
-extern "C" volatile int native_legacy_swap_hold;
 // The surface of a rejected swap, as the validator read it: width, height, format, planes, stride, allocation, descriptor length.
 extern "C" void native_legacy_surface_rejected(uint64_t,uint64_t,uint32_t,uint32_t,uint64_t,uint64_t,uint64_t);
 extern "C" bool native_legacy_prepare_scanout(void);
 extern "C" void native_legacy_transfer_observed(IOReturn,const void *,uint64_t);
 extern "C" void native_legacy_copy_timing_observed(uint64_t ticks,uint64_t bytes);
 extern "C" void native_legacy_retirement_observed(IOService *);
-// Bring-up: transfers that had to be abandoned because their swap never retired (see kickSwapQueue).
-extern "C" volatile uint32_t native_legacy_stall_recoveries;
-// Swaps the client submitted with every layer disabled (a blank frame: display sleep or an explicit clear).
-extern "C" volatile uint32_t native_legacy_blank_frames;
-// 1 when the scanout mapping is write-combining, 0 when it is the original Device-nGnRnE one.
-extern "C" volatile uint32_t native_legacy_scanout_wcomb;
-extern "C" uint64_t mach_absolute_time(void);
 // GPU hand-off (boot-arg sheng-fb-gpu=1): the frame is offered to the privileged GPU client instead of being copied; the swap retires when the
 // client reports the GPU copy done (native_legacy_gpu_complete). A refused offer or a failed copy uses the CPU copy below and is counted.
 extern "C" bool native_legacy_gpu_offer(void *display,IOMemoryDescriptor *,uint64_t stride,uint32_t width,uint32_t height);
@@ -73,8 +62,6 @@ class NativeLegacyDisplay : public IOMobileFramebufferLegacy {
     bool primary=false;
     bool logicalPM=false;
     bool transferred=false;
-    // When the current transferred swap started, so a swap that never retires can be recognised.
-    uint64_t transferStart=0;
     // Every request the validator accepted and the family has not retired yet. A client may submit swap N+1 while swap N is still on the GPU
     // (int-131: swap 3 was validated during swap 2's GPU copy and one remembered pointer lost swap 2, which then never retired and left
     // every wait on it busy), so more than one can be pending.
@@ -238,22 +225,8 @@ public:
     // re-kick after each retirement it waited for the next submission (int-143: every offer came one frame late, a still screen showed the
     // previous frame until the user touched it again). A retirement inside a kick only asks the running kick to loop.
     bool kicking=false,rekick=false;
-    void markTransferred() {transferred=true;transferStart=mach_absolute_time();}
     void kickSwapQueue() override {
         armVsync();
-        // A swap that never retires latches transferred and silently drops every later kick, so the client
-        // then waits inside that swap forever (the os_unfair_lock/dispatch_sync hang of the crash report).
-        // Recover instead of wedging: a transferred swap that has not retired after two seconds loses the
-        // latch, is counted, and the next kick is allowed through.
-        unsigned guard=1;PE_parse_boot_argn("offline-legacy-stall-guard",&guard,sizeof(guard));
-        if(transferred && guard==1 && transferStart) {
-            uint64_t limit=0;nanoseconds_to_absolutetime(2000000000ull,&limit);
-            if(mach_absolute_time()-transferStart>limit) {
-                transferred=false;transferStart=0;
-                native_legacy_stall_recoveries=native_legacy_stall_recoveries+1;
-                if(native_legacy_stall_recoveries==1)printf("MUYU SWAP STALL stalled-swap recovered\n");
-            }
-        }
         if(kicking){rekick=true;return;}
         kicking=true;
         do {
@@ -268,10 +241,6 @@ public:
         if(enabled!=1 || transferred || !logicalPM || !bootMapping || !primary)return;
         const OriginalLegacySwapRequest *request=pendingSwapRequest();
         if(!request || !isValidated(request))return;
-        // Bring-up: the dump owns the scanout. Drop the frame instead of copying it, so the panel keeps the
-        // console text. The swap is still validated - rejecting it made the family print
-        // "verify_swap failed for swap id: <n>" for every frame, which repainted over the text.
-        if(native_legacy_swap_hold)return;
         // This bounded first-frame transfer preserves the original queue's
         // resource ownership. Separately gated retirement follows the copy;
         // neither path signals a hardware fence, announces a vblank or
@@ -282,7 +251,6 @@ public:
         OSObject *surface=nullptr;
         memcpy(&surface,reinterpret_cast<const unsigned char *>(request)+2624,sizeof(surface));
         if(!surface) {
-            native_legacy_blank_frames=native_legacy_blank_frames+1;
             // Validated blank swap (all layers disabled over black): solid-fill the actual GOP.
             PE_Video blank={};
             uint32_t bw=0,bh=0;getDisplayDimensions(&bw,&bh);
@@ -299,7 +267,7 @@ public:
             }
             __asm__ volatile("dsb sy" ::: "memory");
             shadowValid=false;
-            markTransferred();
+            transferred=true;
             native_legacy_frame_observed(1,0,0,0,0,0);
             {const uint32_t colors[4]={0xff000000U,0,0,0};const uint64_t counts[4]={(uint64_t)bw*bh,0,0,0};native_legacy_frame_colors_observed(colors,counts,0);}
             native_legacy_transfer_observed(kIOReturnSuccess,request,blankLength);
@@ -329,7 +297,7 @@ public:
         if(!gpuBypass && native_legacy_gpu_offer(this,memory,sourceStride,width,height)) {
             // The GPU writes the scanout memory behind the CPU's back: the differential copy's picture of it is stale from now on.
             native_legacy_swap_stage(1);
-            shadowValid=false;gpuRequest=request;gpuLength=length;markTransferred();
+            shadowValid=false;gpuRequest=request;gpuLength=length;transferred=true;
             // The compositor renders the next frame only after this swap retires, so retiring at the end of the copy serialized render and
             // copy (int-243: about 4.4 ms render then about 3 ms copy per frame). Retire now: the presenter holds its own reference to this
             // frame's memory, the previous frame's copy has finished (transferred held this one back), and the next swap still waits for
@@ -390,7 +358,7 @@ public:
         }
         __asm__ volatile("dsb sy" ::: "memory");
         {uint64_t copyEnd;__asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(copyEnd));native_legacy_copy_timing_observed(copyEnd-copyStart,stored);}
-        OSSafeReleaseNULL(source);markTransferred();
+        OSSafeReleaseNULL(source);transferred=true;
         native_legacy_transfer_observed(kIOReturnSuccess,request,length);
         finishTransfer(request);
     }
@@ -420,11 +388,7 @@ public:
         PE_parse_boot_argn("offline-legacy-retire",&retire,sizeof(retire));
         PE_parse_boot_argn("offline-legacy-cpu-present",&cpuPresent,sizeof(cpuPresent));
         if(!(retire==1 || cpuPresent==1 || force))return false;
-        if(!activateOnlyPendingSwap(request)) {
-            static bool reported=false;
-            if(!reported) {reported=true;printf("MUYU RETIRE FAIL request-not-pending\n");}
-            return false;
-        }
+        if(!activateOnlyPendingSwap(request))return false;
         removeValidated(request);
         IOMobileFramebufferLegacy::completeCurrentSwap();
         native_legacy_retirement_observed(this);
@@ -497,21 +461,6 @@ public:
             }
         }
         if(accepted)addValidated(request);else removeValidated(request);
-        if(!accepted) {
-            // Bring-up: a rejected swap is never retired, so its client waits forever. Print the first
-            // rejection once with the fields the verdict depends on (dump with muyu-dump-keep=REJECT).
-            static bool reported=false;
-            if(!reported && enabled==1) {
-                reported=true;
-                uint32_t dw=0,dh=0;getDisplayDimensions(&dw,&dh);
-                OSObject *slots[4]={};memcpy(slots,reinterpret_cast<const unsigned char *>(request)+2624,sizeof(slots));
-                printf("MUYU SWAP REJECT reason=%u disp=%ux%u sz=%ux%u r0=%u,%u,%u,%u r1=%u,%u,%u,%u "
-                       "o=%u,%u,%u st=%x,%x,%x slots=%d,%d,%d,%d\n",reason,dw,dh,word(816),word(820),
-                       word(17),word(21),word(25),word(29),word(81),word(85),word(89),word(93),
-                       word(804),word(808),word(812),word(792),word(796),word(800),
-                       slots[0]!=nullptr,slots[1]!=nullptr,slots[2]!=nullptr,slots[3]!=nullptr);
-            }
-        }
         native_legacy_swap_validation_observed(accepted,reason,request,surface);return accepted;
     }
     // The original slot-188 caller passes a uint32_t output and consumes an
@@ -546,26 +495,8 @@ public:
            !video.v_width || !video.v_height || video.v_depth!=32 || video.v_rotate ||
            video.v_width>16384 || video.v_height>16384 || video.v_rowBytes<video.v_width*4 ||
            video.v_rowBytes>UINT64_MAX/video.v_height)return false;
-        // The scanout region is ordinary DRAM. Device-nGnRnE stores (kIOMapInhibitCache) move one word at a
-        // time, which makes a 27 MB frame cost a fifth of a second and holds the compositor to a few frames
-        // per second; normal non-cacheable write-combining memory takes the same stores at memory bandwidth
-        // and needs no cache maintenance before the display engine reads it. offline-legacy-wcomb=0 selects
-        // the old mapping again.
-        unsigned wcomb=1;PE_parse_boot_argn("offline-legacy-wcomb",&wcomb,sizeof(wcomb));
-        IOMemoryMap *mapping=provider->mapDeviceMemoryWithIndex(0,wcomb?kIOMapWriteCombineCache:kIOMapInhibitCache);
-        // The mapping must describe exactly the console's range in both modes. A write-combining mapping
-        // that does not (the attribute is advisory) is dropped for the original one, so a wrong mode can
-        // never cost the display.
-        bool mapped=mapping && mapping->getVirtualAddress() && mapping->getPhysicalAddress()==video.v_baseAddr &&
-                    mapping->getLength()==video.v_rowBytes*video.v_height;
-        if(!mapped && wcomb) {
-            OSSafeReleaseNULL(mapping);wcomb=0;
-            mapping=provider->mapDeviceMemoryWithIndex(0,kIOMapInhibitCache);
-        }
+        IOMemoryMap *mapping=provider->mapDeviceMemoryWithIndex(0,kIOMapInhibitCache);
         if(!mapping)return false;
-        native_legacy_scanout_wcomb=wcomb;
-        printf("MUYU SCANOUT map wcomb=%u pa=%p bytes=%llu\n",wcomb,(void *)mapping->getPhysicalAddress(),
-            (unsigned long long)mapping->getLength());
         bool valid=mapping->getVirtualAddress() && mapping->getPhysicalAddress()==video.v_baseAddr &&
                    mapping->getLength()==video.v_rowBytes*video.v_height;
         if(valid) {
