@@ -312,6 +312,7 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 static uint8_t gCmdDbCopy[SHENG_GMU_COMMAND_DB_BYTES];
 static unsigned gPreHfiGxSel = 0, gPreHfiMxSel = 0;
 static unsigned gPreHfiRan = 0, gPreHfiAck = 0;
+static int preHfiRailOn(void *) __attribute__((unused));
 static int preHfiRailOn(void *) {
     uint32_t v = 0;
     if (!gGmuWindows[MGW_CORE].base) return 0;   // no GMU window: let the cold start proceed
@@ -331,11 +332,13 @@ static int preHfiRailOn(void *) {
             gPreHfiMxSel = early.mxc.count > 1 ? early.mxc.count - 1 : early.mxc.selector;
         }
     }
+    gxWrite(nullptr, 0x1f991, 0xffffffffu);             // GMU2HOST_INTR_CLR: drop pending before OOB
+    IODelay(100);
     gxWrite(nullptr, 0x1cbf8, 0);                       // BOOT_SLUMBER_OPTION = 0 (wake)
     gxWrite(nullptr, 0x1cbf9, gPreHfiGxSel & 0xff);     // GX_VOTE_IDX
     gxWrite(nullptr, 0x1cbfa, gPreHfiMxSel & 0xff);     // MX_VOTE_IDX
     gxWrite(nullptr, 0x1f994, 1u << 22);                // HOST2GMU_INTR_SET: BOOT_SLUMBER
-    for (int i = 0; i < 2000; ++i) {
+    for (int i = 0; i < 10000; ++i) {
         gxRead(nullptr, 0x1f992, &v);
         if (v & (1u << 30)) { gPreHfiAck = 1; break; }
         IODelay(100);
@@ -682,8 +685,12 @@ extern "C" void muyu_gpu_power_probe(void) {
                 gmuConfig.debug  = {(volatile uint32_t *)gmuMem[2]->getBytesNoCopy(), sizes[2], iovas[2]};
                 gmuConfig.log    = {(volatile uint32_t *)gmuMem[3]->getBytesNoCopy(), sizes[3], iovas[3]};
                 gmuConfig.hfi    = {(volatile uint32_t *)gmuMem[4]->getBytesNoCopy(), sizes[4], iovas[4]};
-                gmuConfig.pre_hfi = preHfiRailOn;
-                gmuConfig.pre_hfi_cookie = nullptr;
+                // 2026-11-01: the early rail-on vote does NOT work on this firmware. With correct
+                // selectors (gx=12 mx=9), pending interrupts cleared and a 1 s wait, the GMU still
+                // never acks BOOT_SLUMBER here, and the attempt leaves GX_HM_GDSC_POWER_OFF set
+                // (st 2 -> 3). Keep the hook available but do not arm it by default.
+                // gmuConfig.pre_hfi = preHfiRailOn;
+                // gmuConfig.pre_hfi_cookie = nullptr;
                 gmuConfig.poll_budget = 1000;
                 __builtin_memset(&gmuDevice, 0, sizeof gmuDevice);
                 gmuDevice.io.read32 = coldRead32;
