@@ -1,6 +1,6 @@
 # Status and how to continue
 
-**Last updated:** 2026-10-30 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635, Adreno 735)
+**Last updated:** 2026-11-01 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635, Adreno 735)
 **OS:** iPadOS 17.7.11 (21H461) on `userdata` · **Format:** 1 (`board.toml`)
 
 This file is the hand-off. If you are picking this port up, read this first, then the
@@ -15,7 +15,8 @@ documents under `docs/`.
 | Display | works, CPU-composed (~1.4 fps) |
 | Physical buttons | work |
 | Novatek touch (`muyu-touch-drv=1`) | works (native IOService) |
-| USB debug console | experimental |
+| USB debug console | experimental: SS PHY facts pinned, opt-in bring-up written, not yet enumerated |
+| USB3 SS PHY (`ssphy@88e8000`) | DT facts generated into `package/MuyuUsbPhy.h`; read-only survey in the driver; opt-in power-on follows mainline qmp-usb order. Images: `fw/vendor_boot_usb7.img` (survey + 90 s panic), `fw/vendor_boot_usb8.img` (attempt to bring the PHY up) |
 | GPU: CX power, GPUCC clock tree, GPU SMMU | works (hardware-verified) |
 | GPU: GMU cold start + full HFI startup | **works** (2026-10-30, `cold=0 ph=7 proto=0`) |
 | GPU: GX rail, CP, command submission, Metal | **not implemented** |
@@ -48,8 +49,12 @@ Two facts that took hardware iterations and should not be rediscovered:
 - `gpu_cc_gx_gdsc` is a `support-cfg-gdscr` GDSC: enable = clear `SW_COLLAPSE`, and the status
   is `CFG_GDSCR (0x9038) bit16`. That bit never sets (`cfg=0x050e0000`).
 - Its `parent-supply` is the RPMh ARC voter `pm_v6c_s6_gfx_voter_level` (`mxc.lvl`).
-  Linux enables it through the regulator framework; this port has no RSC driver, and the
-  official component catalog has no RPMh/RSC component.
+  Linux enables it through the regulator framework; the official component catalog has no
+  RPMh/RSC component, so a CPU-side sender was written here:
+  `package/MuyuRpmhRsc.{h,c}` + `MuyuRpmhRscHostTests.c`, probe mode 17, host-tested by
+  `scripts/check-muyu-rpmh-host.py`. It sends one ACTIVE TCS transfer with both ARC votes
+  (`gfx.lvl` selector from init level 0x10, `mxc.lvl` from 0x30). **Flashing done; the
+  on-device panic readout has not been collected yet.**
 - The GX clock-controller rail (`gx_clkctl_gx_gdsc`, `0x3d68024`) reads back 0 while the
   parent is off; its devicetree node is `status = "disabled"`, so it is not the missing
   piece.
@@ -61,9 +66,9 @@ readings.
 
 ## Next steps, in order
 
-1. **GX power.** Either (a) make the GMU vote the GX rail through HFI DCVS if the firmware
-   supports it, or (b) implement a minimal RSC voter (enable `mxc.lvl` and set the OPP ARC
-   level). (a) is a day if it works; (b) is one to two weeks.
+1. **GX power.** The minimal RSC voter is implemented (mode 17). Flash
+   `fw/vendor_boot_gpupower17.img` and read the `gmu rpmh` panic line: `vote=Success` plus
+   `gx` ACK means GX is up; `Busy`/`Timeout` means the TCS parameters need work.
 2. **SQE/ZAP + A735 hardware init.** The SQE/ZAP firmware is in `vendor`/`odm`; the pwrup
    register list can be extracted from the device's `msm_kgsl.ko` (BTF + rodata).
 3. **CP, ring, fences.** Bounded submission is the first real "GPU works" proof.
