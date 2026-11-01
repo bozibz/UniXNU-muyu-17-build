@@ -307,6 +307,42 @@ int coldWaitUs(void *, unsigned us) { IODelay(us); return 0; }
 
 } // namespace
 
+// The vendor raises the GX rail between FW_INIT and HFI start (a6xx_gmu_gfx_rail_on), not after the
+// GMU is already running. ShengGmuConfig.pre_hfi runs this at exactly that point.
+static uint8_t gCmdDbCopy[SHENG_GMU_COMMAND_DB_BYTES];
+static unsigned gPreHfiGxSel = 0, gPreHfiMxSel = 0;
+static unsigned gPreHfiRan = 0, gPreHfiAck = 0;
+static int preHfiRailOn(void *) {
+    uint32_t v = 0;
+    if (!gGmuWindows[MGW_CORE].base) return 0;   // no GMU window: let the cold start proceed
+    gPreHfiRan = 1;
+    if (!gPreHfiGxSel && gGmuWindows[MGW_CMDDB].base) {
+        // Runs during the cold start, before mode 17 parses the ARC table, so parse it here.
+        const volatile uint32_t *db = (const volatile uint32_t *)gGmuWindows[MGW_CMDDB].base;
+        for (size_t i = 0; i < sizeof gCmdDbCopy / 4; ++i) {
+            const uint32_t word = db[i];
+            memcpy(gCmdDbCopy + 4 * i, &word, 4);
+        }
+        static MuyuRpmhRscArcs early;
+        if (MuyuRpmhRscArcsParse(gCmdDbCopy, sizeof gCmdDbCopy, SHENG_GMU_COMMAND_DB_VERSION,
+                                 MUYU_RSC_GFX_INIT_LEVEL, MUYU_RSC_MXC_INIT_LEVEL, &early) ==
+            MuyuRpmhRscSuccess) {
+            gPreHfiGxSel = early.gfx.count > 1 ? early.gfx.count - 1 : early.gfx.selector;
+            gPreHfiMxSel = early.mxc.count > 1 ? early.mxc.count - 1 : early.mxc.selector;
+        }
+    }
+    gxWrite(nullptr, 0x1cbf8, 0);                       // BOOT_SLUMBER_OPTION = 0 (wake)
+    gxWrite(nullptr, 0x1cbf9, gPreHfiGxSel & 0xff);     // GX_VOTE_IDX
+    gxWrite(nullptr, 0x1cbfa, gPreHfiMxSel & 0xff);     // MX_VOTE_IDX
+    gxWrite(nullptr, 0x1f994, 1u << 22);                // HOST2GMU_INTR_SET: BOOT_SLUMBER
+    for (int i = 0; i < 2000; ++i) {
+        gxRead(nullptr, 0x1f992, &v);
+        if (v & (1u << 30)) { gPreHfiAck = 1; break; }
+        IODelay(100);
+    }
+    return 0;
+}
+
 extern "C" void muyu_gpu_power_probe(void) {
     unsigned mode = 0;
     if (!PE_parse_boot_argn("muyu-gpu-power", &mode, sizeof mode) || !mode) return;
@@ -646,6 +682,8 @@ extern "C" void muyu_gpu_power_probe(void) {
                 gmuConfig.debug  = {(volatile uint32_t *)gmuMem[2]->getBytesNoCopy(), sizes[2], iovas[2]};
                 gmuConfig.log    = {(volatile uint32_t *)gmuMem[3]->getBytesNoCopy(), sizes[3], iovas[3]};
                 gmuConfig.hfi    = {(volatile uint32_t *)gmuMem[4]->getBytesNoCopy(), sizes[4], iovas[4]};
+                gmuConfig.pre_hfi = preHfiRailOn;
+                gmuConfig.pre_hfi_cookie = nullptr;
                 gmuConfig.poll_budget = 1000;
                 __builtin_memset(&gmuDevice, 0, sizeof gmuDevice);
                 gmuDevice.io.read32 = coldRead32;
@@ -686,7 +724,6 @@ extern "C" void muyu_gpu_power_probe(void) {
     static unsigned rpmhStatus = 0xff, rpmhDbStatus = 0xff, rpmhMapped = 0;
     static unsigned rpmhVersion[4] = {0, 0, 0, 0};
     static unsigned rpmhPolls = 0, rpmhTcs = 0;
-    static uint8_t rpmhCmdDb[SHENG_GMU_COMMAND_DB_BYTES];
     if (mode >= 17) {
         static MuyuRpmhRscArcs rpmhArcs;
         static MuyuRpmhRscResult rpmhResult;
@@ -695,11 +732,11 @@ extern "C" void muyu_gpu_power_probe(void) {
             read32(nullptr, MUYU_RSC_WINDOW, MUYU_RSC_DRV_ID_REG, &rpmhVersion[2]);
             read32(nullptr, MUYU_RSC_WINDOW, MUYU_RSC_DRV_PRNT_CHLD_CONFIG, &rpmhVersion[3]);
             const volatile uint32_t *db = (const volatile uint32_t *)gGmuWindows[MGW_CMDDB].base;
-            for (size_t i = 0; i < sizeof rpmhCmdDb / 4; ++i) {
+            for (size_t i = 0; i < sizeof gCmdDbCopy / 4; ++i) {
                 const uint32_t word = db[i];
-                memcpy(rpmhCmdDb + 4 * i, &word, 4);
+                memcpy(gCmdDbCopy + 4 * i, &word, 4);
             }
-            rpmhDbStatus = (unsigned)MuyuRpmhRscArcsParse(rpmhCmdDb, sizeof rpmhCmdDb,
+            rpmhDbStatus = (unsigned)MuyuRpmhRscArcsParse(gCmdDbCopy, sizeof gCmdDbCopy,
                                                           SHENG_GMU_COMMAND_DB_VERSION,
                                                           MUYU_RSC_GFX_INIT_LEVEL,
                                                           MUYU_RSC_MXC_INIT_LEVEL, &rpmhArcs);
@@ -717,6 +754,8 @@ extern "C" void muyu_gpu_power_probe(void) {
                 rpmhMxcAddr = rpmhArcs.mxc.address;
                 rpmhGfxSel = rpmhArcs.gfx.selector;
                 rpmhMxcSel = rpmhArcs.mxc.selector;
+                gPreHfiGxSel = rpmhGfxSel;
+                gPreHfiMxSel = rpmhMxcSel;
                 MuyuRpmhRscIo rscIo = { nullptr, read32, write32, delayUs };
                 rpmhStatus = (unsigned)MuyuRpmhRscVoteGx(&rscIo, have, &rpmhArcs, &rpmhResult);
                 rpmhPolls = rpmhResult.status_polls + rpmhResult.command_polls;
@@ -882,7 +921,7 @@ extern "C" void muyu_gpu_power_probe(void) {
     static uint32_t dbArcW[8][3];
     if (mode >= 20) {
         static MuyuRpmhRscEntry ents[8];
-        dbArcCount = MuyuRpmhRscListArcs(rpmhCmdDb, sizeof rpmhCmdDb,
+        dbArcCount = MuyuRpmhRscListArcs(gCmdDbCopy, sizeof gCmdDbCopy,
                                          SHENG_GMU_COMMAND_DB_VERSION, ents, 8);
         for (unsigned i = 0; i < 8; ++i) {
             if (i < dbArcCount) {
@@ -910,7 +949,7 @@ extern "C" void muyu_gpu_power_probe(void) {
     static uint32_t dbFind[4][2] = {{0}};   // {address, count}
     if (mode >= 21) {
         static MuyuRpmhRscEntry ents[16];
-        unsigned n = MuyuRpmhRscListArcs(rpmhCmdDb, sizeof rpmhCmdDb,
+        unsigned n = MuyuRpmhRscListArcs(gCmdDbCopy, sizeof gCmdDbCopy,
                                          SHENG_GMU_COMMAND_DB_VERSION, ents, 16);
         static const char *const want[4] = {"gfx.lvl", "mx.lvl", "mxc.lvl", "gmxc.lvl"};
         for (unsigned w = 0; w < 4; ++w) {
@@ -1008,6 +1047,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               "gmu gx23a ran=%u clk=%08x pwr=%08x st=%08x cnt=%08x\n"
               "gmu gx23b rpmh=%08x/%08x fal=%08x/%08x\n"
               "gmu gx23c slum=%08x gx=%02x mx=%02x info=%08x\n"
+              "gmu prehfi ran=%u ack=%u gx=%u mx=%u\n"
               "ahb=%08x/%08x en=%u memnoc=%08x dvm=%08x ddrss=%08x gpll0=%08x\n"
               "cx=%08x gx=%08x hwctrl=%08x ccahb=%08x crc=%08x vote=%08x gmu=%08x cxo=%08x hubcx=%08x\n"
               "accu=%08x sleep=%08x ccmemnoc=%08x cxff=%08x hubaon=%08x\n"
@@ -1039,6 +1079,7 @@ extern "C" void muyu_gpu_power_probe(void) {
               gx23Ran, gx23[0], gx23[1], gx23[2], gx23[3],
               gx23[4], gx23[5], gx23[6], gx23[7],
               gx23[8], gx23[9] & 0xffu, gx23[10] & 0xffu, gx23[11],
+              gPreHfiRan, gPreHfiAck, gPreHfiGxSel, gPreHfiMxSel,
               r.cx_gdscr, r.gx_gdscr, r.cx_hw_ctrl, r.cc_ahb, r.cc_crc_ahb, r.cc_smmu, r.cc_gmu, r.cc_cxo,
               r.cc_hub_cx_int, r.cc_accu_shift, r.cc_sleep, r.cc_memnoc, r.cc_cx_ff, r.cc_hub_aon,
               r.pll1_mode, r.pll1_opmode, r.pll1_l, r.pll1_user, r.gmu_rcgr, r.gmu_cfg, r.hub_rcgr, r.hub_cfg,

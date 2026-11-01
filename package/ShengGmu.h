@@ -30,6 +30,11 @@ typedef struct {
     const uint8_t *firmware;size_t firmware_bytes;
     ShengGmuMemory icache,dummy,debug,log,hfi;
     unsigned poll_budget;
+    /* Optional: run between the FW_INIT observation and HFI_CTRL_INIT. The vendor driver raises the
+     * GX rail here (a6xx_gmu_gfx_rail_on: BOOT_SLUMBER_OPTION=0, GX/MX vote indices, then the
+     * BOOT_SLUMBER OOB) before it starts HFI. 0 = success. */
+    int (*pre_hfi)(void *cookie);
+    void *pre_hfi_cookie;
 } ShengGmuConfig;
 typedef struct {
     ShengGmuIo io;ShengGmuServices services;AdrenoHfi hfi;

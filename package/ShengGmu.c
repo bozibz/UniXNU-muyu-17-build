@@ -191,6 +191,7 @@ ShengGmuStatus ShengGmuLoadAndStartHfi(ShengGmuDevice *d,const ShengGmuConfig *c
     status=poll(d,REG_GMU_CM3_FW_INIT_RESULT,mask,ready,c->poll_budget,&r->firmware_init_result,r);
     if(status!=ShengGmuSuccess)goto failed;
     r->firmware_ready_observed=1;
+    if(c->pre_hfi && c->pre_hfi(c->pre_hfi_cookie)) {status=ShengGmuIoError;goto failed;}
     if(core_write(d,REG_GMU_HFI_CTRL_INIT,1,r) || d->io.barrier(d->io.cookie)) {status=ShengGmuIoError;goto failed;}
     r->phase=6;
     status=poll(d,REG_GMU_HFI_CTRL_STATUS,1,1,c->poll_budget,&r->hfi_status,r);
