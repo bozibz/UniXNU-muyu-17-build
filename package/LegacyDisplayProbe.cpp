@@ -441,6 +441,9 @@ extern void sheng_gpu_power_probe(void);
 // muyu's own gated GPUCC/GCC/SMMU observation (package/MuyuGpuPowerProbe.cpp, muyu-gpu-power=<n>).
 // Weak, so a build that does not compile that file still links.
 extern void muyu_gpu_power_probe(void) __attribute__((weak_import));
+// The thermal survey (package/MuyuThermalProbe.c, muyu-thermal=<n>): read-only TSENS survey. It runs
+// after the GPU probe so a probe image shows both, and is inert without the boot argument.
+extern void muyu_thermal_probe(void) __attribute__((weak_import));
 void native_legacy_display_late_probe(void) {
     unsigned defaultSurface=0,defaultProbe=0,defaultPanic=0;
     PE_parse_boot_argn("offline-legacy-default-surface",&defaultSurface,sizeof(defaultSurface));
@@ -450,6 +453,7 @@ void native_legacy_display_late_probe(void) {
     sheng_cpufreq_probe();
     sheng_gpu_power_probe();
     if (&muyu_gpu_power_probe) muyu_gpu_power_probe();
+    if (&muyu_thermal_probe) muyu_thermal_probe();
     native_touch_probe();
     if (&native_novatek_touch_start) native_novatek_touch_start();
     if (&muyu_data_probe_start) muyu_data_probe_start();

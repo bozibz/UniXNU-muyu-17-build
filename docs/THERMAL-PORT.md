@@ -1,0 +1,192 @@
+# Thermal sensor port (muyu / SM8635 "cliffs")
+
+**State:** read-only survey implemented and built; **never run on the device yet**.
+
+| item | value |
+| --- | --- |
+| boot argument | `muyu-thermal=<n>` (default off), `muyu-thermal-panic=1` to freeze the readout |
+| kernel | `UniXNU/out/muyu/kernel/kernel.macho` = `4c3a54222ef6a5f0e9ba688af59947f87629d60676fc54eb2923f3f244b4d3b7` |
+| image | `fw/vendor_boot_thermal1.img` = `a8ee8a5feb8b76b86cab99dd51b0c3fbc811d41e1e8b3ce6dfdecba1f8dea195` (61.81 MiB, `muyu-thermal=2 muyu-thermal-panic=1`) |
+| host checks | `scripts/check-muyu-thermal-host.py` PASS (DT map, decode, row, freestanding) | No throttling, no DVFS, no battery/charging driver. This file records what the hardware
+offers, how the survey reads it, and what a policy has to be built on top of it.
+
+Read `AGENTS.md` §5.6 first: this port has **no thermal management**, no DVFS and `wdt=-1`, so the
+tablet has no way to protect itself from sustained load. That is the reason this track exists.
+
+---
+
+## 1. What the SoC exposes
+
+Three `qcom,tsens-v2` controllers (device DT, `fw/muyu_dt.txt`, `soc/tsensN@…`):
+
+| controller | TM window | SROT window | `#qcom,sensors` | DT zones it feeds |
+| --- | --- | --- | --- | --- |
+| `tsens0` | `0x0c228000` | `0x0c222000` | 14 | `cpuss-0/1` (1, 2), `cpu-1-*-*` (3–10), `cpu-2-*-*` (11–13) |
+| `tsens1` | `0x0c229000` | `0x0c223000` | 16 | `cpu-0-*-*` (1–3), `nsphvx/nsphmx` (4–7), **`gpuss-0..3` (8–11)**, `video` (12), **`ddr` (13)**, `camera-0/1` (14, 15) |
+| `tsens2` | `0x0c22a000` | `0x0c224000` | 5 | `aoss-2` (0), `mdmss-0..3` (1–4) — modem, not ours |
+
+So in this port's terms:
+
+- **little cluster** = `tsens1[1..3]`
+- **mid + big clusters** = `tsens0[1..13]`
+- **GPU** = `tsens1[8..11]`
+- **DDR** = `tsens1[13]`
+
+Those are the four numbers a throttle needs, and they are what the panel row reports.
+
+The DT's own trips (they are the *emergency* ladder, not a throttle policy — Android throttles in
+userspace `thermal-engine`, which does not exist here):
+
+| trip | value | where |
+| --- | --- | --- |
+| `tj_cfg` (GPU) | **95.0 °C** | `thermal-zones/gpuss-0` |
+| `cpu7-emerg2-cfg` | **110.0 °C** | `thermal-zones/cpu-2-0-2` |
+| `reset-mon-cfg` | **115.0 °C** | every CPU/GPU/DDR zone |
+| `thermal-engine-config` / `thermal-hal-config` | **125.0 °C** | every zone (the DT's "max" placeholder) |
+
+115 °C is a reset monitor: crossing it is not a throttle, it is the SoC deciding to stop.
+A usable policy has to act well below that (75–80 °C is the usual first step on this class of part).
+
+---
+
+## 2. Register model
+
+From mainline `drivers/thermal/qcom/tsens-v2.c` (`tsens_v2_regfields`). These three controllers
+use the plain `"qcom,tsens-v2"` compatible, so the driver's `feat->adc` is 0: **each `Sn_STATUS`
+word already carries deciCelsius**, not an ADC code, and there is no per-sensor calibration in the
+reading path. This is the one assumption the decode hangs on; see `MuyuThermal.h` for the note on
+what changes if a future DT names an ADC variant.
+
+| offset | register | use |
+| --- | --- | --- |
+| SROT `0x00` | `SROT_HW_VER` | `31:28` major, `27:16` minor, `15:0` step |
+| SROT `0x04` | `SROT_CTRL` | bit0 `TSENS_EN`, bit1 `TSENS_SW_RST` |
+| TM `0xe4` | `TM_TRDY` | bit0 = a fresh result is available |
+| TM `0xa0 + 4·id` | `Sn_STATUS` | `11:0` deciCelsius (two's complement), bit21 `VALID` |
+
+`temp_mC = sign_extend12(Sn_STATUS[11:0]) × 100`.
+
+**Read-only by construction:** the driver only writes `TSENS_EN` on v1/VER_0 IP; on v2 the mainline
+`init_common()` refuses to run unless the firmware already enabled TSENS and left it ready. The
+bootloader does. So the survey never writes a register — and if a block reports `en=0` or `trdy=0`
+it says so instead of "fixing" it.
+
+---
+
+## 3. The survey (`muyu-thermal=<n>`)
+
+`package/MuyuThermalProbe.c`, called from `native_legacy_display_late_probe()` after the GPU probe.
+Default off.
+
+| argument | effect |
+| --- | --- |
+| `muyu-thermal=1` | map the three controllers, log version/ctrl/trdy, decode every sensor, publish the summary row |
+| `muyu-thermal=2` | as 1, plus one kernel-log line per controller with all sensor temperatures |
+| `muyu-thermal-panic=1` | after the survey, `panic()` with the summary, so the readout is frozen on the panic screen for a photograph |
+
+Output, on the boot-progress page (row `THERM`) and in the kernel log:
+
+```
+THERM L=30 B=61 G=55 D=49 hot=70 en=111 inv=0
+```
+
+| token | meaning |
+| --- | --- |
+| `L` | little cluster (`tsens1[1..3]`), °C |
+| `B` | mid+big clusters (`tsens0[1..13]`), °C |
+| `G` | GPU (`tsens1[8..11]`), °C |
+| `D` | DDR (`tsens1[13]`), °C |
+| `hot` | hottest valid sensor of all three controllers, °C |
+| `en` | per-controller `TSENS_EN` as three digits, `111` = all enabled |
+| `inv` | sensors whose `VALID` bit was clear (should be 0; a nonzero count means a sensor id is not populated on this SKU) |
+
+`?` in a field means "no valid sensor in that range", not 0 °C.
+
+Log lines are shaped for the persistent log as well:
+
+```
+MUYU THERM t0 ver=2.4.4 ctrl=... trdy=... n=14
+MUYU THERM t0 deg: 45 46 ...
+MUYU THERM summary L=... valid=44
+```
+
+---
+
+## 4. What is verified on the host, and what is not
+
+`scripts/check-muyu-thermal-host.py` (no device):
+
+1. re-derives the three controller bases, their sensor counts and the `cpu-*`/`gpuss-*`/`ddr`
+   zone→(controller, id) map from `fw/muyu_dt.txt`, and compares them with the constants in
+   `MuyuThermal.h` — so the header cannot silently drift from the device tree;
+2. compiles and runs `package/MuyuThermalHostTests.c` (sign extension, rounding, region roll-up,
+   exact row text);
+3. checks the header still compiles freestanding for `aarch64-none-elf`.
+
+**Not verified:** that the registers read at all on this board, that the bootloader leaves TSENS
+enabled, and every absolute temperature. Those need one boot; §5 is the runbook.
+
+---
+
+## 5. Runbook (not yet executed)
+
+```bash
+W=~/pad7pro-xnu
+export PATH=/opt/homebrew/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH
+cd $W/UniXNU
+python3.12 unixnu build kernel -D ../UniXNU-muyu \
+    --kernelcache out/ipsw/21H461/kernelcache.decompressed
+python3.12 unixnu build payload -D ../UniXNU-muyu \
+    --kernel out/muyu/kernel/kernel.macho --unique-chip-id 0000000000000001 \
+    --owner-trust-cache /tmp/muyu-static-system.bundle \
+    --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr \
+    --kernel-arg muyu-thermal=2 --kernel-arg muyu-thermal-panic=1
+python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
+    --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_thermal1.img
+cd $W && ./tools/muyu-flash-mode.sh preflight
+./tools/muyu-flash-mode.sh xnu fw/vendor_boot_thermal1.img
+# photograph the panic screen, then return:
+./tools/muyu-flash-mode.sh xnu fw/vendor_boot_btn2.img
+```
+
+### Judgment tree
+
+| reading | meaning | next |
+| --- | --- | --- |
+| `en=111`, `inv=0`, plausible °C (20–45 at boot) | registers are readable, decode is right | implement the throttle |
+| `en` not `111`, or `trdy=0` | the firmware did not leave that controller running; a CPU-side enable would be needed (and is a write we have not justified) | investigate that block before writing anything |
+| `L=? B=? …` all `?` | no `VALID` bit: either the mapping is wrong or v2 here is not plain v2 | check `ctrl`/`trdy`/`ver` in the same log line before touching the decode |
+| plausible values but `hot` far above ambient at boot | the boot itself is already heating the part; measure idle after login instead | sample later (see §6) |
+
+---
+
+## 6. Next steps (in order)
+
+1. **Run §5 once.** Everything below depends on the registers being readable at all.
+2. **Sampling.** The survey is one-shot at boot. A policy needs a periodic read (1 s) on the
+   existing boot-progress monitor thread, plus the peak over the last minute, otherwise a
+   photograph only ever shows the instant it was taken.
+3. **Throttle.** Two candidate actuators, in this order:
+   - **CPU frequency cap** — `package/CpuFreqProbe.cpp` already knows the EPSS layout
+     (`reg_perf_state = 0x320`, domains at `0x17d91000`/`…2000`/`…3000` from the DT's
+     `qcom,cpufreq-hw` node) but nothing has validated the write on this board yet. Cap by
+     writing a lower LUT index; verify with `domain_state` readback and the existing `CPUFREQ` row.
+   - **Idle injection** — if the EPSS write does not stick, the fallback is to park a core or
+     insert a duty-cycle sleep in the compositor path, which is the only sustained CPU load here.
+4. **Emergency action** at the DT's real emergency trips (95 °C GPU / 110 °C CPU): stop accepting
+   new work and, past ~115 °C, power off rather than wait for the reset monitor.
+5. **Watchdog.** `wdt=-1` is still set. A thermal policy that hangs takes the whole safety story
+   with it, so the two belong in the same chapter.
+
+---
+
+## 7. Provenance
+
+| fact | source |
+| --- | --- |
+| controller bases, sensor counts, zone → sensor ids, trip points | `fw/muyu_dt.txt` (vendor DT dump), re-derived by `scripts/check-muyu-thermal-host.py` |
+| register offsets, `VALID`/`LAST_TEMP` bit positions, v2 "already deciCelsius" | mainline `drivers/thermal/qcom/tsens-v2.c` + `tsens.c` (v6.12) |
+| no CPU-side enable for v2 | mainline `tsens.c` `init_common()`: `-ENODEV` on "device not enabled" for anything above VER_0 |
+| Android loads `qcom_tsens.ko` and the driver runs | `logs/android-harvest-20261101-135328/dmesg.txt` |
+| TSENS interrupts are live (30/32/34, low counts) | `logs/android-harvest-20261101-135328/interrupts.txt` |
+| why this matters at all | `AGENTS.md` §5.6, §6.4 |

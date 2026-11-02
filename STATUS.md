@@ -1,6 +1,6 @@
 # Status and how to continue
 
-**Last updated:** 2026-11-01 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635, Adreno 735)
+**Last updated:** 2026-11-02 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635, Adreno 735)
 **OS:** iPadOS 17.7.11 (21H461) on `userdata` · **Format:** 1 (`board.toml`)
 
 This file is the hand-off. If you are picking this port up, read this first, then the
@@ -19,7 +19,9 @@ documents under `docs/`.
 | USB3 SS PHY (`ssphy@88e8000`) | DT facts generated into `package/MuyuUsbPhy.h`; read-only survey in the driver; opt-in power-on follows mainline qmp-usb order. Images: `fw/vendor_boot_usb7.img` (survey + 90 s panic), `fw/vendor_boot_usb8.img` (attempt to bring the PHY up) |
 | GPU: CX power, GPUCC clock tree, GPU SMMU | works (hardware-verified) |
 | GPU: GMU cold start + full HFI startup | **works** (2026-10-30, `cold=0 ph=7 proto=0`) |
-| GPU: GX rail, CP, command submission, Metal | **not implemented** |
+| GPU: GX rail, CP, command submission, Metal | **not implemented** — **paused since 2026-11-02 by the maintainer's decision**; the GX power handshake itself works (`docs/GPU-PROBE-RUNBOOK.md` §13, workspace `HANDOFF-2026-11-01.md` §17–§21) |
+| Thermal sensors (TSENS) | read-only survey written and built (`muyu-thermal=<n>`, `docs/THERMAL-PORT.md`); **not yet run on the device** |
+| Thermal policy, DVFS, watchdog | **not implemented** — this is the current main line |
 
 ## GPU: where it stands
 
@@ -66,13 +68,23 @@ readings.
 
 ## Next steps, in order
 
-1. **GX power.** The minimal RSC voter is implemented (mode 17). Flash
-   `fw/vendor_boot_gpupower17.img` and read the `gmu rpmh` panic line: `vote=Success` plus
-   `gx` ACK means GX is up; `Busy`/`Timeout` means the TCS parameters need work.
-2. **SQE/ZAP + A735 hardware init.** The SQE/ZAP firmware is in `vendor`/`odm`; the pwrup
-   register list can be extracted from the device's `msm_kgsl.ko` (BTF + rodata).
-3. **CP, ring, fences.** Bounded submission is the first real "GPU works" proof.
-4. **Metal.** `AdrenoMetal` + turnip, with an A735 backend on top of `Adreno740`.
+The main line is **power and thermal safety**, not GPU: this port still has no thermal zone,
+no DVFS and `wdt=-1`, so the tablet cannot protect itself from sustained load. See
+`docs/THERMAL-PORT.md`.
+
+1. **Run the read-only thermal survey once.** Flash `fw/vendor_boot_thermal1.img` and read the
+   `THERM` row (`muyu-thermal=2`): `en=111 inv=0` plus a plausible temperature means the sensors
+   are readable. `docs/THERMAL-PORT.md` §5 has the runbook and the judgment tree.
+2. **Sample periodically.** The survey is one-shot at boot; a policy needs a 1 s read and a
+   one-minute peak.
+3. **Throttle.** Cap CPU frequency through EPSS (`package/CpuFreqProbe.cpp` has the layout, and
+   the write is still unvalidated on this board); if that does not stick, inject idle on the
+   compositor path.
+4. **Emergency action and watchdog.** Act below the DT's real trips (95 °C GPU, 110 °C CPU),
+   power off before `reset-mon` (115 °C), and give the policy a watchdog before relying on it.
+
+GPU work resumes only if the maintainer asks for it; the register tables, probe modes and the
+GX power result are all still here (`docs/GPU-PROBE-RUNBOOK.md`, `docs/GPU-GEN7-START-REGLIST.md`).
 
 ## Build and flash (short form)
 

@@ -85,6 +85,10 @@ archives = [
   # so a missing boot-task check-in no longer resets the board.
   "build-boot-log.py",
   "build-muyu-usb-debug.py",
+  # muyu-thermal=<n>: read-only TSENS survey (package/MuyuThermalProbe.c). Its decode and the
+  # panel row are host-tested by scripts/check-muyu-thermal-host.py, which also re-derives the
+  # controller bases and the sensor map from fw/muyu_dt.txt so the header cannot drift.
+  "build-muyu-thermal.py",
 ]
 
 # GPU: BraveArk reports Adreno735 (compatible qcom,adreno-gpu-gen7-11-0, the same family as uke's A732).

@@ -793,6 +793,14 @@ PY_BINDINGS
     KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$USB_DEBUG_ARCHIVE"
     KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $USB_DEBUG_ARCHIVE"
   fi
+  # muyu thermal survey (package/MuyuThermalProbe.c, muyu-thermal=<n>). Same rule as the USB console:
+  # link only when the archive exists, because the bootstrap pass runs before the archive builders.
+  # Read-only, and inert unless the boot argument is present.
+  THERMAL_ARCHIVE=$ROOT/build/muyu-thermal/libMuyuThermal.a
+  if [ -f "$THERMAL_ARCHIVE" ]; then
+    KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$THERMAL_ARCHIVE"
+    KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $THERMAL_ARCHIVE"
+  fi
   KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES ${XNU_EXTRA_LD_ARCHIVES:-}"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$KERNEL_EXTRA_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$KERNEL_ARCHIVE_DEPENDENCIES")
