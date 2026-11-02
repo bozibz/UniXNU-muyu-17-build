@@ -178,7 +178,7 @@ static inline void muyu_thermal_format_row(char *out, size_t len,
 /* A handful of timed "hottest sensor" marks, plus the peak over the whole run. Enough to see
  * whether the part is still climbing after a minute, which is the question a throttle has to
  * answer; the exact curve is not needed. */
-#define MUYU_THERM_MARKS 6
+#define MUYU_THERM_MARKS 8
 
 struct muyu_thermal_trend {
     unsigned at[MUYU_THERM_MARKS];   /* seconds, ascending */

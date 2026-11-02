@@ -42,7 +42,7 @@ extern void IOSleep(unsigned milliseconds);
 #define MUYU_THERM_TREND_LEN 112
 
 /* The seconds a trend mark is taken at. Ascending; the sampler compares each second against these. */
-static const unsigned kThermMarkSeconds[MUYU_THERM_MARKS] = {0, 15, 30, 60, 120, 180};
+static const unsigned kThermMarkSeconds[MUYU_THERM_MARKS] = {0, 15, 30, 60, 90, 120, 150, 180};
 
 /* Mapped once: there is no unmap here, and a per-second resample must not leak mappings. */
 static struct { uintptr_t tm, srot; } gThermWindow[MUYU_THERM_BLOCKS];
