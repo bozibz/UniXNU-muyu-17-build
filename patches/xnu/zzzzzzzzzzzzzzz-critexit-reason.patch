@@ -1,0 +1,15 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1840,6 +1840,12 @@
+ 	 * console attach time (there the cave parks without drawing). */
+ 	{
+ 		extern void muyu_panic_with_log(void);
++		/* 2026-11-02 muyu bring-up: the hook below panics before the critical-exit message
++		 * is printed, so the reason init died never reached the panel. Print it first; the
++		 * panic then freezes it together with the log tail. */
++		printf("CRITEXIT pid %d sig %d code %d reason %s\n",
++		    proc_getpid(p), WTERMSIG(rv), WEXITSTATUS(rv),
++		    exit_reason_get_string_desc(p->p_exit_reason));
+ 		muyu_panic_with_log();
+ 	}
+ 

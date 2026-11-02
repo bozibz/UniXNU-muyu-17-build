@@ -250,7 +250,11 @@ static int
 muyu_noise(const char *line, size_t len)
 {
 	static const char *skip[] = { "CoreAnalyticsHub", "messageClients of", "LiveActivities",
-	    "For-debug:", "temporary sandbox", "deny(1)", "apfs_gpm", "APFS: disk" };
+	    "For-debug:", "temporary sandbox", "deny(1)", "apfs_gpm", "APFS: disk",
+	    /* 2026-11-02: with the MUYU-only filter removed, these two filled the whole 2.4 KiB
+	     * window and pushed the interesting tail (the launchd exec + exit that ends the boot)
+	     * out of it. Both are high-volume and say nothing about why the boot stopped. */
+	    "spaceman_", "IOPlatformProcessor_register" };
 	char probe[256];
 	size_t copy = len < sizeof(probe) - 1 ? len : sizeof(probe) - 1;
 
