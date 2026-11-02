@@ -1,0 +1,27 @@
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -2973,6 +2973,14 @@
+ 	files_count = uap->files_count;
+ 	mappings_count = uap->mappings_count;
+ 
++	/* 2026-11-02 muyu bring-up: dyld calls this to map the shared cache, and the failing
++	 * boots show launchd's shared_region check_np failing with no map error at all. Log the
++	 * entry and the result, so the next dump says whether dyld ever got here.
++	 * ERROR level is on by default (shared_region_trace_level), so this prints. */
++	SHARED_REGION_TRACE_ERROR(("shared_region: %p [%d(%s)] map_and_slide ENTER files=%u mappings=%u\n",
++	    (void *)VM_KERNEL_ADDRPERM(current_thread()),
++	    proc_getpid(p), p->p_comm, files_count, mappings_count));
++
+ 	if (files_count == 0) {
+ 		SHARED_REGION_TRACE_INFO(
+ 			("shared_region: %p [%d(%s)] map(): "
+@@ -3077,6 +3085,9 @@
+ 
+ 	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
+ done:
++	SHARED_REGION_TRACE_ERROR(("shared_region: %p [%d(%s)] map_and_slide EXIT kr=0x%x\n",
++	    (void *)VM_KERNEL_ADDRPERM(current_thread()),
++	    proc_getpid(p), p->p_comm, kr));
+ 	kfree_data(shared_files, files_count * sizeof(shared_files[0]));
+ 	kfree_data(mappings, mappings_count * sizeof(mappings[0]));
+ 	return kr;
