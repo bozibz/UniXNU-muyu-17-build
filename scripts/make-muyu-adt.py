@@ -54,6 +54,43 @@ def node(name, properties=(), children=()):
     return result + b''.join(children)
 
 
+FILESYSTEMS_BLOB = Path(__file__).resolve().parent / 'adt-filesystems.bin'
+
+
+def filesystems_node():
+    """The stock /filesystems subtree (the fstab entries), copied verbatim from the iPad7,1 DT.
+
+    2026-11-02: launchd mounts volumes through mount_apfs, which asks the *user device tree* for
+    `/filesystems/fstab`; the synthetic tree below never had it, so mount_apfs exited with
+    EX_NOINPUT (66) and launchd's panic-on-non-zero-exit policy turned that into a panic
+    (CRITEXIT pid 3 comm mount_apfs ppid 1 sig 0 code 66). The blob is the `filesystems` node of
+    the decoded DeviceTree.j120ap.im4p: fstab plus the xART/System/Preboot/Data/Update/Hardware
+    entries and the two ephemeral fstab variants.
+
+    Only the phandle values are rewritten (into a private range) so they cannot collide with any
+    node this script emits; the script itself never uses AAPL,phandle.
+    """
+    buf = bytearray(FILESYSTEMS_BLOB.read_bytes())
+
+    def walk(off):
+        props, children = struct.unpack_from('<II', buf, off)
+        p = off + 8
+        for _ in range(props):
+            key, length = struct.unpack_from('<32sI', buf, p)
+            p += 36
+            length &= 0x7fffffff          # bit 31 marks a syscfg reference in Apple's DTs
+            if key.split(b'\0')[0] == b'AAPL,phandle' and length == 4:
+                old, = struct.unpack_from('<I', buf, p)
+                struct.pack_into('<I', buf, p, 0x4000 + old)
+            p += length + (-length % 4)
+        for _ in range(children):
+            p = walk(p)
+        return p
+
+    walk(0)
+    return bytes(buf)
+
+
 def empty_nvram_proxy():
     """A fresh volatile CHRP bank for upstream IODTNVRAM, with no controller."""
     def header(name, size):
@@ -226,6 +263,9 @@ def main():
               # negative. The node exists only for class matching; ShengUfs takes its
               # physical windows from the board DT constants in GccUfs.h.
               node('ufshc', [('compatible', b'qcom,sm8550-ufshc\0')])]),
+        # The fstab tree launchd and mount_apfs read; without it the boot dies at
+        # CRITEXIT ... comm mount_apfs ... code 66 (see filesystems_node()).
+        filesystems_node(),
     ])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(tree)
