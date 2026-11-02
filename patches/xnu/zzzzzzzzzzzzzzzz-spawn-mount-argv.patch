@@ -1,0 +1,40 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -3603,6 +3603,37 @@
+ 	vap = &__spawn_data->va;
+ 	origvap = &__spawn_data->origva;
+ 
++	/* 2026-11-02 muyu bring-up: launchd's boot task `mount-phase-1` runs /sbin/mount, which exits
++	 * 66 and stops the boot, and the one thing every log so far lacks is the arguments it was
++	 * given. posix_spawn carries argv but no argc (bsd/kern/syscalls.master line 244), so walk the
++	 * NULL-terminated vector directly. Only mount tools are printed, to keep the log quiet. */
++	{
++		char mu_path[96];
++		size_t mu_len = 0;
++		if (copyinstr(uap->path, mu_path, sizeof(mu_path), &mu_len) == 0 &&
++		    strnstr(mu_path, "mount", sizeof(mu_path)) != NULL) {
++			char mu_args[192];
++			unsigned mu_at = 0;
++			mu_args[0] = '\0';
++			for (unsigned mu_i = 0; mu_i < 6; mu_i++) {
++				user_addr_t mu_argp = 0;
++				char mu_arg[64];
++				size_t mu_n = 0;
++				if (copyin(uap->argv + mu_i * sizeof(user_addr_t), &mu_argp,
++				    sizeof(mu_argp)) != 0 || mu_argp == 0 ||
++				    copyinstr(mu_argp, mu_arg, sizeof(mu_arg), &mu_n) != 0) {
++					break;
++				}
++				mu_at += (unsigned)snprintf(mu_args + mu_at, sizeof(mu_args) - mu_at,
++				    mu_i ? " %s" : "%s", mu_arg);
++				if (mu_at >= sizeof(mu_args) - 1) {
++					break;
++				}
++			}
++			printf("SPAWN %s pid %d argv: %s\n", mu_path, proc_getpid(p), mu_args);
++		}
++	}
++
+ 	/* Initialize the common data in the image_params structure */
+ 	imgp->ip_user_fname = uap->path;
+ 	imgp->ip_user_argv = uap->argv;
