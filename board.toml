@@ -402,8 +402,15 @@ kernel_args = [
   # quiet (muyu-touch-quiet) and the filter is narrowed to the processes that decide whether the
   # "Swipe up to upgrade" / passcode flow can finish.
   # 2026-10-26 19:40: the live-Data probe (package/MuyuDataProbe.c) prints "MUYU DATA" rows; the touch
-  # pump has its own 30 s cadence, so the filter only needs the MUYU prefix (cmdline is at its limit).
-  "muyu-dump-keep=MUYU",
+  # pump has its own 30 s cadence, so the filter only needed the MUYU prefix (cmdline is at its limit).
+  #
+  # 2026-11-02: DROPPED for the boot-determinism work. Three of five boots on this date left through the
+  # critical-exit hook (BravearkLastLog.c muyu_panic_with_log) with PROC n=3 and no backboardd, and the
+  # MUYU-only filter hid exactly the lines that would say why. Without this argument muyu_build_dump()
+  # keeps everything except muyu_noise()'s known spam, so the dump carries the last ~2.4 KiB of the real
+  # boot log. It also frees 21 bytes of the 1000-byte cmdline budget. Re-add it when the dump is only
+  # wanted for the GPU/thermal probes again.
+  # "muyu-dump-keep=MUYU",
   "muyu-data-probe=2",
   # Keep the pump's rows out of msgbuf so the probe rows survive to the dump.
   "muyu-touch-quiet=1",
