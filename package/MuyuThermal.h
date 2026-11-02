@@ -36,7 +36,7 @@
 /* ----- qcom,tsens-v2 register map (tsens-v2.c) ------------------------------------ */
 #define MUYU_TSENS_SROT_HW_VER      0x0000u  /* VER_MAJOR 31:28, VER_MINOR 27:16, VER_STEP 15:0 */
 #define MUYU_TSENS_SROT_CTRL        0x0004u  /* bit0 TSENS_EN, bit1 TSENS_SW_RST */
-#define MUYU_TSENS_TM_TRDY          0x00e4u  /* bit0: 1 = sensors have a fresh result */
+#define MUYU_TSENS_TM_TRDY          0x00e4u  /* mainline says bit0 = fresh result; see the note below */
 #define MUYU_TSENS_TM_SN_STATUS     0x00a0u  /* one word per sensor, stride 4 */
 #define MUYU_TSENS_STATUS_TEMP_LSB  0
 #define MUYU_TSENS_STATUS_TEMP_MSB  11
@@ -44,6 +44,11 @@
 
 #define MUYU_TSENS_SROT_ENABLED     (1u << 0)
 #define MUYU_TSENS_SROT_SW_RESET    (1u << 1)
+/* mainline's tsens-v2 layout puts "results ready" in TRDY bit0. On this board TRDY reads 0x8
+ * (bit3) while every Sn_STATUS word has VALID set and plausible temperatures (2026-11-02,
+ * vendor_boot_thermal2: trdy=00000008, inv=0, valid=35), so bit0 is not a usable gate here.
+ * The survey records TRDY for the log but gates nothing on it; VALID is the only readiness
+ * signal it trusts. */
 #define MUYU_TSENS_TRDY_READY       (1u << 0)
 
 /* ----- board layout --------------------------------------------------------------- */

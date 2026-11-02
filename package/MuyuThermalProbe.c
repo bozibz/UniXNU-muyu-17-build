@@ -154,6 +154,9 @@ static void therm_step(unsigned second) {
             break;
         }
     therm_publish();
+    /* Also log the trend every 15 s: a boot that leaves through the critical-exit path dumps the
+     * last ~1.5 KiB of log on the panel, and the trend has to be inside that window to be read. */
+    if (second && second % 15 == 0) IOLog("MUYU THERM trend %s\n", native_thermal_trend);
 }
 
 static void therm_sampler(void *arg, wait_result_t result) {

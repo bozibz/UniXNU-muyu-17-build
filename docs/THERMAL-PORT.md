@@ -85,10 +85,16 @@ what changes if a future DT names an ADC variant.
 | --- | --- | --- |
 | SROT `0x00` | `SROT_HW_VER` | `31:28` major, `27:16` minor, `15:0` step |
 | SROT `0x04` | `SROT_CTRL` | bit0 `TSENS_EN`, bit1 `TSENS_SW_RST` |
-| TM `0xe4` | `TM_TRDY` | bit0 = a fresh result is available |
+| TM `0xe4` | `TM_TRDY` | mainline reads bit0 as "fresh result"; **on this board it reads `0x8`** (see below) |
 | TM `0xa0 + 4·id` | `Sn_STATUS` | `11:0` deciCelsius (two's complement), bit21 `VALID` |
 
 `temp_mC = sign_extend12(Sn_STATUS[11:0]) × 100`.
+
+**TRDY is not a gate here.** The first sampling run (2026-11-02) logged `trdy=00000008` for all
+three controllers - bit0 clear - while every one of the 35 reported sensors had VALID set and
+plausible temperatures (`inv=0`). So this IP's readiness flag is not where mainline's v2 layout
+puts it. The survey records TRDY for the log and gates nothing on it; `VALID` is the only
+readiness signal it trusts.
 
 **Read-only by construction:** the driver only writes `TSENS_EN` on v1/VER_0 IP; on v2 the mainline
 `init_common()` refuses to run unless the firmware already enabled TSENS and left it ready. The
