@@ -31,6 +31,36 @@ What it settles:
 Caveat: this is the **boot-time** snapshot, taken before userland runs, so it says "the sensors
 work", not "the tablet stays cool". That is what the sampling mode is for.
 
+
+### Second result (2026-11-02 18:39 / 18:43): it plateaus at 59 °C
+
+Two sampling runs (`muyu-thermal=60`, then `=180`) on a cold start:
+
+```
+trend h0=33 h15=55 pk=55
+trend h0=33 h15=55 h30=56 pk=56
+trend h0=33 h15=55 h30=56 h60=59 pk=59
+trend h0=33 h15=55 h30=56 h60=59 pk=59      (still 59 for the rest of the run)
+```
+
+| second | hottest sensor |
+| --- | --- |
+| 0 | 33 °C |
+| 15 | 55 °C (+22, about 1.5 °C/s) |
+| 30 | 56 °C |
+| 60 | 59 °C |
+| after 60 | **flat at 59 °C** |
+
+So under this port's own load (boot + the 1.4 fps compositor) the part settles around 59 °C,
+well below the DT's emergency ladder (95 °C GPU `tj_cfg`, 110 °C `cpu7-emerg2`, 115 °C
+`reset-mon`). The risk is not the UI load; it is a heavier one (GPU, decode, a saturated core),
+which is exactly what a paused GPU port does not produce.
+
+That is why the throttle dropped below boot determinism in priority - see the workspace
+`HANDOFF-2026-11-02.md` §7/§11. The sampler thread was separately cleared of causing the boot
+failures seen that day (`muyu-thermal=0`, no thread and no panic, failed the same way).
+
+
 No throttling, no DVFS, no battery/charging driver. This file records what the hardware
 offers, how the survey reads it, and what a policy has to be built on top of it.
 
