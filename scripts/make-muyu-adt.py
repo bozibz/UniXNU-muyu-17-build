@@ -41,6 +41,10 @@ UFS_PHY_SIZE = 0x2000
 # conventional window); the kernel maps pram.reg itself and prints the
 # previous log after the framebuffer console is up. Must match the live DT
 # llcc_lpi_region@ff800000 reservation.
+# The Preboot volume the owner cache lives on (patches/xnu/offline-owner-cache-carrier.patch uses the
+# same UUID to authorize its dyld cache). APFS reads it as /chosen/apfs-preboot-uuid.
+PREBOOT_VOLUME_UUID = '8846FE78-2910-4297-AF97-D59BB6F8FC16'
+
 PANIC_LOG_BASE = 0xFF800000
 PANIC_LOG_SIZE = 0x00380000
 
@@ -55,6 +59,11 @@ def node(name, properties=(), children=()):
 
 
 FILESYSTEMS_BLOB = Path(__file__).resolve().parent / 'adt-filesystems.bin'
+
+
+def uuid_bytes(text):
+    """'04769D26-2CA0-4825-B443-E2E5F88300F2' -> the 16 raw bytes a DT UUID property holds."""
+    return bytes.fromhex(text.replace('-', ''))
 
 
 def filesystems_node():
@@ -213,6 +222,17 @@ def main():
                         # bring-up chain has no Apple personalization manifest, so board.toml
                         # supplies an explicit owner boot-set identity.
                         *([('boot-manifest-hash', boot_manifest_hash)] if boot_manifest_hash else []),
+                        # 2026-11-02: APFS's own kext implements DT_get_fstab_entries() and resolves every
+                        # fstab entry with `vol.fs_role` against the container it finds through
+                        # /chosen/boot-uuid (apfs-preboot-uuid for the preboot container). Neither key was
+                        # set, so the lookup ran against whatever container came first (the Data seed,
+                        # which carries a single OwnerData volume) and every role failed:
+                        # 'DT_get_fstab_entries: failed to get volume for role: N', mount -P 1 -> EX_NOINPUT
+                        # -> launchd 'boot task failure: mount-phase-1'.
+                        *([('boot-uuid', uuid_bytes(args.root_match_volume_uuid))]
+                          if args.root_match_volume_uuid else []),
+                        *([('apfs-preboot-uuid', uuid_bytes(PREBOOT_VOLUME_UUID))]
+                          if PREBOOT_VOLUME_UUID else []),
                         *( [('root-matching', ('<dict><key>IOProviderClass</key><string>IOMedia</string>'
                                                '<key>IOPropertyMatch</key><dict><key>UUID</key><string>' +
                                                args.root_match_volume_uuid.upper() + '</string></dict></dict>\0').encode())]
