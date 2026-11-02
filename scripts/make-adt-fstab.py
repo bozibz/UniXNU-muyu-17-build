@@ -8,10 +8,11 @@ Why this exists: launchd mounts volumes through `mount`, which asks the user dev
 script is how it is produced, so the next person can re-derive it instead of trusting a blob.
 
 The stock fstab lists volumes a real iPad has: xART, System, Preboot, Data, Update, Hardware (plus
-two ephemeral fstab variants). This port only provides some of them, and `mount` walks the entries
-in `vol.fs_mntorder`, so a missing volume stops the boot at that role (measured: role 256 = xART,
-`DT_get_fstab_entries:12284: failed to get volume for role: 256`). Entries this board has no
-volume for are dropped here; add them back when the port grows the corresponding volume.
+two ephemeral fstab variants). `mount` walks them in `vol.fs_mntorder`, and this board exposes no
+APFS volume role to userland at all - every one of them answers
+`DT_get_fstab_entries:12284: failed to get volume for role: N` (256 xART, 16 Preboot, 64 Data,
+1 System). Dropping them one by one was tried to the point of an empty fstab and the boot still
+failed, so the checked-in blob is the stock set; --drop stays for experiments.
 
 Usage:
     scripts/make-adt-fstab.py [--dt PATH] [--drop xart-vol,update-vol,hardware-vol] [--out PATH]
@@ -96,8 +97,10 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--dt', type=Path, default=DEFAULT_DT, help='DeviceTree IM4P of the IPSW')
     parser.add_argument('--fdt', type=Path, help='already decoded device tree (skips --dt)')
-    parser.add_argument('--drop', default='xart-vol,update-vol,hardware-vol',
-                        help='comma separated node names to drop (default: the volumes this board lacks)')
+    parser.add_argument('--drop', default='',
+                        help='comma separated node names to drop; empty keeps the stock set. '
+                             'Dropping was tried for every volume in turn and did not fix the boot '
+                             '(see the workspace HANDOFF-2026-11-02 section 24), so the default is stock')
     parser.add_argument('--out', type=Path, default=ROOT / 'scripts/adt-filesystems.bin')
     args = parser.parse_args()
 

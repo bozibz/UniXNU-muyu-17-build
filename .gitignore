@@ -37,6 +37,9 @@ __pycache__/
 *.spv
 *.metallib
 *.bin
+# The stock /filesystems fstab subtree the ADT carries (scripts/make-adt-fstab.py regenerates
+# it from the pinned DeviceTree); it has to ship with a clean checkout.
+!scripts/adt-filesystems.bin
 *.mbn
 *.fw
 *.pem
