@@ -168,4 +168,60 @@ static inline void muyu_thermal_format_row(char *out, size_t len,
                    (s->enabled_mask >> 2) & 1u, s->invalid_count);
 }
 
+/* ----- trend ---------------------------------------------------------------------- */
+
+/* A handful of timed "hottest sensor" marks, plus the peak over the whole run. Enough to see
+ * whether the part is still climbing after a minute, which is the question a throttle has to
+ * answer; the exact curve is not needed. */
+#define MUYU_THERM_MARKS 6
+
+struct muyu_thermal_trend {
+    unsigned at[MUYU_THERM_MARKS];   /* seconds, ascending */
+    int32_t hot_mc[MUYU_THERM_MARKS];
+    unsigned count;
+    int32_t peak_mc;
+};
+
+static inline void muyu_thermal_trend_init(struct muyu_thermal_trend *t) {
+    for (unsigned i = 0; i < MUYU_THERM_MARKS; ++i) {
+        t->at[i] = 0;
+        t->hot_mc[i] = MUYU_THERM_NONE;
+    }
+    t->count = 0;
+    t->peak_mc = MUYU_THERM_NONE;
+}
+
+static inline void muyu_thermal_trend_note(struct muyu_thermal_trend *t, unsigned second,
+                                           int32_t hot_mc) {
+    if (hot_mc != MUYU_THERM_NONE && (t->peak_mc == MUYU_THERM_NONE || hot_mc > t->peak_mc))
+        t->peak_mc = hot_mc;
+    if (t->count >= MUYU_THERM_MARKS) return;
+    t->at[t->count] = second;
+    t->hot_mc[t->count] = hot_mc;
+    ++t->count;
+}
+
+/* "h0=29 h15=33 h30=35 h60=37 pk=37" - the marks only, no register noise. */
+static inline void muyu_thermal_format_trend(char *out, size_t len,
+                                             const struct muyu_thermal_trend *t) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < t->count && n < len; ++i) {
+        char cell[16];
+        if (t->hot_mc[i] == MUYU_THERM_NONE)
+            (void)MUYU_THERMAL_SNPRINTF(cell, sizeof cell, "h%u=?", t->at[i]);
+        else
+            (void)MUYU_THERMAL_SNPRINTF(cell, sizeof cell, "h%u=%d", t->at[i],
+                                        (int)muyu_thermal_degrees(t->hot_mc[i]));
+        n += (unsigned)MUYU_THERMAL_SNPRINTF(out + n, len - n, i ? " %s" : "%s", cell);
+        if (n >= len) break;
+    }
+    char peak[16];
+    if (t->peak_mc == MUYU_THERM_NONE)
+        (void)MUYU_THERMAL_SNPRINTF(peak, sizeof peak, "?");
+    else
+        (void)MUYU_THERMAL_SNPRINTF(peak, sizeof peak, "%d", (int)muyu_thermal_degrees(t->peak_mc));
+    (void)MUYU_THERMAL_SNPRINTF(out + (n < len ? n : len - 1), len - (n < len ? n : len - 1),
+                                n ? " pk=%s" : "pk=%s", peak);
+}
+
 #endif /* MUYU_THERMAL_H */

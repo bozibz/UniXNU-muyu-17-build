@@ -118,12 +118,39 @@ static void test_sensor_map(void) {
     CHECK(kMuyuTsensBlocks[2].sensors == 5);
 }
 
+static void test_trend(void) {
+    struct muyu_thermal_trend t;
+    muyu_thermal_trend_init(&t);
+
+    char row[112];
+    muyu_thermal_format_trend(row, sizeof row, &t);
+    CHECK(strcmp(row, "pk=?") == 0);
+
+    muyu_thermal_trend_note(&t, 0, 29000);
+    muyu_thermal_trend_note(&t, 15, 33000);
+    muyu_thermal_trend_note(&t, 30, MUYU_THERM_NONE);   /* a bad sample must not become 0 C */
+    muyu_thermal_trend_note(&t, 60, 37000);
+    muyu_thermal_format_trend(row, sizeof row, &t);
+    CHECK(strcmp(row, "h0=29 h15=33 h30=? h60=37 pk=37") == 0);
+
+    /* The peak keeps the hottest sample even after a cooler one. */
+    muyu_thermal_trend_note(&t, 120, 31000);
+    muyu_thermal_format_trend(row, sizeof row, &t);
+    CHECK(strcmp(row, "h0=29 h15=33 h30=? h60=37 h120=31 pk=37") == 0);
+
+    /* More marks than the array holds must not write past it. */
+    for (unsigned i = 0; i < 10; ++i) muyu_thermal_trend_note(&t, 200 + i, 40000);
+    CHECK(t.count == MUYU_THERM_MARKS);
+    CHECK(t.peak_mc == 40000);
+}
+
 int main(void) {
     test_decode();
     test_degrees();
     test_ranges();
     test_summary_and_row();
     test_sensor_map();
+    test_trend();
     printf("PASS: muyu thermal decode, summary and row formatting\n");
     return 0;
 }

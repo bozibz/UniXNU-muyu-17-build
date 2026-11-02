@@ -1,13 +1,35 @@
 # Thermal sensor port (muyu / SM8635 "cliffs")
 
-**State:** read-only survey implemented and built; **never run on the device yet**.
+**State:** read-only survey **runs on the device** (2026-11-02, first try). Sampling and the
+throttle are the open work.
 
 | item | value |
 | --- | --- |
-| boot argument | `muyu-thermal=<n>` (default off), `muyu-thermal-panic=1` to freeze the readout |
+| boot argument | `muyu-thermal=<seconds>` (default off): 0 = one-shot, N > 0 = sample N s then panic |
 | kernel | `UniXNU/out/muyu/kernel/kernel.macho` = `4c3a54222ef6a5f0e9ba688af59947f87629d60676fc54eb2923f3f244b4d3b7` |
-| image | `fw/vendor_boot_thermal1.img` = `a8ee8a5feb8b76b86cab99dd51b0c3fbc811d41e1e8b3ce6dfdecba1f8dea195` (61.81 MiB, `muyu-thermal=2 muyu-thermal-panic=1`) |
-| host checks | `scripts/check-muyu-thermal-host.py` PASS (DT map, decode, row, freestanding) |
+| image (one-shot) | `fw/vendor_boot_thermal1.img` = `a8ee8a5feb8b76b86cab99dd51b0c3fbc811d41e1e8b3ce6dfdecba1f8dea195` (61.81 MiB) |
+| host checks | `scripts/check-muyu-thermal-host.py` PASS (DT map, decode, row, trend, freestanding) |
+| first device run | `vendor_boot_thermal1.img`, photo `logs/2026-11-02-18-24-56-235.jpg` |
+
+### First result (2026-11-02 18:24, `muyu-thermal=0`-equivalent one-shot)
+
+```
+MUYU THERM L=29 B=27 G=25 D=26 hot=29 en=111 inv=0
+@MuyuThermalProbe.c:127
+```
+
+What it settles:
+
+| question | answer |
+| --- | --- |
+| are the registers readable at the DT bases? | **yes** |
+| does the firmware leave TSENS enabled? | **yes**, `en=111` for all three controllers |
+| does every sensor we report have VALID? | **yes**, `inv=0` |
+| is `Sn_STATUS` deciCelsius here? | **yes** - 29/27/25/26 °C is a cold idle boot; an ADC code would decode to a nonsense negative with the default slope |
+| is the sensor map right? | consistent: the little cluster (boot CPU) is the warmest, GPU the coolest |
+
+Caveat: this is the **boot-time** snapshot, taken before userland runs, so it says "the sensors
+work", not "the tablet stays cool". That is what the sampling mode is for.
 
 No throttling, no DVFS, no battery/charging driver. This file records what the hardware
 offers, how the survey reads it, and what a policy has to be built on top of it.
@@ -75,16 +97,23 @@ it says so instead of "fixing" it.
 
 ---
 
-## 3. The survey (`muyu-thermal=<n>`)
+## 3. The survey (`muyu-thermal=<seconds>`)
 
 `package/MuyuThermalProbe.c`, called from `native_legacy_display_late_probe()` after the GPU probe.
 Default off.
 
-| argument | effect |
+| value | effect |
 | --- | --- |
-| `muyu-thermal=1` | map the three controllers, log version/ctrl/trdy, decode every sensor, publish the summary row |
-| `muyu-thermal=2` | as 1, plus one kernel-log line per controller with all sensor temperatures |
-| `muyu-thermal-panic=1` | after the survey, `panic()` with the summary, so the readout is frozen on the panic screen for a photograph |
+| absent | off |
+| `muyu-thermal=0` | one-shot read-only survey at boot, publishes the summary row, no panic (the boot continues to iOS) |
+| `muyu-thermal=N` (N > 0) | survey now, then read once a second in a kernel thread for N seconds and `panic()` with the summary and the trend |
+
+One argument is the whole interface on purpose: the kernel command line has a 1000-byte budget and
+this board's is already at 956 bytes without it (adding three arguments overflowed it by 14 bytes).
+
+A sampling run always ends in the panic - that is what freezes the rows for a photograph. The
+thread starts before userland, so its samples include the boot and compositor load; a one-shot
+value only ever shows a cold device.
 
 Output, on the boot-progress page (row `THERM`) and in the kernel log:
 
@@ -101,6 +130,17 @@ THERM L=30 B=61 G=55 D=49 hot=70 en=111 inv=0
 | `hot` | hottest valid sensor of all three controllers, °C |
 | `en` | per-controller `TSENS_EN` as three digits, `111` = all enabled |
 | `inv` | sensors whose `VALID` bit was clear (should be 0; a nonzero count means a sensor id is not populated on this SKU) |
+
+and a second row for a sampling run:
+
+```
+THRM2 h0=29 h15=33 h30=35 h60=37 h120=38 pk=38
+```
+
+| token | meaning |
+| --- | --- |
+| `hN=` | hottest sensor of all controllers at N seconds into the sampling run |
+| `pk=` | hottest sample over the whole run |
 
 `?` in a field means "no valid sensor in that range", not 0 °C.
 
@@ -142,7 +182,7 @@ python3.12 unixnu build payload -D ../UniXNU-muyu \
     --kernel out/muyu/kernel/kernel.macho --unique-chip-id 0000000000000001 \
     --owner-trust-cache /tmp/muyu-static-system.bundle \
     --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr \
-    --kernel-arg muyu-thermal=2 --kernel-arg muyu-thermal-panic=1
+    --kernel-arg muyu-thermal=120
 python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
     --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_thermal1.img
 cd $W && ./tools/muyu-flash-mode.sh preflight

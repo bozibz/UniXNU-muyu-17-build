@@ -762,6 +762,7 @@ extern volatile uint64_t native_legacy_copy_bytes_sum __attribute__((weak_import
 extern char native_cpufreq_row[120] __attribute__((weak_import));
 /* package/MuyuThermalProbe.c: one line of TSENS readings, empty until a survey runs. */
 extern char native_thermal_row[112] __attribute__((weak_import));
+extern char native_thermal_trend[112] __attribute__((weak_import));
 extern char native_wi_log[4][100] __attribute__((weak_import));
 extern volatile unsigned native_wi_count __attribute__((weak_import));
 extern volatile uint64_t armcpu_timer_interrupts __attribute__((weak_import));
@@ -840,6 +841,8 @@ static void crash_banner(unsigned now) {
   }
   if(&native_cpufreq_row && native_cpufreq_row[0])snprintf(rows[n++],120,"CPU   %.110s",native_cpufreq_row);
   if(&native_thermal_row && native_thermal_row[0] && n<26)snprintf(rows[n++],120,"THERM %.108s",native_thermal_row);
+  // The trend row: hottest sensor at 0/15/30/60/120/180 s, plus the peak of the whole run.
+  if(&native_thermal_trend && native_thermal_trend[0] && n<26)snprintf(rows[n++],120,"THRM2 %.108s",native_thermal_trend);
   // The extension slots are drawn only on the boot page (display bound); the GPU slots 2-7 also go to the live banner.
   // Slots 2 and 3 carry the IPI self-test and the exec observer from the GPU probe once it has run (before that they hold the early
   // zap/interrupt lines, which are worth seeing too), so the banner shows slots 2-7 as GPU1-GPU6.
