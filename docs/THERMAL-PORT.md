@@ -7,7 +7,9 @@
 | boot argument | `muyu-thermal=<n>` (default off), `muyu-thermal-panic=1` to freeze the readout |
 | kernel | `UniXNU/out/muyu/kernel/kernel.macho` = `4c3a54222ef6a5f0e9ba688af59947f87629d60676fc54eb2923f3f244b4d3b7` |
 | image | `fw/vendor_boot_thermal1.img` = `a8ee8a5feb8b76b86cab99dd51b0c3fbc811d41e1e8b3ce6dfdecba1f8dea195` (61.81 MiB, `muyu-thermal=2 muyu-thermal-panic=1`) |
-| host checks | `scripts/check-muyu-thermal-host.py` PASS (DT map, decode, row, freestanding) | No throttling, no DVFS, no battery/charging driver. This file records what the hardware
+| host checks | `scripts/check-muyu-thermal-host.py` PASS (DT map, decode, row, freestanding) |
+
+No throttling, no DVFS, no battery/charging driver. This file records what the hardware
 offers, how the survey reads it, and what a policy has to be built on top of it.
 
 Read `AGENTS.md` §5.6 first: this port has **no thermal management**, no DVFS and `wdt=-1`, so the
