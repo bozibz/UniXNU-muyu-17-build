@@ -130,6 +130,9 @@ def main():
                         help='Actual observed DRAM size, e.g. 0x230000000')
     parser.add_argument('--owned-memory-size', type=lambda value: int(value, 0), default=None,
                         help='Explicit DarwinBoot contiguous window request, 256 MiB..8 GiB in 2 MiB steps')
+    parser.add_argument('--boot-uuid', default=None,
+                        help='/chosen/boot-uuid (16 bytes). Overrides the root volume UUID when set; APFS '
+                             'resolves fstab volume roles inside the container this names')
     parser.add_argument('--root-match-volume-uuid', default=None,
                         help='/chosen/root-matching: select the root by the UUID of an IOMedia (the standard source mechanism)')
     parser.add_argument('--unique-chip-id', type=lambda value: int(value, 16), default=None,
@@ -229,8 +232,8 @@ def main():
                         # which carries a single OwnerData volume) and every role failed:
                         # 'DT_get_fstab_entries: failed to get volume for role: N', mount -P 1 -> EX_NOINPUT
                         # -> launchd 'boot task failure: mount-phase-1'.
-                        *([('boot-uuid', uuid_bytes(args.root_match_volume_uuid))]
-                          if args.root_match_volume_uuid else []),
+                        *([('boot-uuid', uuid_bytes(args.boot_uuid or args.root_match_volume_uuid))]
+                          if (args.boot_uuid or args.root_match_volume_uuid) else []),
                         *([('apfs-preboot-uuid', uuid_bytes(PREBOOT_VOLUME_UUID))]
                           if PREBOOT_VOLUME_UUID else []),
                         *( [('root-matching', ('<dict><key>IOProviderClass</key><string>IOMedia</string>'

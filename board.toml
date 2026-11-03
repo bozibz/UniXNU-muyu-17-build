@@ -484,6 +484,9 @@ chip_id = "207"
 # the 3 GiB one that actually reached the lock screen (2026-10-25 measurement).
 owned_memory_size = "0x130000000"     # 回到 4.75 GiB：2/3 GiB 都救不了 boot-task 超时（§36.4）
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+# 2026-11-03: a boot_uuid key here would override /chosen/boot-uuid (APFS resolves fstab volume
+# roles inside the container it names). Left unset: pointing it at the Data seed did not make role
+# 0x40 resolve, because the seed never carried the role (see the workspace handoff section 30).
 # mount(8) phase 1 requires a boot manifest hash to name /private/preboot/<hash>.
 # uke has no Apple personalization manifest, so this is an explicit bring-up
 # owner boot-set identity (SHA-384 of "UkeBringup.BootSet.v1\0"), not Apple data.
