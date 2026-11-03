@@ -74,6 +74,18 @@ def parse(buf, off):
     return p, name, values, kids
 
 
+def add_property(node, name, data):
+    """Return `node` (one serialized node) with one more property on its root object."""
+    props, count = struct.unpack_from('<II', node, 0)
+    p = 8
+    for _ in range(props):
+        _key, length = struct.unpack_from('<32sI', node, p)
+        p += 36 + (length & MASK) + (-(length & MASK) % 4)
+    head = struct.pack('<II', props + 1, count)
+    prop = struct.pack('<32sI', name.encode(), len(data)) + data + bytes(-len(data) % 4)
+    return head + node[8:p] + prop + node[p:]
+
+
 def rebuild(buf, off, drop):
     """Re-emit the node at off, dropping child nodes whose name is in `drop`."""
     end, name, props, kids = parse(buf, off)
@@ -102,6 +114,11 @@ def main():
                              'Dropping was tried for every volume in turn and did not fix the boot '
                              '(see the workspace HANDOFF-2026-11-02 section 24), so the default is stock')
     parser.add_argument('--out', type=Path, default=ROOT / 'scripts/adt-filesystems.bin')
+    parser.add_argument('--do-not-use-sep', action='store_true',
+                        help='add DoNotUseSEP to the /filesystems node. APFS reads it there to decide '
+                             '"insecure boot is enabled" (apfs_vfsops), which is what lets it mount an '
+                             'unencrypted Data-role volume - the seed we ship is unencrypted, and without '
+                             'this APFS refuses it with "unencrypted data volume is not allowed"')
     args = parser.parse_args()
 
     if args.fdt:
@@ -122,6 +139,8 @@ def main():
 
     drop = {name for name in args.drop.split(',') if name}
     node = rebuild(buf, filesystems[0], drop)
+    if args.do_not_use_sep:
+        node = add_property(node, 'DoNotUseSEP', struct.pack('<I', 1))
     args.out.write_bytes(node)
 
     _e, _n, _p, _k = parse(node, 0)
