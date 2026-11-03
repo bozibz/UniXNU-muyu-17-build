@@ -1,0 +1,61 @@
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -381,6 +381,40 @@
+ 	return error;
+ }
+ 
++/* 2026-11-03 muyu bring-up: launchd's boot task `mount-phase-1` runs `mount -P 1`, which exits 66
++ * (sysexit_np(ENOENT)) and stops the boot before userland is up. The kernel already prints why a
++ * device-tree fstab entry could not be resolved, but not what mount(2) was actually asked to do or
++ * what it returned -- and the exit code alone cannot tell "no such volume" from "no such /dev node".
++ * Print the request and the error for every mount syscall; the data argument is the source (a device
++ * path for APFS), so a failing ENOENT now names the path that is missing. */
++static void
++muyu_trace_mount(proc_t p, user_addr_t path, user_addr_t type, user_addr_t data,
++    int flags, int error)
++{
++	char muyu_path[128];
++	char muyu_type[32];
++	char muyu_data[128];
++	size_t muyu_len = 0;
++
++	muyu_path[0] = '?';
++	muyu_path[1] = '\0';
++	muyu_type[0] = '\0';
++	muyu_data[0] = '\0';
++	if (path != USER_ADDR_NULL &&
++	    copyinstr(path, muyu_path, sizeof(muyu_path), &muyu_len) != 0) {
++		muyu_path[0] = '?';
++		muyu_path[1] = '\0';
++	}
++	if (type != USER_ADDR_NULL) {
++		(void)copyinstr(type, muyu_type, sizeof(muyu_type), &muyu_len);
++	}
++	if (data != USER_ADDR_NULL) {
++		(void)copyinstr(data, muyu_data, sizeof(muyu_data), &muyu_len);
++	}
++	printf("MOUNT pid %d %s type %s flags %#x src %s -> %d\n", proc_getpid(p), muyu_path,
++	    muyu_type, flags, muyu_data[0] ? muyu_data : "-", error);
++}
++
+ /*
+  * Mount a file system.
+  */
+@@ -389,13 +423,16 @@
+ mount(proc_t p, struct mount_args *uap, __unused int32_t *retval)
+ {
+ 	struct __mac_mount_args muap;
++	int muyu_error;
+ 
+ 	muap.type = uap->type;
+ 	muap.path = uap->path;
+ 	muap.flags = uap->flags;
+ 	muap.data = uap->data;
+ 	muap.mac_p = USER_ADDR_NULL;
+-	return __mac_mount(p, &muap, retval);
++	muyu_error = __mac_mount(p, &muap, retval);
++	muyu_trace_mount(p, uap->path, uap->type, uap->data, uap->flags, muyu_error);
++	return muyu_error;
+ }
+ 
+ int
