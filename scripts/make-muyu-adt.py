@@ -152,6 +152,12 @@ def main():
     parser.add_argument('--trust-cache', action='store_true', help='Zeroed TrustCache sidecar handoff placeholder')
     parser.add_argument('--persistent-data', action='store_true',
                         help='The Data disk keeps its writes across boots (sheng-data-persist): no ephemeral-storage, so the first-boot data migration runs')
+    parser.add_argument('--no-filesystems', action='store_true',
+                        help='omit the /filesystems subtree (fstab + e-apfs). Upstream '
+                             'scripts/check-mount-phase-checkpoints.py shows the original OS runs mount(8) '
+                             'with env 0 because no user-device-tree fstab exists: a missing Data volume and '
+                             'a missing /private/preboot bindfs source are then warnings, not exit(66). '
+                             'Only /chosen/boot-manifest-hash is fatal to mount -P 1')
     parser.add_argument('--boot-manifest-hash',
                         help='96 hex characters for /chosen/boot-manifest-hash; mount(8) names /private/preboot/<hash> from it')
     args = parser.parse_args()
@@ -288,7 +294,7 @@ def main():
               node('ufshc', [('compatible', b'qcom,sm8550-ufshc\0')])]),
         # The fstab tree launchd and mount_apfs read; without it the boot dies at
         # CRITEXIT ... comm mount_apfs ... code 66 (see filesystems_node()).
-        filesystems_node(),
+        *([] if args.no_filesystems else [filesystems_node()]),
     ])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(tree)

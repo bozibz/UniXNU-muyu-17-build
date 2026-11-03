@@ -484,6 +484,13 @@ chip_id = "207"
 # the 3 GiB one that actually reached the lock screen (2026-10-25 measurement).
 owned_memory_size = "0x130000000"     # 回到 4.75 GiB：2/3 GiB 都救不了 boot-task 超时（§36.4）
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+# 2026-11-03 night (upstream correction, see UniXNU/scripts/check-mount-phase-checkpoints.py): the
+# original OS runs `mount -P 1` with env 0 because no user-device-tree fstab exists, and then a missing
+# Data volume and a missing /private/preboot bindfs source are only warnings. The only fatal input for
+# `mount -P 1` is /chosen/boot-manifest-hash. Shipping a /filesystems node raises env to 1 and makes all
+# of those fatal, which is what forced the preboot fixture, the fake Data volume and the fsck gate
+# (workspace handoff sections 32-34). filesystems = false restores upstream's shape.
+filesystems = false
 # 2026-11-03 (evening correction): /chosen/boot-uuid stays the root volume UUID. The boot container
 # is the one holding the mounted root, and its volume table has exactly one volume - System, role 1
 # (scripts/inspect-apfs-image.py over the flashed image). The Data seed does carry role 0x40 (live
