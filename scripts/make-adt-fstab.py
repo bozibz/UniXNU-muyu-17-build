@@ -114,6 +114,11 @@ def main():
                              'Dropping was tried for every volume in turn and did not fix the boot '
                              '(see the workspace HANDOFF-2026-11-02 section 24), so the default is stock')
     parser.add_argument('--out', type=Path, default=ROOT / 'scripts/adt-filesystems.bin')
+    parser.add_argument('--env', type=int, default=None,
+                        help='experiment only: rewrite /filesystems e-apfs (the boot environment mount(8) '
+                             'and APFS read; it selects the fstab subtree with the same os_env_type). '
+                             'The normal value is 1; env != 1 makes mount -P 1 tolerate a missing '
+                             '/private/preboot bindfs source instead of exiting EX_NOINPUT (66)')
     parser.add_argument('--do-not-use-sep', action='store_true',
                         help='add DoNotUseSEP to the /filesystems node. APFS reads it there to decide '
                              '"insecure boot is enabled" (apfs_vfsops), which is what lets it mount an '
@@ -139,6 +144,12 @@ def main():
 
     drop = {name for name in args.drop.split(',') if name}
     node = rebuild(buf, filesystems[0], drop)
+    if args.env is not None:
+        key = b'e-apfs\0' + bytes(32 - len('e-apfs\0'))
+        at = node.find(key)
+        if at < 0 or node[at + 36:at + 40] != struct.pack('<I', 1):
+            raise SystemExit('cannot find the e-apfs property (expected value 1) to rewrite')
+        node = node[:at + 36] + struct.pack('<I', args.env) + node[at + 40:]
     if args.do_not_use_sep:
         node = add_property(node, 'DoNotUseSEP', struct.pack('<I', 1))
     args.out.write_bytes(node)

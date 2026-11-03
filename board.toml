@@ -490,9 +490,18 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 # checkpoint block 545587, xid 6) but in a different container, so no boot_uuid value makes a Data
 # fstab entry resolve. Keep fstab to the roles the boot container really has; the mount syscall
 # trace (patches/xnu/zzzzzzzzzzzzzzzzz-mount-syscall-trace.patch) then says what mount(2) fails on.
-# mount(8) phase 1 requires a boot manifest hash to name /private/preboot/<hash>.
-# uke has no Apple personalization manifest, so this is an explicit bring-up
-# owner boot-set identity (SHA-384 of "UkeBringup.BootSet.v1\0"), not Apple data.
+# mount(8) phase 1 ends with a bindfs mount whose source is
+# /private/preboot/<hex(boot-manifest-hash)>/usr/standalone/firmware (see the /sbin/mount
+# disassembly in the workspace handoff, section 33). In the normal environment (e-apfs = 1) an
+# ENOENT on that source is fatal: mount exits sysexit_np(ENOENT) = 66 and launchd fails the
+# `mount-phase-1` boot task. The root volume is mounted read-only at runtime, so the directory has
+# to be baked into the flashed root image; scripts/rebuild-userdata-image.py does that for this hash
+# (root image `fw/userdata-root-preboot.sparse`), and mount then bind-mounts the firmware copy over
+# /usr/standalone/firmware, which is a no-op because the contents are identical.
+#
+# The hash itself is this port's bring-up boot-set identity (SHA-384 of "UkeBringup.BootSet.v1\0"),
+# not an Apple personalization manifest. Its uppercase hex is the directory name under
+# /private/preboot, so changing it means rebuilding the root image as well.
 boot_manifest_hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 packed_data_ramdisk = true
