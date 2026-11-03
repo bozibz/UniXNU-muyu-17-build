@@ -1,0 +1,46 @@
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -529,9 +529,43 @@
+  * @param str The string of characters to print.
+  * @param size The number of characters in `str` to print.
+  */
++/* 2026-11-03 muyu bring-up: every userland boot helper reports on stderr (/dev/console), and the video
++ * console only replays msgbuf, so those messages were invisible: the panic dump showed the exit code but
++ * never the reason. Keep a ring of everything that went through the console; muyu_panic_with_log() prints
++ * it into msgbuf right before building the dump, so it lands in the dump like any other log line. */
++#define MUYU_CONSOLE_RING 4096
++static char muyu_console_ring[MUYU_CONSOLE_RING];
++static size_t muyu_console_at;
++
++static void
++muyu_console_note(const char *str, int size)
++{
++	if (str == NULL || size <= 0) {
++		return;
++	}
++	for (int i = 0; i < size; i++) {
++		muyu_console_ring[muyu_console_at % MUYU_CONSOLE_RING] = str[i];
++		muyu_console_at++;
++	}
++}
++
++size_t
++muyu_console_tail(char *out, size_t cap)
++{
++	size_t have = muyu_console_at < MUYU_CONSOLE_RING ? muyu_console_at : MUYU_CONSOLE_RING;
++	if (have > cap) {
++		have = cap;
++	}
++	for (size_t i = 0; i < have; i++) {
++		out[i] = muyu_console_ring[(muyu_console_at - have + i) % MUYU_CONSOLE_RING];
++	}
++	return have;
++}
++
+ void
+ console_write(char *str, int size)
+ {
++	muyu_console_note(str, size);
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}

@@ -1,0 +1,22 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5160,6 +5160,19 @@
+ 
+ 	memoryshot(VM_EXECVE, DBG_FUNC_NONE);
+ 
++	/* 2026-11-03 muyu bring-up: launchd's boot tasks exec a chain of helpers
++	 * (mount -> apfs_boot_util -> ...) and a critical exit is reported with the comm of
++	 * whichever image the process last *forked* as, because p_comm is not rewritten on
++	 * exec. Print the image path at syscall entry so the log names the program that
++	 * really failed. */
++	{
++		char mu_path[160];
++		size_t mu_len = 0;
++		if (copyinstr(uap->fname, mu_path, sizeof(mu_path), &mu_len) == 0) {
++			printf("EXEC pid %d %s\n", proc_getpid(p), mu_path);
++		}
++	}
++
+ 	muap.fname = uap->fname;
+ 	muap.argp = uap->argp;
+ 	muap.envp = uap->envp;

@@ -537,6 +537,20 @@ muyu_panic_with_log(void)
 			native_touch_muyu_probe();
 		}
 	}
+	/* 2026-11-03: userland helpers write their failures to stderr (/dev/console); the video console
+	 * only replays msgbuf, so push the console ring into the log first. It becomes the newest msgbuf
+	 * lines and therefore part of the dump below - the only way to see why mount(8) exited 66. */
+	{
+		extern size_t muyu_console_tail(char *, size_t) __attribute__((weak_import));
+		if (&muyu_console_tail != NULL) {
+			static char tail[1024];
+			size_t have = muyu_console_tail(tail, sizeof(tail) - 1);
+			if (have > 0) {
+				tail[have] = '\0';
+				printf("CONSOLE TAIL (%u bytes):\n%s\n", (unsigned)have, tail);
+			}
+		}
+	}
 	muyu_build_dump(out, sizeof(out));
 	panic("LASTLOG %u bytes (filtered):\n%s", (unsigned)strlen(out), out);
 }
