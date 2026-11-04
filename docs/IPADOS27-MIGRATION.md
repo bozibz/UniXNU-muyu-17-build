@@ -135,7 +135,24 @@ xcrun: error: unable to find utility "ld-classic"
 | 装带 `ld-classic` 的工具链（Xcode 26 的 `ld64` 或自建 `ld64`） | 一次性 | 低，最接近上游 |
 | 从 series 里去掉 `arm64e-threaded-starts`，用普通链接 | 一次性，1 行 | 失去 threaded starts；arm64e 启动路径要重新验（上游可能依赖它做 per-thread 起始栈） |
 
-**阶段 1 由此可以结案**：arm64e + 4K + BCM2837 + 12377 这套在本机能编，剩下的都是"接设备层/工具链"的问题。
+### 6.3 阶段 1 收尾：链接也过了（去掉 threaded starts）
+
+把 `arm64e-threaded-starts.patch` 从序列里拿掉（它只做两件事：给链接器加 `-threaded_starts_section`、
+以及 `rebase_threaded_starts()` 相关的源码改动），其余 67 + 1（soc 的 `sheng-platform-power`）= 68 个补丁
+按 arch → soc → os 的顺序应用，然后完整构建：
+
+```
+objects built: 957
+LD   mach.development.bcm2837.unstripped.noctf
+/tmp/spike27-out/muyu/ipados-27.0.1-24A446/muyu-ipados27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+  -> 23,897,328 bytes, Mach-O 64-bit executable arm64e, sha256 8bd9ff3f1ec65fb5…
+build script exit=0
+```
+
+⇒ **阶段 1 完成：iPadOS 27 的 arm64e XNU 12377 内核在本机可以完整编译并链接。**
+一条路径是去掉这个补丁（本次做法），代价是**失去 threaded starts**（`-threaded_starts_section` 段
+与 `rebase_threaded_starts()`），arm64e 上要单独验证启动/KASLR 重定位是否依赖它；另一条是装回带
+`ld-classic` 的工具链、保留补丁。两条都要在上机前定下来，但**不再阻塞"能不能编"这个判断**。
 
 ## 7. 分阶段计划（每一步都有判定点）
 
