@@ -75,8 +75,11 @@ python3 unixnu build kernel -D /tmp/spike27 --os 27 --out /tmp/spike27-out
 # 2) （放了一个 stub soc.toml 后）unixnu: no configuration: run "unixnu defconfig NAME" first
 # 3) unixnu defconfig muyu-userland_defconfig                             ← 接受（配置名可以沿用）
 #    -> /private/tmp/spike27-out/muyu/ipados-27.0.1-24A446/muyu-userland/.config
-# 4) 重新 build kernel: 走到 fetch xnu 12377（ac9718f），网络当时只有 ~30 KB/s，
-#    对象 6385 个收到 24% 时仍在跑（GitHub 今天很慢；这是环境问题，不是计划问题）
+# 4) 重新 build kernel: 走到 fetch xnu 12377（ac9718f）
+#    - 第 1 次：流中断（fetch-pack: unexpected disconnect），已收 24 MB
+#    - 第 2 次（--depth 1 直接 fetch，HTTP/1.1）：收到 26% 后 early EOF
+#    - 第 3 次（--depth 1 --branch xnu-12377.121.6 clone）：Empty reply from server
+#    ⇒ GitHub 到本机当时不稳定（同一时段其他仓库 clone 正常），阶段 1 因此尚未跑完
 ```
 
 **已经证明的事**：board 改成 schema 2 之后，`--os 27` 会被正确解析、配置名可以沿用、out 路径按
@@ -93,6 +96,14 @@ python3 unixnu build kernel -D /tmp/spike27 --os 27 --out /tmp/spike27-out
 | 4 | 27 IPSW：kernelcache/DTB/两个 trust cache 拉取（range requests 只取需要的成员） | `ipsw` 步骤通过 + identity 对得上 |
 | 5 | 27 根镜像（userdata）+ 持久化 Data 窗口 | 离线 APFS 检查（`inspect-apfs-image.py`）通过 |
 | 6 | 上机 bring-up（mount/launchd/显示/触摸），用现成探针 | 进桌面 = 27 线成立；此后 GPU 才能按 uke 的 ABI 直接抄 |
+
+**下次从这里继续**：网络恢复后重跑
+
+```bash
+cd /Users/diannao/pad7pro-xnu/UniXNU
+python3 unixnu build kernel -D /tmp/spike27 --os 27 --out /tmp/spike27-out
+# 若要保留这次已做的临时 board：/tmp/spike27 是 UniXNU-muyu 的副本，只改了 schema_version/[board]/feeds.toml
+```
 
 **阶段 1 是真正的分水岭**：它只回答一个问题 —— arm64e 内核在我们的机器/工具链上编不编得出来。
 不涉及设备、不改默认镜像，最坏情况只是浪费时间。
