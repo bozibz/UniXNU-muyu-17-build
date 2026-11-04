@@ -282,6 +282,31 @@ cd ../UniXNU-27 && git checkout -b muyu-27          # 我们的 27 核心增量�
 ⇒ 下一步就是弄清这个头的生成时机/路径，然后把 HID 组件接上；这是 27 归档链最后一块硬骨头。
 
 
+### 6.10 新核心下的进展与"最后一公里"的形态
+
+换到 `899fdcb` 之后连续跑通的部分：
+
+1. **RELEASE/LTO 参考核建成了**（`build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf`，
+   15,853,984 B）。新核心在链接失败后会自动 `removed 67 unavailable forced exports; linking again` —— 这正是
+   旧核心缺的那 300 行。
+2. 归档链按新核心的规则重排：**`archives` 里每个被 `[components] include` 的组件必须写成
+   `component:<ID>`**（脚本条目会被拒绝：`archives needs component entries for: …`）。这是 schema 2 的硬规则，
+   uke 的 board 就是这个形状。
+3. `native_prelink` 模块：新核心不会把 `kits/XnuPrelink` 链进树（它是核心子模块，不是 feed），
+   而我们的多个归档脚本 `import native_prelink`。已把该模块（自包含、仅标准库）随设备 `scripts/` 走，
+   并在文档记明来源（`UniXNU-27/kits/XnuPrelink@b74ed7c`）。
+4. **依赖 prelink 候选的归档必须后置**：`build-sheng-platform-power.py` → `audit-amfi-pmgr-contract.py`
+   报 `No reference candidate available`，`build-sheng-hid-input.py` 同理。所以 27 的正确顺序是
+   **先出 prelink 候选，再回头跑这些归档**（17 线当年就是靠"跑两遍"收敛的，只是没写下来）。
+
+剩下的是同一类小错配，不是设计问题：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `test -f "$UFS_ARCHIVE"` 失败 | 内核脚本找 `build/sheng-ufs/libShengUfs.a`，新核心的组件产物在 `build/native-ufs/` | 对齐路径（改脚本取后者，或让组件输出到前者） |
+| 配置里 `CONFIG_XNU_NATIVE_UFS` vs uke 的 `CONFIG_XNU_SOURCE_STORAGE` | 两代 storage 模型 | 27 应走 uke 的 `SOURCE_STORAGE` + `build-sheng-source-storage.py`（核心自带），`build-software-aes-27.py` 还需要从 uke 仓库取 |
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
