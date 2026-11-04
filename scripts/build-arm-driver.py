@@ -2,6 +2,7 @@
 """Compile the generic platform expert against the actual source-kernel ABI."""
 import argparse
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -97,8 +98,14 @@ if result.returncode:
     raise SystemExit(result.stdout[-3500:])
 data = destination.read_bytes()
 magic, cpu, subtype, kind, count, size = struct.unpack_from('<6I', data)
-if (magic, cpu, subtype, kind) != (0xfeedfacf, 0x100000c, 0, 1):
-    raise SystemExit('Unexpected platform object architecture')
+# arm64 is subtype 0, arm64e is subtype 2; the selected OS profile decides which one this build produces.
+ARM64E_SUBTYPE = 2
+wanted_subtype = ARM64E_SUBTYPE if os.environ.get('UNIXNU_XNU_ARCH') == 'arm64e' else 0
+# arm64e objects carry the pointer-auth ABI bits in the subtype's high byte (0xC0000002 on this build,
+# i.e. CPU_SUBTYPE_ARM64E | PTRAUTH_ABI | a kernel flag), so only the low byte names the base ABI.
+if (magic, cpu, subtype & 0x00ffffff, kind) != (0xfeedfacf, 0x100000c, wanted_subtype, 1):
+    raise SystemExit(f'Unexpected platform object architecture {cpu:#x}/{subtype} '
+                     f'(wanted subtype {wanted_subtype} for {os.environ.get("UNIXNU_XNU_ARCH", "arm64")})')
 offset = 32
 deployment = None
 for _ in range(count):
@@ -106,8 +113,17 @@ for _ in range(count):
     if cmd == 0x32:
         deployment = struct.unpack_from('<II', data, offset + 8)
     offset += length
-if deployment != (2, 0x110000):
-    raise SystemExit(f'Unexpected platform deployment {deployment}')
+# The deployment target comes from the OS profile (-miphoneos-version-min=X.Y in the recipe), so it is read
+# back from the recorded command instead of being pinned to iOS 17.
+# The OS profile is authoritative; the recorded recipe can be older than the tree it was copied into.
+minimum = os.environ.get('UNIXNU_IOS_VERSION') or next(
+    (argument.split('=', 1)[1] for argument in command
+     if argument.startswith('-miphoneos-version-min=')), '17.0')
+major, _, minor = minimum.partition('.')
+wanted_deployment = (2, (int(major) << 16) | (int(minor or 0) << 8))
+if deployment != wanted_deployment:
+    raise SystemExit(f'Unexpected platform deployment {deployment} (wanted {wanted_deployment} '
+                     f'from -miphoneos-version-min={minimum})')
 archive = out / ('lib' + component + '.a')
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', archive, destination], check=True)
