@@ -12,7 +12,11 @@ Adreno 732 profile says, so a drift in either place fails here instead of on the
     950 MHz there, with initial_pwrlevel pointing at the slowest level (10 here, 8 there);
   * the SQE and GMU firmware are byte-identical to uke's, so only the ZAP image is board-specific;
   * the values this DTB does not carry (GMEM, preemption record, UBWC swizzle/HBB, GMU chip id/CGC
-    mode) must stay null: filling them by guesswork is the mistake this check exists to prevent.
+    mode) must stay null in `memory`: filling them there by guesswork is the mistake this check exists
+    to prevent. The driver-facing copy of those values comes from `scripts/data/adreno-profiles.json`
+    (a verbatim pin of the upstream profile table) and is checked against the board's own windows here:
+    gmu_gpu_delta must equal gmu_base - gpu_base, and the firmware names must be the ones this board
+    ships.
 
     scripts/check-muyu-gpu-inputs.py
 """
@@ -33,7 +37,8 @@ FIRMWARE = WORKSPACE / 'fw/gpu-firmware'
 UKE = {
     'chip_id': '0x43030b00', 'model': 'Adreno732',
     'gpu': (0x3d00000, 0x40000), 'gmu': (0x3d68000, 0x37000), 'gmu_pdc': (0xb280000, 0x10000),
-    'gpucc': 0x3d90000, 'gcc': 0x100000, 'opps': 9, 'top_hz': 950000000, 'initial': 8,
+    'gpucc': 0x3d90000, 'gcc': 0x100000, 'sids': (0, 2, 5),
+    'opps': 9, 'top_hz': 950000000, 'initial': 8,
     'sqe_sha': 'b6df660d', 'gmu_sha': '435c7bac',
 }
 FAIL = []
@@ -68,6 +73,11 @@ for name, window in windows.items():
 require(board['gpucc']['base'] == UKE['gpucc'] and board['gcc']['base'] == UKE['gcc'],
         f'GPUCC 0x{board["gpucc"]["base"]:x} / GCC 0x{board["gcc"]["base"]:x} match uke')
 
+sids = (board['sid_user'], board['sid_secure'], board['sid_gmu'])
+require(sids == UKE['sids'],
+        f'the three SMMU stream ids are {sids}, the same 0/2/5 uke uses '
+        f'(a decoded mask would have made them all 0)')
+
 levels = opp['levels']
 require(len(levels) == 11, f'11 OPP levels (got {len(levels)})')
 require(max(level['hz'] for level in levels) == 1100000000,
@@ -82,6 +92,31 @@ require(all(memory[key] is None for key in
              'gmu_chip_id', 'gmu_cgc_mode')),
         'facts this DTB does not carry stay null (no guessed values)')
 
+profile = record.get('profile')
+require(profile is not None, 'the pinned chip profile was merged into the record')
+if profile:
+    require(profile['name'] == 'Adreno732', 'the profile is the A732 entry for chip 0x43030b00')
+    require(profile['gmu_gpu_delta'] ==
+            board['gmu']['gmu']['base'] - board['gpu']['kgsl_3d0_reg_memory']['base'],
+            'profile gmu_gpu_delta equals the DTB window distance (gmu_base - gpu_base)')
+    require(profile['ubwc_version'] == memory['ubwc_mode'],
+            'profile ubwc_version equals the DTB ubwc mode')
+    require(profile['firmware']['sqe'] == record['firmware']['sqe'] and
+            profile['firmware']['gmu'] == record['firmware']['gmu'] and
+            profile['firmware']['zap'] == record['firmware']['zap'],
+            'profile firmware names match the gen71100 files this board ships')
+    require(profile['gmem_bytes'] == 0x180000 and profile['gmu_chip_id'] == 0x70b0000 and
+            profile['preempt_record_bytes'] == 0x225000,
+            'profile carries 1.5 MiB GMEM, gmu chip id 0x70b0000 and a 2196 KiB preemption record')
+    require(profile['ubwc_swizzle'] == 6 and profile['highest_bank_bit'] == 16,
+            'profile carries UBWC swizzle 6 / highest bank bit 16')
+    require(profile['acd'] and profile['preemption'] and not profile['ifpc'],
+            'profile enables ACD and preemption, keeps IFPC off (OEM gen7_11_0 behaviour)')
+    source = profile['source']
+    require(source['repository'].endswith('NativeAdreno.git') and len(source['commit']) == 40 and
+            len(source['sha256']) == 64,
+            'the profile records its repository, commit and file digest')
+
 if FIRMWARE.is_dir():
     import hashlib
     for name, prefix in (('gen71100_sqe.fw', UKE['sqe_sha']), ('gen71100_gmu.bin', UKE['gmu_sha'])):
@@ -90,6 +125,12 @@ if FIRMWARE.is_dir():
         require(digest.startswith(prefix), f'{name} is byte-identical to uke\'s ({prefix})')
 else:
     print(f'skip {FIRMWARE} is not present')
+
+# board.toml's [gpu] table is generated from the record above; drift between the two is what a hand-edit
+# looks like, so the generator's own check runs here.
+table = subprocess.run([sys.executable, str(ROOT / 'scripts/gen-muyu-gpu-table.py'), '--check'],
+                       capture_output=True, text=True)
+require(table.returncode == 0, (table.stdout + table.stderr).strip() or 'board.toml [gpu] matches the inputs')
 
 if DTB.is_file():
     with tempfile.TemporaryDirectory() as temporary:

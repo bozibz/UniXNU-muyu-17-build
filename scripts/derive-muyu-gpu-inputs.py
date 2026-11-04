@@ -13,9 +13,12 @@ What it derives (all from `fw/dtb_04.dtb`, the variant that carries the kgsl nod
   * the SMMU stream ids of `gfx3d_user` / `gfx3d_secure` / the GMU node
   * the DTB's sha256, so a later boot can prove the inputs still describe the same tree
 
-Values that are *not* in this DTB (GMEM size, GMU chip id/CGC mode, preemption record size, UBWC
-swizzle/highest-bank-bit) stay null on purpose: the driver reads them from hardware, and uke's A732
-profile is the fallback once the register read is confirmed on muyu. Do not fill them by guessing.
+The facts this DTB does *not* carry (GMEM size, GMU chip id/CGC mode, preemption record size, UBWC
+swizzle/highest-bank-bit) stay null in `memory` -- that map is DTB-derived and only DTB-derived. They
+are taken instead from `scripts/data/adreno-profiles.json`, a verbatim copy of the profile table in the
+pinned NativeAdreno source, keyed by `qcom,chipid`: same chip id, same chip-level constants. The
+derivation cross-checks the copy against the board's own windows (gmu_gpu_delta must equal
+gmu_base - gpu_base) and against the UBWC mode and the firmware names, so a wrong entry cannot slip in.
 
     scripts/derive-muyu-gpu-inputs.py [--dtb fw/dtb_04.dtb] [--out scripts/data/muyu-gpu-inputs.json]
 
@@ -32,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = ROOT.parent
 DEFAULT_DTB = WORKSPACE / 'fw/dtb_04.dtb'
 DEFAULT_OUT = ROOT / 'scripts/data/muyu-gpu-inputs.json'
+PROFILES = ROOT / 'scripts/data/adreno-profiles.json'
 GPU_NODE = '/soc/qcom,kgsl-3d0@3d00000'
 GMU_NODE = '/soc/qcom,gmu@3d69000'
 SMMU_NODE = '/soc/qcom,kgsl-iommu@3da0000'
@@ -143,12 +147,16 @@ def soc_node_with_compatible(dtb, compatible):
 
 
 def smmu_stream(dtb, node):
-    """The 16-bit SID the `iommus` phandle+mask pair encodes (mask is the stream match value)."""
+    """The stream id an `iommus` entry names: <&apps_smmu SID MASK>, so the SID is the cell after the
+    phandle. Reading the last cell instead returns the mask, which is 0 here for every GPU node and
+    would have published three SIDs of zero."""
     try:
         values = cells(dtb, node, 'iommus')
     except subprocess.CalledProcessError:
         return None
-    return values[-1] & 0xffff if values else None
+    if len(values) < 2:
+        return None
+    return values[1] & 0xffff
 
 
 def pwrlevels(dtb, node):
@@ -200,6 +208,17 @@ def main():
     tables = try_props(dtb, GPU_NODE, ['qcom,bus-table-ddr', 'qcom,bus-table-cnoc'])
     opt = try_props(dtb, GPU_NODE, ['qcom,ubwc-mode', 'qcom,min-access-length', 'qcom,initial-pwrlevel'])
 
+    profiles = json.loads(PROFILES.read_text()) if PROFILES.is_file() else {'profiles': {}}
+    profile = profiles['profiles'].get(hex(chip_id))
+    if profile is not None:
+        delta = gmu['gmu']['base'] - gpu['kgsl_3d0_reg_memory']['base']
+        if profile['gmu_gpu_delta'] != delta:
+            raise SystemExit(f'{PROFILES}: gmu_gpu_delta 0x{profile["gmu_gpu_delta"]:x} does not match the '
+                             f'DTB windows (gmu_base - gpu_base = 0x{delta:x})')
+        if profile['ubwc_version'] != opt.get('qcom,ubwc-mode', [None])[0]:
+            raise SystemExit(f'{PROFILES}: ubwc_version {profile["ubwc_version"]} does not match the DTB '
+                             f'qcom,ubwc-mode {opt.get("qcom,ubwc-mode")}')
+
     record = {
         'version': 1,
         'source': 'derive-muyu-gpu-inputs.py --dtb ' + dtb.name,
@@ -246,6 +265,13 @@ def main():
             'zap': 'gen71100_zap.mbn',
             'note': 'uke ships byte-identical gen71100 SQE/GMU firmware; the ZAP image differs per device',
         },
+        'profile': None if profile is None else {
+            **{key: profile[key] for key in
+               ('name', 'gmem_bytes', 'gmu_chip_id', 'gmu_cgc_mode', 'preempt_record_bytes',
+                'ubwc_version', 'highest_bank_bit', 'ubwc_swizzle', 'gmu_gpu_delta',
+                'firmware', 'acd', 'preemption', 'ifpc', 'catalog_note')},
+            'source': {'file': 'scripts/data/adreno-profiles.json', **profiles['source']},
+        },
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, indent=2) + '\n')
@@ -258,6 +284,12 @@ def main():
     print(f'  gpucc 0x{gpucc_window["base"]:x} gcc 0x{gcc_window["base"]:x}'
           if gpucc_window and gcc_window else '  gpucc/gcc node missing')
     print('  memory nulls:', ', '.join(k for k, v in record['memory'].items() if v is None))
+    if profile is None:
+        print(f'  profile: none pinned for {hex(chip_id)} (memory stays null, nothing is guessed)')
+    else:
+        print(f'  profile: {profile["name"]} from {profiles["source"]["file"]} '
+              f'@ {profiles["source"]["commit"][:12]} '
+              f'(gmem 0x{profile["gmem_bytes"]:x}, gmu chip id 0x{profile["gmu_chip_id"]:x})')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "note": "Chip-level facts for the Adreno profiles the native driver ships, copied verbatim from the pinned upstream source. They are keyed by qcom,chipid, so a board with the same chip id gets the same values; nothing here was read from a board DTB.",
+  "source": {
+    "repository": "https://github.com/Allenwdk/NativeAdreno.git",
+    "commit": "22abfe46098e568fd0a66e1e358f021f2c0e964f",
+    "comment": "Upstream main 6fa7bae plus the gen7_11_0 profile and bounded failure records; the commit uke accepts as its iPadOS 27 GPU baseline (UniXNU-uke c7aefb9).",
+    "file": "NativeAdrenoProfile.cpp",
+    "sha256": "6d71ee964df25ca9466d8c66df3bde7c8bfb5c3b3902564c5b23f0b61958a140"
+  },
+  "profiles": {
+    "0x43030b00": {
+      "name": "Adreno732",
+      "catalog_note": "MCC45TR/senemos-uke-kernel-mainline patch 0036: gen7_11_0 family, 1.5 MiB GMEM, gmu_chipid 0x70b0000, gmu_cgc_mode 0x00020202, 2196 KiB preemption record; OEM gen7_11_0 enables preemption, upstream keeps IFPC off.",
+      "gmem_bytes": 1572864,
+      "gmu_chip_id": 118161408,
+      "gmu_cgc_mode": 131586,
+      "preempt_record_bytes": 2248704,
+      "ubwc_version": 4,
+      "highest_bank_bit": 16,
+      "ubwc_swizzle": 6,
+      "gmu_gpu_delta": 425984,
+      "firmware": {
+        "sqe": "gen71100_sqe.fw",
+        "gmu": "gen71100_gmu.bin",
+        "zap": "gen71100_zap.mbn"
+      },
+      "acd": true,
+      "preemption": true,
+      "ifpc": false
+    },
+    "0x43050a01": {
+      "name": "Adreno740",
+      "catalog_note": "a6xx_catalog.c (mainline 42f3b40c): ADRENO_7XX_GEN2, 3 MiB GMEM, gmu_chipid 0x7020100, 4192 KiB preemption record.",
+      "gmem_bytes": 3145728,
+      "gmu_chip_id": 117571840,
+      "gmu_cgc_mode": 131586,
+      "preempt_record_bytes": 4292608,
+      "ubwc_version": 4,
+      "highest_bank_bit": 16,
+      "ubwc_swizzle": 6,
+      "gmu_gpu_delta": 434176,
+      "firmware": {
+        "sqe": "a740_sqe.fw",
+        "gmu": "gmu_gen70200.bin",
+        "zap": "a740_zap.mbn"
+      },
+      "acd": true,
+      "preemption": true,
+      "ifpc": true
+    }
+  }
+}

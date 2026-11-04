@@ -70,8 +70,8 @@
       "bytes": 2048512
     },
     "sid_user": 0,
-    "sid_secure": 0,
-    "sid_gmu": 0
+    "sid_secure": 2,
+    "sid_gmu": 5
   },
   "opp": {
     "initial_pwrlevel": 10,
@@ -186,5 +186,32 @@
     "gmu": "gen71100_gmu.bin",
     "zap": "gen71100_zap.mbn",
     "note": "uke ships byte-identical gen71100 SQE/GMU firmware; the ZAP image differs per device"
+  },
+  "profile": {
+    "name": "Adreno732",
+    "gmem_bytes": 1572864,
+    "gmu_chip_id": 118161408,
+    "gmu_cgc_mode": 131586,
+    "preempt_record_bytes": 2248704,
+    "ubwc_version": 4,
+    "highest_bank_bit": 16,
+    "ubwc_swizzle": 6,
+    "gmu_gpu_delta": 425984,
+    "firmware": {
+      "sqe": "gen71100_sqe.fw",
+      "gmu": "gen71100_gmu.bin",
+      "zap": "gen71100_zap.mbn"
+    },
+    "acd": true,
+    "preemption": true,
+    "ifpc": false,
+    "catalog_note": "MCC45TR/senemos-uke-kernel-mainline patch 0036: gen7_11_0 family, 1.5 MiB GMEM, gmu_chipid 0x70b0000, gmu_cgc_mode 0x00020202, 2196 KiB preemption record; OEM gen7_11_0 enables preemption, upstream keeps IFPC off.",
+    "source": {
+      "file": "NativeAdrenoProfile.cpp",
+      "repository": "https://github.com/Allenwdk/NativeAdreno.git",
+      "commit": "22abfe46098e568fd0a66e1e358f021f2c0e964f",
+      "comment": "Upstream main 6fa7bae plus the gen7_11_0 profile and bounded failure records; the commit uke accepts as its iPadOS 27 GPU baseline (UniXNU-uke c7aefb9).",
+      "sha256": "6d71ee964df25ca9466d8c66df3bde7c8bfb5c3b3902564c5b23f0b61958a140"
+    }
   }
 }
