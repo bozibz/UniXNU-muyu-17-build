@@ -207,6 +207,13 @@ build script exit=0
 
 （`patch-xnu-entry-probe.py`、`xnu-panic-screen.c`、`data/` 是 17 线专用的第 4–6 个，暂不涉及。）
 
+**2026-11-04 已处理（`9604118`）**：前三个移进 `scripts/legacy-10063/`（附 README 说明它们如何造出 17 的镜像、
+以及 27 上会怎么坏），组装树从此用核心版。验证：
+
+- 27 链：**干净跑过 7 个归档**，停在与影子脚本无关的已知限制（`ShengHidInput` 的 arm64-iOS17 守卫）；
+- 17 线：`unixnu build payload` 仍然产出 60 MiB payload（`make-muyu-adt.py` 的 `--no-filesystems` 输出不变），
+  说明冻结的那条线没被打散。
+
 ### 6.7 HID：27 上没有捷径，必须重做 original-ABI 绑定
 
 - `build-sheng-hid-input.py` 的守卫是硬的：`if ARCH != 'arm64' or IOS_VERSION.split('.')[0] != '17': raise`。
