@@ -357,6 +357,31 @@ expected_uuid = uuid.UUID('04769D26-2CA0-4825-B443-E2E5F88300F2')      # 17 线�
 27 上都要重新参数化或重新取数。**
 
 
+### 6.13 policy 生成器已参数化；顺带发现 27 的镜像格式变了（AEA）
+
+`build-owner-os-policy.py` 现在接受 `--policy <json>`（或 `UNIXNU_OWNER_OS_POLICY`），五个值——
+OS 成员名、它的 sha256、挂载点目录、卷 UUID、虚拟介质总字节——都从 JSON 读，且**仍然逐个对挂载中的镜像做断言**，
+所以 17.7.11 的行为不变，27 线只要给一份 JSON。
+
+给 27 准备这份 JSON 时发现了新的事实：**27 的 IPSW 里大镜像是 `*.dmg.aea`（AEA 加密），不是 17 那样的明文 UDIF**：
+
+```
+8254390272  043-68950-668.dmg.aea     <- OS 镜像（8.25 GB）
+2348810240  043-69086-713.dmg.aea     <- 另一个大镜像（2.35 GB）
+ 234881024  043-69824-761.dmg.aea
+```
+
+影响三处，都是"17 假设明文 UDIF"的地方：
+
+1. `build-owner-os-policy.py` 开头断言文件尾是 `koly`（UDIF trailer）——`.dmg.aea` 没有；
+2. 我们的 `build-userdata-root-image.py` / `scripts/rebuild-userdata-image.py` 直接读 DMG 原始扇区；
+3. `target-volumes` 缓存（`.cache/firmware/target-volumes/`）按明文命名。
+
+⇒ 27 的根镜像链路要先过 AEA：`hdiutil attach 043-68950-668.dmg.aea`（现代 macOS 支持 AEA）拿到
+`/dev/rdiskN` 后，`diskutil info` 读卷 UUID、`TotalSize` 读介质大小、sha256 直接对 `.aea` 文件算。
+这条通了之后，policy JSON 就能填满，storage 归档也才能建出来。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
