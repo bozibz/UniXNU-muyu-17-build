@@ -7,6 +7,7 @@
 #include <libkern/crypto/sha2.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
+#include "UfsXnuCompat.h"
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/msgbuf.h>
@@ -1432,16 +1433,14 @@ bool NativeUfsBlock::configureVerification ()
   }
   verifiedStorageBytes = tableBytes + 4096;
   gRootDiagnostic.stage = "policy allocation";
-  if (kmem_alloc (kernel_map, &verifiedStorage, verifiedStorageBytes,
-                  static_cast<kma_flags_t> (KMA_KOBJECT | KMA_DATA), VM_KERN_MEMORY_SECURITY) != KERN_SUCCESS) {
+  if (ufs_alloc_security_storage (&verifiedStorage, verifiedStorageBytes) != KERN_SUCCESS) {
     return false;
   }
   memcpy (reinterpret_cast<void *> (verifiedStorage), manifest, manifestBytes);
   uint8_t *key = reinterpret_cast<uint8_t *> (verifiedStorage + tableBytes);
   memcpy (key, verified_root_key, VR_KEY_BYTES);
   gRootDiagnostic.stage = "policy read-only protection";
-  if (vm_map_protect (kernel_map, verifiedStorage, verifiedStorage + verifiedStorageBytes,
-                      VM_PROT_READ, TRUE) != KERN_SUCCESS) {
+  if (ufs_protect_read_only (verifiedStorage, verifiedStorageBytes) != KERN_SUCCESS) {
     return false;
   }
   gRootDiagnostic.stage = "owner signature and hash table";
@@ -1592,7 +1591,7 @@ void NativeUfsBlock::free ()
 {
 #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
   if (verifiedStorage) {
-    kmem_free (kernel_map, verifiedStorage, verifiedStorageBytes);
+    ufs_free_security_storage (verifiedStorage, verifiedStorageBytes);
     verifiedStorage = 0;
   }
 #endif

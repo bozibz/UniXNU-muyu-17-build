@@ -91,6 +91,10 @@ if component == 'Adreno740':
     command += ['-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'),
                 '-I', str(ROOT / 'kits/braveark'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
                 '-I', str(ROOT / 'build/sheng-gmu')]
+# The XNU line decides which of a few changed kernel APIs the driver may use (see UfsXnuCompat.h).
+version = os.environ.get('UNIXNU_XNU_VERSION', '')
+if version:
+    command.append('-DXNU_MUYU_XNU_VERSION=' + version.split('.', 1)[0])
 (out / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 (out / 'compile.log').write_text(result.stdout)
