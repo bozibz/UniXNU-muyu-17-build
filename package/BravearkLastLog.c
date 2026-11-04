@@ -537,6 +537,14 @@ muyu_panic_with_log(void)
 			native_touch_muyu_probe();
 		}
 	}
+	/* 2026-11-03: the boot tasks now fail looking for APFS disk nodes; list the ones /dev really has
+	 * (only "disk*", a couple of hundred bytes) so the dump answers the question. */
+	{
+		extern void muyu_list_dev(void) __attribute__((weak_import));
+		if (&muyu_list_dev != NULL) {
+			muyu_list_dev();
+		}
+	}
 	/* 2026-11-03: userland helpers write their failures to stderr (/dev/console); the video console
 	 * only replays msgbuf, so push the console ring into the log first. It becomes the newest msgbuf
 	 * lines and therefore part of the dump below - the only way to see why mount(8) exited 66. */

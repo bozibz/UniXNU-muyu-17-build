@@ -181,6 +181,61 @@ muyu_newest_name(const char *dir, char *name, size_t cap)
 	return found ? 0 : ENOENT;
 }
 
+/* 2026-11-03 muyu bring-up: boots now reach launchd's boot tasks, and those tools fail with messages
+ * like "FAILED TO FIND DISK NODE" because they look for the BSD device nodes of an APFS volume. The
+ * kernel mounts root and the Data seed itself, so whether /dev/disk* exists at all decides whether the
+ * fix is "publish volume IOMedia/BSD clients" or something else. Print the directory when the boot arg
+ * muyu-dev-list=1 is present; it lands in the panic dump like any other log line. */
+void
+muyu_list_dev(void)
+{
+	vfs_context_t ctx = vfs_context_kernel();
+	vnode_t dvp = NULLVP;
+	char buf[1024];
+	off_t offset = 0;
+	int error, eofflag = 0, numdirent = 0;
+	unsigned shown = 0;
+
+	error = vnode_open("/dev", O_RDONLY, 0, 0, &dvp, ctx);
+	if (error) {
+		printf("DEV /dev: open failed %d\n", error);
+		return;
+	}
+	for (;;) {
+		uio_t auio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+		struct dirent *dp;
+		size_t used;
+
+		if (auio == NULL) {
+			break;
+		}
+		uio_addiov(auio, (uintptr_t)buf, sizeof(buf));
+		error = VNOP_READDIR(dvp, auio, 0, &eofflag, &numdirent, ctx);
+		used = sizeof(buf) - (size_t)uio_resid(auio);
+		uio_free(auio);
+		if (error) {
+			printf("DEV /dev: readdir failed %d\n", error);
+			break;
+		}
+		offset += (off_t)used;
+		for (dp = (struct dirent *)buf; (char *)dp < buf + used;) {
+			if (dp->d_reclen == 0) {
+				break;
+			}
+			if (dp->d_namlen > 4 && strncmp(dp->d_name, "disk", 4) == 0 && shown < 24) {
+				printf("DEV /dev/%s\n", dp->d_name);
+				shown++;
+			}
+			dp = (struct dirent *)((char *)dp + dp->d_reclen);
+		}
+		if (eofflag || used == 0) {
+			break;
+		}
+	}
+	vnode_close(dvp, 0, ctx);
+	printf("DEV /dev: %u disk nodes\n", shown);
+}
+
 extern void muyu_console_wake(void);
 
 void

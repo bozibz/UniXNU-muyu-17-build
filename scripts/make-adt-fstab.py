@@ -145,11 +145,17 @@ def main():
     drop = {name for name in args.drop.split(',') if name}
     node = rebuild(buf, filesystems[0], drop)
     if args.env is not None:
-        key = b'e-apfs\0' + bytes(32 - len('e-apfs\0'))
-        at = node.find(key)
-        if at < 0 or node[at + 36:at + 40] != struct.pack('<I', 1):
-            raise SystemExit('cannot find the e-apfs property (expected value 1) to rewrite')
-        node = node[:at + 36] + struct.pack('<I', args.env) + node[at + 40:]
+        # /filesystems e-apfs is what mount(8) prints as "env" and what the APFS kext uses to pick the
+        # fstab subtree, so rewrite it together with the main fstab's os_env_type. Values other than 1
+        # make mount -P treat the phase-1 bindfs source and the phase-2 data volume as optional
+        # (they are ENOENT-tolerated instead of exit(66)); 0 matches no stock subtree, so the choice
+        # stays unambiguous.
+        for key_name, expected in ((b'e-apfs', 1), (b'os_env_type', 1)):
+            key = key_name + bytes(32 - len(key_name))
+            at = node.find(key)
+            if at < 0 or node[at + 36:at + 40] != struct.pack('<I', expected):
+                raise SystemExit(f'cannot find {key_name.decode()} (expected value {expected}) to rewrite')
+            node = node[:at + 36] + struct.pack('<I', args.env) + node[at + 40:]
     if args.do_not_use_sep:
         node = add_property(node, 'DoNotUseSEP', struct.pack('<I', 1))
     args.out.write_bytes(node)
