@@ -430,6 +430,34 @@ OS and SystemOS policies`）。所以下一步是同一套流程对 SystemOS 镜
 产出 `SystemOS/{manifest.bin,trusted-key.bin}`。
 
 
+### 6.16 两份 policy 都生成了；storage 的下一块是 `SourceRootPolicies.cpp`
+
+SystemOS 那一份同样跑通（`043-69086-713.dmg.aea`，6.0 GB 介质，卷 UUID `F914C62A-AD00-47C6-8281-5746291C339A`，
+sha256 `ece368c2…`）：
+
+```
+PASS: original OS signature and every 1468928 block verified by real C/RSA; no expanded image
+build/verified-root-systemos/{manifest.bin, trusted-key.bin, ...}
+```
+
+把两份 policy（`OS` + `SystemOS`，含 `verification.json`）按 `scripts/policies/<os>/<name>/` 摆进设备树后，
+storage 构建器报的下一条是：
+
+```
+error: SourceRootPolicies.cpp not found under the device or build tree
+```
+
+uke 的对应物是 `package/SourceRootPolicies.cpp`（**103 行**）：从 `/chosen/memory-map` 的 **`RootPolicies`**
+侧车取物理地址+长度 → `IOMemoryDescriptor::withPhysicalAddress` 映射 → `vr_open` 用**编译进去的 owner key**
+验签 → 填 `verified_root_policies[]`。它对 muyu 的额外前提：
+
+1. `package/SourceRootPolicies.cpp` 本体（可照 uke 改，含 `VerifiedBlockPolicy.h`/`OwnerBootIdentity.h`）；
+2. ADT 里要有 **`RootPolicies`** 这个 `/chosen/memory-map` 条目（我们的 `make-muyu-adt.py` 现在没有）；
+3. `verified_root_key[]` + `vr_xnu_crypto` 来自 `kits/VerifiedRoot`（我们已能编出该 kit 的 host 库）。
+
+⇒ 27 的 storage 还差这三小块，然后归档才能建出来、内核才能链上。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
