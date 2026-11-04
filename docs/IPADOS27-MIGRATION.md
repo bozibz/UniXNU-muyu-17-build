@@ -154,6 +154,28 @@ build script exit=0
 与 `rebase_threaded_starts()`），arm64e 上要单独验证启动/KASLR 重定位是否依赖它；另一条是装回带
 `ld-classic` 的工具链、保留补丁。两条都要在上机前定下来，但**不再阻塞"能不能编"这个判断**。
 
+### 6.4 阶段 3（归档链）进行中的实测状态
+
+1. **schema 2 只组装 board 声明的组件**：树里 `drivers/` 只有 `[components] include` 列出的组件
+   （`scripts/unixnu/components.py:47`）。不声明就出现"`drivers/SoftwareAES/NativeAES.cpp` 不存在"这种
+   假故障。声明之后组件会被真正编译（`component-<ID>` 日志）。
+2. 用我们 10063 的 archives 列表 + 10063 的开关跑 27 时，**已通过 6 个归档**：
+   `build-corecrypto-14.py`（两次）、`ArmDTPlatform`、`ArmCpu`、`RamBlock`、`build-libpthread-kernel.py` 等。
+3. **第一个真正的 API 断点：`ShengUfs`（我们的 UFS 驱动）对 12377 编不过**，5 个错误都是被移除/改名的
+   内核 API，不是我们的逻辑错：
+
+   ```
+   NativeUfs.cpp:1436: unknown type name 'kma_flags_t'
+   NativeUfs.cpp:1436: use of undeclared identifier 'KMA_KOBJECT'
+   NativeUfs.cpp:1436: use of undeclared identifier 'KMA_DATA'
+   NativeUfs.cpp:1443: use of undeclared identifier 'vm_map_protect'  (did you mean 'vm_protect'?)
+   NativeUfs.cpp:1595: use of undeclared identifier 'kmem_free'
+   ```
+
+   ⇒ 这些就是"设备驱动 rebase 到 12377"的具体工作量：`kalloc_type`/`KMA_*` 迁移、`vm_map_protect` →
+   `vm_protect`、`kmem_free` → `kheap_free`/`zfree`。同类问题预计还会出现在 display / thermal / hid。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
