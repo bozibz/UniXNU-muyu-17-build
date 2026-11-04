@@ -72,6 +72,39 @@ A735 是**同一个 chip id**），所以"给 A735 单独加 profile 条目"这�
 - `scripts/gen-muyu-gpu-table.py`：从记录生成 `board.toml` 的 `[gpu]` 表（uke 的键名），
   `--check` 验漂移、`--write` 重写块。`check-muyu-gpu-inputs.py` 现在 27 条断言全绿（含表漂移检查）。
 
+## 7. 可行性探针（2026-11-04，离线编译）
+
+在把 pin 换掉之前先问了一个更便宜的问题：**uke 验收的那份 NativeAdreno 源码，能不能在我们的
+21H461 内核树上编过？** 做法：拿本树 `IOPlatformExpert.cpo.json` 的编译配方，把 `/tmp/na`
+（`22abfe4`）里全部 `NativeAdreno*.cpp` 逐个 `-fsyntax-only`。
+
+结果：**25 / 33 通过**，失败恰好三类，都是可以定位的：
+
+| 失败 | 文件数 | 原因 | 处理 |
+| --- | --- | --- | --- |
+| `ShengGmu.h` 找不到 | 4 | 新驱动仍要 `kits/*/ShengGmu.c` 那套 + `build/sheng-gmu/` 生成头 | 移植 `prepare-muyu-gmu.py`（写 `ShengGmu.h` / `ShengGmuSource.h`） |
+| `../AdrenoMetal/OriginalAcceleratorABI.h` 找不到 | 1 | `build-adreno740-accelerator.py` 要兄弟目录里的 Metal ABI 头 | 换 pin 时 AdrenoMetal 必须**同一个提交级**跟上 |
+| `task_get_gpu_role` / `PRIO_DARWIN_GPU_BACKGROUND` / `_UTILITY` 未声明 | 1 | 这是 **iOS 26/27 的 API**，21H461 没有 | ✅ 已用 `package/MuyuGpuRoleCompat.{h,c}` 解决（见下） |
+
+（另外两个文件是 host 单元测试，要 `cassert`，本来就不进内核。）
+
+### 7.1 17.7.11 的 GPU role 兼容层
+
+驱动在 `NativeAdrenoUserClient::submitPriority()` 里读"这个进程的 GPU role"来决定把两个 Metal 队列
+优先级中的哪一个交给 ring。21H461 没有这个 API，但同样的信息存在**任务策略属性**里
+（`TASK_POLICY_ROLE` → `proc_task_role_to_darwin_role()` → `PRIO_DARWIN_ROLE_*`，见
+`bsd/kern/kern_resource.c` 的 `proc_get_darwin_role()`）。所以兼容层是**读取**既有字段，而不是造值：
+
+- `package/MuyuGpuRoleCompat.h`：给 C++ 的声明 + 两个新常量名（映射到 `PRIO_DARWIN_ROLE_NON_UI` /
+  `UI_NON_FOCAL`，**这是假设**，只在选优先级时有影响，不影响正确性）；
+- `package/MuyuGpuRoleCompat.c`：C 侧实现，`proc_get_task_policy(task, TASK_POLICY_ATTRIBUTE,
+  TASK_POLICY_ROLE)` → 转成 `PRIO_DARWIN_ROLE_*`。必须分离成 C，因为 `kern/task.h`、
+  `kern/policy_internal.h` 进不了 C++ TU（`ledger.h:151` 把 `template` 当参数名）。
+
+已验证：`MuyuGpuRoleCompat.c` 用本树 C 配方编过；`NativeAdrenoUserClient.cpp` / `Submit` /
+`Publish` / `Ring` / `Gpu` 带上 `-include MuyuGpuRoleCompat.h` 后**全部 0 error**（之前 UserClient 报 5 个
+未声明）。接进构建时，kit builder 要给这 5 个 TU 加 `-include`，并把 `.c` 编进同一个 archive。
+
 ## 5. 风险 / 不要做的事
 
 - **uke 的验收是 iPadOS 27（24A446），我们跑 17.7.11（21H461）**。驱动内核侧（GMU/CP/SMMU/ring）跟
