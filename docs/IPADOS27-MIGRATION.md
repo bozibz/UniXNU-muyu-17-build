@@ -226,6 +226,39 @@ build script exit=0
   discriminator，重做 `build-sheng-hid-input.py` 的绑定与校验。这和 GPU/display 的 24A446 对齐是同一类工作。
 
 
+### 6.8 顺序被纠正：HID 在 prelink 之后；而 prelink 暴露了"核心太旧"
+
+**HID 不是阶段 3 的一块，而是阶段 4 的下游。** `build-sheng-hid-input.py` 的做法是拿 **prelink 候选镜像**
+里的原始 `com.apple.iokit.IOHIDFamily` 去核对：`IOHIDDevice` 的 vptr（17 线是 `0xfffffff005d045c0`）、
+207 个槽位、18 个 native-base 覆盖下标、构造函数/D2 的精确字节码。这些都写在脚本里、**来自 prelink 产物**，
+所以 24A446 的 HID 绑定必须等 prelink。
+
+**prelink 的第一步（RELEASE/LTO 参考核）在我们这套核心上过不去。** 用
+`scripts/build-fileset-release-reference.py --tree <tree> --lto` 跑，编译全部通过、链接失败：
+
+```
+ld: symbol(s) not found for architecture arm64e.kernel
+    "_t8110dart_vo_tt_index", referenced from: <initial-undefines>
+    "_uat_get_desc", ...
+```
+
+这些是 **RELEASE 配置自带的 `<initial-undefines>`**（Apple 自己内核里由内联汇编/别处提供的符号）。我们的核心
+是 `44cf475`，而 uke 那条线用的 `899fdcb` 里 `build-fileset-release-reference.py` **被重写了 300 行**
+（`git diff 44cf475 899fdcb -- scripts/build-fileset-release-reference.py` = 203 行新增 / 98 行删除），
+正是处理这类链接期缺口的地方。
+
+⇒ **结论（计划需要修一次）**：27 线不能"核心停在 origin/main"就做完 —— 至少
+`build-fileset-release-reference.py`（prelink 参考核）要换成 `899fdcb` 的版本。可行的两条路：
+
+| 路线 | 内容 | 影响 |
+| --- | --- | --- |
+| A. 核心升到 `899fdcb` | 与 uke 同一条核心；27 的系列/prelink/文件集路径全部按上游走 | 17 线**不再从同一棵树重建**（镜像已冻结，历史可查），设备脚本要按 schema 2 重排 |
+| B. 只把 `build-fileset-release-reference.py` 等两三个文件从 `899fdcb` 取过来 | 改动面小，仍叫"停在 origin/main" | 后面大概率还会撞到同类"核心太旧"的钉子，一颗一颗拔 |
+
+**建议 A**：既然要做 27，就把核心升到 uke 验收时用的那个 commit，一次把 prelink/文件集/ABI 数据对齐；
+17 线的镜子和历史都在，不存在"重建不了"的损失。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
