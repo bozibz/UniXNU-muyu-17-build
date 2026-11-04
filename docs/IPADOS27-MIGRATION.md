@@ -382,6 +382,36 @@ OS 成员名、它的 sha256、挂载点目录、卷 UUID、虚拟介质总字�
 这条通了之后，policy JSON 就能填满，storage 归档也才能建出来。
 
 
+### 6.14 27 的 OS 镜像已挂上，五个 policy 值全部拿到
+
+`hdiutil attach` **不能**挂 `.dmg.aea`（`attach failed - 无法识别映像`），但新 API 可以：
+
+```bash
+diskutil image attach --readOnly --mountOptions nobrowse 043-68950-668.dmg.aea
+#  /dev/disk5  ->  Apple_APFS_Container  ->  /dev/disk6s1
+#  /Volumes/Rave24A446.J817J818J820J821OS
+```
+
+由此读到的 27 值（全部实测，不是猜）：
+
+| 键 | 值 |
+| --- | --- |
+| `dmg` | `043-68950-668.dmg.aea`（7.69 GiB 压缩） |
+| `dmg_sha256` | `ada8410520eefa0b4dfda5f8881a7a3a6c908f7705c734837b6a9c1ef267ebdd` |
+| `media_bytes` | `9613344768`（9.6 GB，`diskutil info /dev/disk5` 的 Disk Size） |
+| `volume_uuid` | `2F8E6EED-68D5-4261-B8A3-12571BAA2DD4`（OS 卷） |
+| `mount` | `/Volumes/Rave24A446.J817J818J820J821OS` |
+
+**但 policy 生成器还不能直接用这份 JSON**，因为它有两处 17 假设：
+
+1. 开头断言文件尾是 `koly`（UDIF trailer）—— AEA 没有；
+2. 用 `hdiutil info` 找"已挂载的只读镜像"，而 AEA 只能由 `diskutil image attach` 挂上，`hdiutil info` 看不到。
+
+⇒ 需要把它的**主机侧取证**从 hdiutil 迁到 diskutil（`diskutil info -plist` 提供了同样的只读/GUID/卷 UUID/TotalSize 字段），
+并对 AEA 跳过 `koly` 检查（改用 `.aea` 的 sha256 + `diskutil` 的只读标志做等价断言）。工作量不大，但必须做，否则
+storage 归档拿不到 `trusted-key.bin`。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
