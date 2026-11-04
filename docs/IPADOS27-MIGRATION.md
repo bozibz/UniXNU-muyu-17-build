@@ -176,6 +176,23 @@ build script exit=0
    `vm_protect`、`kmem_free` → `kheap_free`/`zfree`。同类问题预计还会出现在 display / thermal / hid。
 
 
+### 6.5 27 根镜像已到手；UFS 已 rebase；下一个断点是 HID
+
+- **IPSW 下完**：`fw/ipsw/iPad17,3_27.0.1_24A446_Restore.ipsw` = 11,654,176,243 B（与 CDN 的
+  `Content-Range` 总长一致）；已抽出 `kernelcache.release.ipad17`（24,014,290 B）、
+  `DeviceTree.j820ap.im4p`（65,439 B）与三个 `*.trustcache` 到 `fw/ipsw/24A446/`。
+  注意 kernelcache 的**原始** sha256 与 profile 里的 pin 不同（profile 钉的是 IMG4→LZFSE→slice
+  规范化后的值，`ipsw.kernelcache()` 才算那个），所以别拿原始文件去对 pin。
+- **UFS 已 rebase（`9c1e416`）**：`drivers/ShengUfs/UfsXnuCompat.h` + `build-arm-driver.py` 传
+  `-DXNU_MUYU_XNU_VERSION=<XNU 主版本>`。三处 API：`kmem_alloc` 丢 flags、`vm_map_protect` →
+  `mach_vm_protect`、`kmem_free`（12377 里 kernel-private）→ `mach_vm_deallocate`。
+  **归档链第一次越过 UFS 组件**。
+- **下一个断点：`ShengHidInput`**，它的构建器直接拒绝：
+  *"The original HID ABI builder only supports arm64 iOS 17. Use build-sheng-source-drivers.py for a
+  source-interface compile audit"* —— 也就是之前记的那件事：24A446 的 HID/display 要按 kernelcache 里的
+  **vtable discriminator** 重新对。现在 kernelcache 已经在本地，这条路可以开始了。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
