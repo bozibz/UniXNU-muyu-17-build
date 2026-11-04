@@ -259,6 +259,29 @@ ld: symbol(s) not found for architecture arm64e.kernel
 17 线的镜子和历史都在，不存在"重建不了"的损失。
 
 
+### 6.9 核心已按路线 A 切到 `899fdcb`（独立 worktree，不动旧历史）
+
+```bash
+cd UniXNU && git worktree add ../UniXNU-27 899fdcb   # 只读对象，开新工作树
+cd ../UniXNU-27 && git checkout -b muyu-27          # 我们的 27 核心增量放这里
+```
+
+旧核心（`44cf475`）的历史和工作树**原封不动**，17 线不受影响。
+
+**直接效果：HID 那道"只支持 arm64 iOS 17"的守卫消失了。** 它是旧核心
+`build-sheng-hid-input.py` 里的产物；`899fdcb` 里这个脚本本来就按 24A446/arm64e 写的。换核之后 HID 能往下走到
+真正编译适配器，暴露的是两个具体问题，而不是一句拒绝：
+
+1. `clang: error: using sysroot for 'macOS 27.2' but targeting 'arm64e-apple-ios27.0.0' [-Werror,-Wincompatible-sysroot]`
+   —— 就是 `HANDOFF.md` §7 第 3 条那个 Xcode 27 环境问题。已在 `899fdcb` 上补
+   `-Wno-incompatible-sysroot`，commit `151bfea`（分支 `muyu-27`）。
+2. `#include "OriginalHidDeviceABI.h"` 找不到：新核心的构建器把这个头**写在编译之后**
+   （`scripts/build-sheng-hid-input.py:181`），所以要么它预期该头已由上一阶段生成，要么调用顺序需要调整。
+   uke 的 27 HID 驱动（`UniXNU/ShengHidInput@24f1f3f`）**同样 include 这个头**，所以不是我们适配器独有。
+
+⇒ 下一步就是弄清这个头的生成时机/路径，然后把 HID 组件接上；这是 27 归档链最后一块硬骨头。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
