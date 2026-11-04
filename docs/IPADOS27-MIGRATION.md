@@ -486,6 +486,32 @@ shutil.copyfile(policies, payloads / 'kernel.macho.vroot')
 它产出 bundle → payload 的 `root_policies` 直接吃**。链条闭环了。
 
 
+### 6.18 storage 归档要求的三份设备源码：两份已写，第三份连着大工程
+
+`build-sheng-source-storage.py` 明确要三个设备侧文件（`:224-225`）：
+
+| 文件 | 作用 | 状态 |
+| --- | --- | --- |
+| `package/SourceStorage.cpp` | 启动器：加载家族、校验公共 ABI、注册源码类、建 provider | ✅ 126 行 |
+| `package/SourceRootPolicies.cpp` | 读 `/chosen/memory-map` 的 `RootPolicies` 侧车，验签、绑定 owner 身份 | ✅ 145 行 |
+| `package/SourceRootBinding.cpp` | 把 BSD 设备与"验过 owner 的 UFS 窗口"对上（`IOMedia` 查询 → provider 链） | ⬜ uke 121 行，可移植 |
+
+`SourceRootBinding.cpp` 依赖 provider 侧的四个符号（`native_ufs_block_authenticates`、
+`native_verified_block_root_authorized`、`native_verified_block_manifest_sha384`、
+`native_verified_block_volume_device`），**它们全部来自 UFS provider** —— 也就是第 4 项（把 2122 行的
+`NativeUfs.cpp` 从 original-ABI 绑法改成公共 IOStorageFamily 接口）。所以第三份可以先写、但要等 provider 才能真跑。
+
+**owner 身份三处一致**（已落到 board 与头文件）：
+
+| 位置 | 值 |
+| --- | --- |
+| `[adt.chosen.bytes] boot-manifest-hash` | `ee2c1b5c…`（SHA-384("MuyuBringup.BootSet.27\0")） |
+| `[adt.chosen.bytes] owner-boot-manifest-domain` | ASCII `MuyuBringup.OwnerBootSet.v1\0`（28 B） |
+| `package/OwnerBootIdentity.h` | 同一组值 + 两份 policy 的签名头摘要 |
+
+（uke 的 27 线用的也是同一形状：domain 是 ASCII `VerifiedRoot.OwnerBootSet.v1`，不是摘要。）
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
