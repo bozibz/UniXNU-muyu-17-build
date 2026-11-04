@@ -193,6 +193,32 @@ build script exit=0
   **vtable discriminator** 重新对。现在 kernelcache 已经在本地，这条路可以开始了。
 
 
+### 6.6 设备仓库里"影子脚本"清单（27 线的隐藏地雷）
+
+设备仓库 `scripts/` 与核心 `scripts/` 有 **7 个同名文件**，组装树里设备版优先。前四个是 10063 时代的分叉，
+27 线上会直接坏事或悄悄用旧逻辑：
+
+| 设备仓库文件 | 27 线上的问题 | 处理 |
+| --- | --- | --- |
+| `build-xnu-4k-baseline.sh` | 不认 `UNIXNU_PATCH_LIST`，把 17 个设备补丁硬打到 12377 上 | 27 用核心版（spike 里已禁用） |
+| `prepare-xnu-source.py` | 旧版只能直连 raw.githubusercontent（超时） | 27 用核心版（已禁用） |
+| `prepare-storage-headers.py` | **旧版没有 `pinned_source()`**，`build-sheng-source-drivers.py` 直接 AttributeError | 27 用核心版（已禁用；核心版有该 API） |
+| `build-arm-driver.py` | 我们的 arm64e 审计/部署目标补丁在这里，**要用我们的** | 保留 |
+
+（`patch-xnu-entry-probe.py`、`xnu-panic-screen.c`、`data/` 是 17 线专用的第 4–6 个，暂不涉及。）
+
+### 6.7 HID：27 上没有捷径，必须重做 original-ABI 绑定
+
+- `build-sheng-hid-input.py` 的守卫是硬的：`if ARCH != 'arm64' or IOS_VERSION.split('.')[0] != '17': raise`。
+  它的工作是**用 original IOHIDDevice 的 vtable 把我们的适配器绑上去**，而 24A446 的 vtable 槽位签名
+  （arm64e 上还要 re-sign）与 21H461 不同 ⇒ 这个守卫不是保守，是真的会错。
+- 核心的 `build-sheng-source-drivers.py` **只编译公共源码接口**，它的 `--hid-source` 指的是
+  `refer/IOHIDFamily`，不是我们的适配器；它明确写着"不绑定 original 家族、不产出 boot image、不qualify
+  私有 ABI"。所以它**不能**替代 HID 适配器构建。
+- ⇒ 27 的 HID 需要：用**本地已到手的 24A446 kernelcache** 读出 `IOHIDDevice` 的 vtable 槽位与
+  discriminator，重做 `build-sheng-hid-input.py` 的绑定与校验。这和 GPU/display 的 24A446 对齐是同一类工作。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
