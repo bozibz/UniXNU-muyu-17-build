@@ -458,6 +458,34 @@ uke 的对应物是 `package/SourceRootPolicies.cpp`（**103 行**）：从 `/ch
 ⇒ 27 的 storage 还差这三小块，然后归档才能建出来、内核才能链上。
 
 
+### 6.17 `SourceRootPolicies.cpp` 的真实依赖链（读 uke 源码 + 新核心得到的）
+
+uke 的加载器（103 行）除了"读侧车 + 验签"，还**把 owner 身份绑死**：
+
+- `owner_policy_header_sha256[2]`：两份 policy 各自"签名头"的 sha256（每 OS 不同）；
+- `owner_boot_set_hash` / `owner_boot_set_domain`：`/chosen/boot-manifest-hash` 与
+  `/chosen/owner-boot-manifest-domain` 的期望值（每机每 OS 不同）；
+- 校验 `count == 2`、两个 envelope 的 offset/size 首尾相接、`cursor == length`。
+
+⇒ muyu 需要一个新的**每 OS 生成头** `OwnerBootIdentity.h`（值从我们刚生成的两份 envelope 与 27 的 boot
+manifest 推出），加上加载器本体。这不是"改几个常量"，而是和 `owner-os-policy-27.json` 同类的**取数产物**。
+
+好消息：**ADT 侧已经不用我们做**。新核心 `payload.py` 里已有完整通路：
+
+```python
+# [payload] root_policies = "<VROOTB01 包>"
+shutil.copyfile(policies, payloads / 'kernel.macho.vroot')
+... devicetree.generate(..., root_policies=bool(policies))
+```
+
+而且 `scripts/unixnu/devicetree.py:339` 会自动加 `('RootPolicies', bytes(16))` 条目，`DarwinBoot.c` 也已经认识
+这个条目并回填真实物理范围。**所以第 2 项（ADT）在新核心下是现成的**，我们的 `make-muyu-adt.py` 只在 schema 1
+路径上才需要它。
+
+而 `VROOTB01` 包正是 `build-sheng-source-storage.py:177` 生成的东西 —— 也就是说：**加载器写完 → storage 归档建出 →
+它产出 bundle → payload 的 `root_policies` 直接吃**。链条闭环了。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
