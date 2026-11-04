@@ -535,3 +535,38 @@ gmuStartup.gmu_dcvs_level  = 1;   // gmu[] = {off, 220MHz, 550MHz} -> 220MHz
 python3 UniXNU-muyu/scripts/check-muyu-gpu-power-host.py
 python3 UniXNU-muyu/scripts/check-muyu-gmu-votes.py
 ```
+
+---
+
+## A735 板级输入（2026-11-04，离线派生）
+
+uke 在 2026-11-03 把 iPadOS 27 的 GPU 栈验收成了（CRC `90B6BC70…`）。muyu 的 GPU 是 **Adreno 735**
+（`qcom,adreno-gpu-gen7-11-0`），和 uke 的 A732 **同一个 chip id `0x43030b00`**、同一代固件、
+同一个 `cliffs` GPUCC —— 所以他们的 profile 是我们最好的起点，但 **OPP 表不能照抄**。
+
+`scripts/derive-muyu-gpu-inputs.py` 从 `fw/dtb_04.dtb` 抽出板级事实写进
+`scripts/data/muyu-gpu-inputs.json`，`scripts/check-muyu-gpu-inputs.py` 把它和 uke 的 A732 表逐项钉住。
+
+| 字段 | muyu / A735 | uke / A732 |
+| --- | --- | --- |
+| chip id / compatible | `0x43030b00` / `qcom,adreno-gpu-gen7-11-0` | 同 |
+| GPU 窗口 | `0x3d00000+0x40000` | 同 |
+| GMU 窗口 | `0x3d68000+0x37000` | 同 |
+| GMU PDC | `0xb280000+0x10000` | 同 |
+| GPUCC / GCC | `0x3d90000` / `0x100000` | 同 |
+| **OPP** | **11 档：1100/1000/950/900/835/736/684/633/500/353/255 MHz，`initial-pwrlevel=10`** | 9 档，顶 950 MHz，`initial=8` |
+| UBWC | mode 4 | 同 |
+| SQE / GMU 固件 | `gen71100_sqe.fw` `b6df660d…` / `gen71100_gmu.bin` `435c7bac…` | **逐字节相同** |
+| ZAP 固件 | `gen71100_zap.mbn` `463ba9b7…` | 不同（`12949928…`）|
+
+**DTB 里没有、故意留空的**：`gmem_bytes`、`preempt_record_bytes`、`ubwc_swizzle`、
+`highest_bank_bit`、`gmu_chip_id`、`gmu_cgc_mode` —— 这些要么由驱动从硬件读，要么等 A732 profile
+在 muyu 上验证后再取；`check-muyu-gpu-inputs.py` 会阻止它们被"猜"进记录。
+
+复现：
+
+```bash
+cd UniXNU-muyu
+python3 scripts/derive-muyu-gpu-inputs.py     # 从 fw/dtb_04.dtb 重新派生
+python3 scripts/check-muyu-gpu-inputs.py      # 逐项断言 + 打印 A732 对照表
+```

@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "source": "derive-muyu-gpu-inputs.py --dtb dtb_04.dtb",
+  "dtb_sha256": "cb78f76be34bbd712e10acb28920cd561bdf0a98c62d90643f69ea177551d01b",
+  "soc": "SM8635",
+  "chip": {
+    "chip_id": "0x43030b00",
+    "model": "Adreno735",
+    "compatible": "qcom,adreno-gpu-gen7-11-0",
+    "family": "ADRENO_7XX_GEN2"
+  },
+  "board": {
+    "soc": "SM8635 (cliffs)",
+    "gpu": {
+      "kgsl_3d0_reg_memory": {
+        "base": 63963136,
+        "bytes": 262144
+      },
+      "rscc": {
+        "base": 64290816,
+        "bytes": 65536
+      },
+      "cx_dbgc": {
+        "base": 64360448,
+        "bytes": 2048
+      },
+      "cx_misc": {
+        "base": 64610304,
+        "bytes": 4096
+      },
+      "qdss_etr": {
+        "base": 268730368,
+        "bytes": 32768
+      },
+      "qdss_gfx": {
+        "base": 277872640,
+        "bytes": 524288
+      },
+      "qdss_tmc": {
+        "base": 279990272,
+        "bytes": 4096
+      }
+    },
+    "gmu": {
+      "gmu": {
+        "base": 64389120,
+        "bytes": 225280
+      },
+      "gmu_pdc": {
+        "base": 187170816,
+        "bytes": 65536
+      },
+      "gmu_ao_blk_dec0": {
+        "base": 64225280,
+        "bytes": 65536
+      }
+    },
+    "smmu": {
+      "window0": {
+        "base": 64618496,
+        "bytes": 262144
+      }
+    },
+    "gpucc": {
+      "base": 64552960,
+      "bytes": 40960
+    },
+    "gcc": {
+      "base": 1048576,
+      "bytes": 2048512
+    },
+    "sid_user": 0,
+    "sid_secure": 0,
+    "sid_gmu": 0
+  },
+  "opp": {
+    "initial_pwrlevel": 10,
+    "levels": [
+      {
+        "level": 0,
+        "hz": 1100000000,
+        "bus_min": 9,
+        "bus_max": 9,
+        "acd_level": 2687459325
+      },
+      {
+        "level": 1,
+        "hz": 1000000000,
+        "bus_min": 9,
+        "bus_max": 9,
+        "acd_level": 2687459325
+      },
+      {
+        "level": 2,
+        "hz": 950000000,
+        "bus_min": 9,
+        "bus_max": 9,
+        "acd_level": 2821218301
+      },
+      {
+        "level": 3,
+        "hz": 900000000,
+        "bus_min": 7,
+        "bus_max": 9,
+        "acd_level": 2821218301
+      },
+      {
+        "level": 4,
+        "hz": 835000000,
+        "bus_min": 7,
+        "bus_max": 9,
+        "acd_level": 2821218301
+      },
+      {
+        "level": 5,
+        "hz": 736000000,
+        "bus_min": 6,
+        "bus_max": 8,
+        "acd_level": 2284412925
+      },
+      {
+        "level": 6,
+        "hz": 684000000,
+        "bus_min": 6,
+        "bus_max": 8,
+        "acd_level": 2284412925
+      },
+      {
+        "level": 7,
+        "hz": 633000000,
+        "bus_min": 5,
+        "bus_max": 8,
+        "acd_level": 2284412925
+      },
+      {
+        "level": 8,
+        "hz": 500000000,
+        "bus_min": 2,
+        "bus_max": 7,
+        "acd_level": 2821283837
+      },
+      {
+        "level": 9,
+        "hz": 353000000,
+        "bus_min": 1,
+        "bus_max": 3,
+        "acd_level": 2284609533
+      },
+      {
+        "level": 10,
+        "hz": 255000000,
+        "bus_min": 1,
+        "bus_max": 3,
+        "acd_level": 2284806141
+      }
+    ],
+    "bus_table_ddr": [
+      0,
+      2136718,
+      3000000,
+      6074218,
+      6671875,
+      8171875,
+      10687500,
+      12449218,
+      14398437,
+      16500000
+    ],
+    "bus_table_cnoc": [
+      0,
+      100
+    ]
+  },
+  "memory": {
+    "ubwc_mode": 4,
+    "min_access_length": 32,
+    "gmem_bytes": null,
+    "preempt_record_bytes": null,
+    "ubwc_swizzle": null,
+    "highest_bank_bit": null,
+    "gmu_chip_id": null,
+    "gmu_cgc_mode": null
+  },
+  "firmware": {
+    "sqe": "gen71100_sqe.fw",
+    "gmu": "gen71100_gmu.bin",
+    "zap": "gen71100_zap.mbn",
+    "note": "uke ships byte-identical gen71100 SQE/GMU firmware; the ZAP image differs per device"
+  }
+}
