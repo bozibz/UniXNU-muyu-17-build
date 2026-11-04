@@ -307,6 +307,28 @@ cd ../UniXNU-27 && git checkout -b muyu-27          # 我们的 27 核心增量�
 | 配置里 `CONFIG_XNU_NATIVE_UFS` vs uke 的 `CONFIG_XNU_SOURCE_STORAGE` | 两代 storage 模型 | 27 应走 uke 的 `SOURCE_STORAGE` + `build-sheng-source-storage.py`（核心自带），`build-software-aes-27.py` 还需要从 uke 仓库取 |
 
 
+### 6.11 切到 uke 的 27 配置后，storage 的真面目露出来了
+
+按 uke 的形状（`SOURCE_STORAGE` + owner 链 + `component:` 归档 + `build-sheng-source-storage.py` +
+`build-software-aes-27.py`，后者从 uke 仓库取）重排之后，卡点变成一句很具体的话：
+
+```
+build-sheng-source-storage.py: error: cannot identify the device package under <tree>/kits: []
+```
+
+它要的是 `kits/*/SourceStorage.cpp`。uke 那边这个文件在 **`package/SourceStorage.cpp`**
+（`git ls-tree -r c7aefb9 | grep SourceStorage` → `package/SourceStorage.cpp`），也就是**设备 kit 里的一份
+"用公共 IOStorageFamily 接口实现 IOBlockStorageDevice"的源码**。
+
+⇒ **27 的 storage 移植 = 把 `SourceStorage.cpp` 这个模型搬到 muyu**：它不再绑定 original UFS 的私有 ABI
+（那是我们 17 线 `drivers/ShengUfs/NativeUfs.cpp`，2122 行），而是按公共接口编译，UFS 硬件访问仍在我们的驱动里。
+这是目前 27 线上最大的一块新增工作。
+
+顺带一条环境事实（`HANDOFF.md` §7 第 2 条被再次验证）：`unixnu` 内部调用 `python3`，本机 `/opt/homebrew/bin/python3`
+不是 3.12，必须让 **3.12 在 PATH 最前**（我用了 `/tmp/pybin/python3 -> python3.12` 的垫片），否则
+`import tomllib` 直接炸。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
