@@ -329,6 +329,34 @@ build-sheng-source-storage.py: error: cannot identify the device package under <
 `import tomllib` 直接炸。
 
 
+### 6.12 storage 启动器已落地；policy 材料是下一个 17 硬编码点
+
+`package/SourceStorage.cpp`（126 行，照 uke `c7aefb9` 的模型）已写好：加载 IOStorageFamily →
+校验 `IOBlockStorageDevice` 公共 ABI 布局 → 加载 policy → APFS → 注册源码类 → `native_ufs_source_create()`
+建 provider。**没实现的部分用 weak 桩明确喊出来**（`native_ufs_source_create`、`native_source_root_policies_load`、
+`native_ufs_root_step/failure`），所以它会链得上、并在真正跑到时打一句"还没移植"，不会假装能用。
+boot 参数用 `muyu-source-storage=1`，与 17 线完全隔开。
+
+构建器随后的要求变成（一步步都被实测出来）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `cannot identify the device package` | ✅ 有了 `package/SourceStorage.cpp` 就过 |
+| `expected full commit 7edb88fb…, found e45fbe30…` | ✅ 把 spike 的 IOStorageFamily pin 换成 27 的 `7edb88fb` 就过 |
+| `scripts/policies/ipados-27.0.1-24A446/OS/trusted-key.bin` 缺失 | ⬜ 这是 **owner-root policy 材料** |
+
+而生成 policy 的核心脚本 `build-owner-os-policy.py` **硬编码了 17 线**：
+
+```python
+source = ROOT / '.cache/firmware/target-volumes/044-76040-038.dmg'     # 21H461 的 OS dmg 名
+expected_uuid = uuid.UUID('04769D26-2CA0-4825-B443-E2E5F88300F2')      # 17 线的 OS 卷 UUID
+```
+
+⇒ 27 需要把它参数化（dmg 名 + 卷 UUID 从 27 的 IPSW/镜像里取）。这是同一类"17 硬编码"问题的第三处
+（前两处是 HID 的 207 槽位、storage 的 original-ABI）。**规律很清楚：凡是从 21H461 镜像里"读出常量"的脚本，
+27 上都要重新参数化或重新取数。**
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
