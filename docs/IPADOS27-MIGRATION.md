@@ -412,6 +412,24 @@ diskutil image attach --readOnly --mountOptions nobrowse 043-68950-668.dmg.aea
 storage 归档拿不到 `trusted-key.bin`。
 
 
+### 6.15 27 的 owner policy 已生成并通过全量校验（storage 差 SystemOS 这一半）
+
+把生成器的取证迁到 `diskutil`（`--device`/`--volume`）+ AEA 分支后，27 的 OS policy 真的跑通了：
+
+```
+PASS: original OS signature and every 2347008 block verified by real C/RSA; no expanded image
+build/verified-root-os/{manifest.bin 75,104,800 B, trusted-key.bin, header.bin, signature.bin, verification.json}
+```
+
+过程里需要两样本机材料，都是**一次性生成**、不进 git：`build/verified-root-host/keys/{owner.pem,owner-public.pem}`
+（RSA-3072）与 `build/verified-root-host/verified-root.dylib`（由 `kits/VerifiedRoot/src/verified_root.c` +
+`tests/openssl_provider.c` 用 Homebrew openssl 编出）。
+
+随后 storage 构建器的要求是：**OS 和 SystemOS 两份 policy 都要**（`ShengUfs root publication requires both
+OS and SystemOS policies`）。所以下一步是同一套流程对 SystemOS 镜像（`043-69086-713.dmg.aea`，2.35 GB）再做一遍，
+产出 `SystemOS/{manifest.bin,trusted-key.bin}`。
+
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
