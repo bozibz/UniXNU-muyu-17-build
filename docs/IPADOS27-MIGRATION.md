@@ -1108,6 +1108,38 @@ board.toml 侧只有一个开关（`[payload] native_cpu_owner = true`），payl
 - ADT 的 `adt_sha256` 每次构建都会变，**不是**我们的改动引起的：`/chosen/random-seed` 是生成器每次
   现取的 64 字节随机数（`cmp` 两个 ADT 只有那 64 字节不同）。要拿 ADT 做逐字节对比，得先排除这个字段。
 
+### 6.33 卡点定位：`bsd_init` 内部、`IOKitBSDInit()` 之前（2026-11-05 22:0x）
+
+6.32 之后重启，**不再 panic、也不再冻在 CPU 校验**，但屏幕停住不走了。定位过程全部用
+`patch-xnu-entry-probe.py --fb-probe-after`（在某个 `bl` 处插入“画一行字 + 停住”的代码，走 panic
+渲染器，所以**方向正常、能读**），payload 重建 ≈ 1 分钟，不需要重编内核。
+
+**先纠正一个误判，这条对以后每次拍照都重要**：那张“panic 前必现”的屏幕，上面的字
+（`Exiting boot services. A green bar across the top` / `SecurityLock::lockType: SOFTWARE_LOCK … LockCapsule` /
+`MBI dump table info not found, Status = (0x0)` / `App Log Flush : 0 ms`）**全是 DarwinBoot 自己打的**
+（`DarwinBoot/drivers/DarwinBootPkg/Driver/DarwinBoot.c:1021` 及同文件 DEBUG 输出），不是内核、也不是 panic。
+内核此时什么都还没画——所以“屏幕上只有 loader 的字”= 内核还没走到能画的地方。
+
+另一个坑：`--fb-probe-after` **会故意关掉入口的 stage 1/2 彩条**（探针要在此后作画，彩条会被覆盖）。
+所以“没有彩条”不等于“内核没起来”，别再拿彩条当判据。
+
+| 轮次 | 探针位置 | 结果 | 结论 |
+| --- | --- | --- | --- |
+| probe1 | `_kernel_bootstrap_thread` 里 `_initialize_screen` 之后 | 出现 `PROBE OK: past PE_init_iokit` | IOKit 匹配全部走完（`ArmCpu::start`、GIC、所有被匹配 kext 都成功） |
+| probe2 | `_bsd_init` 里 `_IOKitBSDInit` 之后（+0x680） | 无字 | 卡点在 `bsd_init` 内部、`IOKitBSDInit()` 之前（但也可能是“那时画不出来”） |
+| probe3 | `_kernel_bootstrap_thread` 里 `_PE_lockdown_iokit` 之后（+0x3d0，紧邻 `bsd_init` 调用） | 出现 `PROBE OK: bsd_init next` | 渲染器在很晚阶段仍能画；**内核确实进了 `bsd_init`** |
+| probe4 | 同 probe2，但关掉 `offline-apfs-load` / `offline-mobile-graphics-load` / `offline-mobile-graphics-client`（三个运行时 `OSKextLoadKextWithIdentifier` 的开关） | 无字 | **三个运行时 kext 加载无罪**，排除 |
+| probe5 | `_bsd_init` 里 `_kauth_init` 之后（+0x60，`bsd_init` 最开头） | 待测 | 用来排除“`--in _bsd_init` 的补丁本身有问题 / 进 `bsd_init` 后画不出来” |
+
+`bsd_init` 在 `_IOKitBSDInit`（+0x680）之前的可疑清单（按调用顺序，全部是核心初始化，与设备无关）：
+`kauth_init`、`mac_policy_initbsd`、`kmem_suballoc`、`bsd_bufferinit`、`IOKitInitializeTime`、`vfsinit`、
+`proc_uuid_policy_init`、`mbinit`、`aio_init`、`pthread_init`、`domaininit`、`skywalk_init`、`necp_init`、
+`memorystatus_init`、`sysctl_mib_init`、`kminit`。
+
+**顺带记录一个真实差异**：27 内核里 `AppleKeyStoreState` / `sheng-aks` 的出现次数是 **0**（17 线是 2），
+也就是 AKS 那一支没有链进 27 内核——`sheng-aks=1` 目前是空转。`NativeUfs`（117 处）和
+`native-ufs-root` 是在的，所以存储组件本身链上了。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
