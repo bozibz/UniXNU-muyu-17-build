@@ -24,6 +24,7 @@ Usage: check-ipados27-abi-fixtures.py [--member fw/ipsw/24A446/kernelcache.relea
 import argparse
 import hashlib
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -33,8 +34,10 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'scripts/data/ipados-27.0.1-24A446'
 # The extracted 24A446 member lives either inside the device repository or next to it (the
 # workspace keeps the IPSWs outside the tree; a build tree pulls it into fw/ipsw).
-MEMBERS = [ROOT / 'fw/ipsw/24A446/kernelcache.release.ipad17',
+MEMBERS = [Path(os.environ.get('UNIXNU_24A446_MEMBER', '')) if os.environ.get('UNIXNU_24A446_MEMBER') else None,
+           ROOT / 'fw/ipsw/24A446/kernelcache.release.ipad17',
            ROOT.parent / 'fw/ipsw/24A446/kernelcache.release.ipad17']
+MEMBERS = [path for path in MEMBERS if path]
 CACHE = ROOT / 'build/ipados-27-abi/kernelcache.macho'
 
 LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS = 0x19, 0x80000034
