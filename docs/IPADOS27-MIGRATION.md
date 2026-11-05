@@ -883,6 +883,37 @@ kext 的真实体积——iPadOS 27 的 kext 本来就比 21H461 大一截（`sa
 （3 MB，DEBUG）不符合它的 ARM64 头校验，且没有 edk2 检出、无法重编固件。所以装箱改用设备仓的
 `scripts/patch-vendor-boot.py`（拿现有 vendor_boot 的 header/DTB/table 重排，不需要固件）。
 
+### 6.27 选定 A：vendor_boot 已出（95.8 MiB，落在 96 MiB 里）
+
+用户 2026-11-05 20:2x 拍板走 A（payload 替换 Android ramdisk，接受期间不充电）。
+
+```
+vendor_boot_27.img  100,462,592 B (95.8 MiB)   分区 96 MiB，余量 200,704 B
+  ramdisk 98,566,144 @ 0x1000
+  dtb      1,885,961 @ 0x5e01000
+  table    108 B @ 0x5fce000（1 项）
+  bootconfig 205 B @ 0x5fce06c
+```
+
+`patch-vendor-boot.py` 的尺寸门禁是拿 `len(base)` 当分区上限，而我们手上的 base 是 64 MB 的构建产物
+（`vendor_boot_nofs1.img`），所以先把 base 零填充到 96 MiB 再打包——填充只影响未使用的尾部，
+header/DTB/bootconfig/table 一个字节都不变。
+
+**这套产物三件就齐了**：
+
+| 产物 | 大小 | 去向 |
+| --- | --- | --- |
+| `vendor_boot_27.img` | 95.8 MiB | `vendor_boot` |
+| `payload` 已内含 | — | （在 vendor_boot 里） |
+| `userdata-root.img` | 15.75 GB | `userdata` |
+| `fw/Mu-muyu.img`（沿用 17 线的） | 2.19 MB | `fastboot boot` 用，UEFI+shim 不变 |
+
+刷写顺序（设备接上后）：`root-image` 写 userdata → `xnu` 写 vendor_boot 并启动 UEFI。
+两条都走 `tools/muyu-flash-mode.sh`，它会把每一步记进 `logs/flash-ledger.tsv`。
+
+注意：A 布局**会覆盖 userdata**（17 线那套），且**期间平板不充电**；恢复办法是
+`tools/muyu-flash-mode.sh restore-stock --yes` 刷回 `fw/stock/` 里的原厂镜像。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
