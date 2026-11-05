@@ -948,6 +948,36 @@ DarwinBoot **完全没有 fileset 解析**，所以 24A446 的 `MH_FILESET` 内�
 已同时修好两处构建侧问题（都留在仓库里）：`split_kernel` 板级开关（默认 true，27 板显式 false）、
 以及 `seeds`/`payload` 相关的脚本遮蔽。
 
+### 6.29 换新固件后：27 内核第一次真正跑起来（2026-11-05 21:17）
+
+拉齐 EDK2（`ghfast` 克隆 tianocore/edk2，补 `BaseTools/Source/C/BrotliCompress/brotli` 子模块）和
+`Mu_Basecore`+它的子模块（`mipisyst`/`libfdt`/…），`unixnu build firmware` 编出 3 MiB 的
+`SILICIUM_UEFI.fd`。过程中还修了 `BootShim.S` 的 `image_size`：原来写的是 `FD_SIZE`，少算了 112
+字节的 shim，`bootimg` 因此拒绝打包——改成 `(_Payload - _Head) + FD_SIZE`。
+
+新固件的 `DarwinBoot` 能解析 `MH_FILESET`（`ParseKernelHeader` 里 `filetype != 2` 之外还接受
+`header == 0` 处的 `12`），于是 payload 恢复分片 `.0/.1`，`boot.img` 重打为 2,134,016 B。
+
+**结果：菜单不再报错，内核进入并打出 panic 屏。**
+
+```
+panic: init.c:1107 Assertion failed: !((pmap->type == ARMPTE_EMPTY) ||
+       (ptep->is_ro & ARMPTE_HINT) == (pmap & ARMPTE_HINT))
+       at pc 0xfffffff0086a45b0, lr 0xfffffff00082ea6e
+```
+
+两条已确认的事实：
+
+1. **这条断言不在我们的 XNU 源码里**——`ARMPTE` 在整个 `.cache/xnu-work` 里一次都没出现，
+   `init.c` 也不是我们的文件。它来自**被 prelink 进来的苹果原始代码**（pmap/SPTE 相关），
+   也就是说 27 的原始 kext 在我们的 4 KiB 内核上走进了它 16 KiB 前提的分支。
+2. `pc` 落在我们镜像的 `__TEXT_EXEC`（基址 `0xfffffff008500000`）里，`lr` 在段外——
+   说明调用链起点也不在本内核里，同样指向原始代码。
+
+下一步是把 `pc`/`lr`/`far` 符号化（需要正对屏幕的完整 panic 文字，或把 panic 文本落盘读回），
+再决定是补 pmap/SPTE 的 4 KiB 适配，还是调整 prelink 对这几个 GOT 槽的绑定（参考
+`kits/XnuPrelink/fixtures/fileset-24A446-symbols.json` 里 `_unixnu_kernel_stack_shift` 那种逐槽绑定的做法）。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
