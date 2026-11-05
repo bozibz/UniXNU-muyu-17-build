@@ -781,6 +781,45 @@ uke 的 `dts/uke.dts` 只有 58 行（内存窗、8 个 CPU、timebase、hand-of
 `sm7675.dtsi` 在 `UniXNU-sm7675-common`。我们需要等价的两件：`dts/muyu.dts`，以及
 `UniXNU-sm8635-common` 里的 `dts/sm8635.dtsi`。取值可从 `fw/dtb_04.dtb` 反编译核对。
 
+### 6.25 板级 DTS 已写，payload 走到 FAT 尺寸（2026-11-05 20:1x）
+
+`dts/muyu.dts`（新，~85 行）不再引用 SoC dtsi——这颗 SoC 的硬件参数在 `make-muyu-adt.py` 里已经
+是常量，直接照抄即可，比造一份 dtsi 更小、更难写错：
+
+| 值 | 来源 |
+| --- | --- |
+| DRAM `0x80000000` + 2 GiB | `make-muyu-adt.py: DRAM_BASE` 与 board `dram_size`（`generate()` 会核对两者相等） |
+| timebase 19.2 MHz、`cpu@0..700` | `TIMEBASE`、`--cpu-regs 0,0x100..0x700` |
+| E/P 划分 4×A520 + 3×A720 + 1×X4 | 17 线的 EPSS 实测（d0 4×A520 / d1 A720 / d2 X4） |
+| `arm-io` 0x17000000、GIC 0x17100000/0x17180000、`ufshc` | 同文件的 `ARMIO_BASE`/`GIC_*`/`UFS_HC` |
+
+`ranges` 要写成 **6 个 32 位单元**（2+2+2 cells），写成 3 个是 12 字节、dtc 会警告且语义错。
+
+随后 payload 一路走通 DTS → ADT → 内核打补丁 → 封存，停在 FAT 尺寸：
+
+```
+payload: kernel split 95,715,328 -> 47,857,664 + 47,857,664
+unixnu: the payload files take 92 MiB; raise size_mib (now 60) in board.toml [payload]
+```
+
+**这里露出一个真问题：27 的 prelink 内核 95.7 MB，17 线只有 52.8 MB。**
+
+| 段 | 17 线 | 27 线 |
+| --- | --- | --- |
+| `__TEXT_EXEC` | 8.6 MB | **51.7 MB** |
+| `__PLK_TEXT_EXEC` | 20.4 MB | 不存在（并进去了） |
+| `__PRELINK_TEXT` | 7.0 MB | 14.5 MB |
+| `__LINKEDIT` | 7.5 MB | 13.0 MB |
+| 合计 | 52.8 MB | 95.7 MB |
+
+原生内核（prelink 前）只有 24.5 MB，所以 51.7 MB 的 `__TEXT_EXEC` 不可能全是原生代码——像是
+schema 2 的 fileset 发射把原始 kext 代码并进 `__TEXT_EXEC` 时**重复写入**了一份。vendor_boot 分区
+只有 96 MiB，92 MiB 的 payload 放不进去，所以这条必须先查清楚，而不是去调 `size_mib`。
+
+另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
+`llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
+`int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

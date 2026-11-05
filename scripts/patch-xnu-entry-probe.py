@@ -178,8 +178,15 @@ def kernel_symbols(kernel):
     table = {}
     for line in subprocess.run([nm, '-n', kernel], capture_output=True, text=True, check=True).stdout.splitlines():
         parts = line.split()
-        if len(parts) == 3:
-            table.setdefault(int(parts[0], 16), parts[2])
+        if len(parts) != 3:
+            continue
+        # A fileset kernel prints one "<entry>:" / "Symbols:" banner per member, and those split into
+        # three columns too, so only a hexadecimal first field is a symbol line.
+        try:
+            address = int(parts[0], 16)
+        except ValueError:
+            continue
+        table.setdefault(address, parts[2])
     return table
 
 
