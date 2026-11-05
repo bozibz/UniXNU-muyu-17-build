@@ -70,14 +70,5 @@
     };
 };
 
-// AMP/Edge requires an explicit E/P type; a missing type becomes SMP and cluster_type_to_pset_type()
-// rejects it during processor_bootstrap(). Four A520 cores, three A720 and one X4 (the split this SoC
-// reports through the EPSS domains).
-&cpu0 { unixnu,cluster-type = "E"; };
-&cpu1 { unixnu,cluster-type = "E"; };
-&cpu2 { unixnu,cluster-type = "E"; };
-&cpu3 { unixnu,cluster-type = "E"; };
-&cpu4 { unixnu,cluster-type = "P"; };
-&cpu5 { unixnu,cluster-type = "P"; };
-&cpu6 { unixnu,cluster-type = "P"; };
-&cpu7 { unixnu,cluster-type = "P"; };
+// The E/P split is not expressed here: the 17 line's working ADT has no cluster-type on its CPU
+// nodes either, and AppleARMCPU validates the tree before that hint matters.

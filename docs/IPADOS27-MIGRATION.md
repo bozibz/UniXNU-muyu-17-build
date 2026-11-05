@@ -1010,6 +1010,49 @@ pages=0x00000000012558f  free=0x000000000124ccf
 （uke）都是**所有核同一个 `compatible`**。已改成统一 `arm,cortex-a720`（E/P 仍由
 `unixnu,cluster-type` 表达），等设备回到 fastboot 再刷。
 
+### 6.31 CPU 拓扑：AppleARMCPU 的校验清单已从二进制里挖出来（2026-11-05 21:2x）
+
+统一 `compatible`、去掉 `cluster-type` 都没用，panic 一模一样。于是直接去二进制里找它的校验代码——
+`AppleARMCPU::_validateConfiguration` 的报错字符串就排在 panic 字符串前面：
+
+```
+reg-private   l2-access-penalty   cluster-type   l2-cache-id   l3-cache-id
+l2-cache-size l3-cache-size       no-aic-ipi-required
+_max_cpus? /cpus   cpu-id   interrupts
+function-cpu_idle  function-platform_cache  function-ipi_dispatch
+function-ipi_dispatch_other  function-enable_core  function-error_handler
+```
+
+以及它每条失败分支的原文：
+
+| 原文 | 含义 |
+| --- | --- |
+| `fromPath failed to find /cpus in device tree` | 找不到 `/cpus` |
+| `Invalid cpus/%s property length: %d` | `/cpus` 上某属性长度不对（`max_cpus`） |
+| `Max CPU count is zero` / `Actual CPU count (%d) greater than max (%d)` | CPU 数量与 `max_cpus` 不符 |
+| `CPU doesn't use AIC IPI's but function-ipi_dispatch defined` | AIC IPI 与 `function-*` 矛盾 |
+| `Length for CPU ordinal %d '%s' property is %d should be 0x%lx` | 某属性长度不对（`cpu-id`） |
+| `CPU id %d ... out of range [0..%d]` / `Duplicate CPU entry for id %d` | `cpu-id` 越界/重复 |
+| `CPU %d interrupts[2] not equal to interrupts[0]+1` | `interrupts` 三元组不成对 |
+| `Missing '%s' property for CPU %d` | 缺属性 |
+| `%s for CPU %d (%d) must match interrupts[0] (%d)` | `cpu-id`/`function-*` 与 `interrupts[0]` 不一致 |
+
+我们的 `dts/muyu.dts` 一个都没有（生成器只发 `reg/state/device_type/compatible/timebase-frequency`，
+schema 2 再加 `cluster-type`），而 17 线的 ADT 也没有——**所以 17 线能起、靠的不是满足它，而是让这个驱动不启动**
+（`ArmCpu` 的 `IOProbeScore = 2000` 先拿走 provider）。我们这份 27 里有 `ArmCpu`（核心里 38 个符号），
+但苹果那个还是起来了。
+
+**下一步二选一**（都需要下一步动作，不能靠猜）：
+
+1. **解码真树**：`fw/ipsw/24A446/DeviceTree.j820ap.im4p` 的 payload 是 `bvx2` 容器（不是裸 FDT，
+   里面找不到 `d00dfeed`），解出来后照抄 `/cpus` 节点的属性集，把 Apple 的校验满足掉；
+2. **让苹果驱动不启动**：加一条内核补丁，让 `AppleARMCPU` 在 `_validateConfiguration` 之前就
+   `return false`（或让 `AppleARMPlatform` 不发布 /cpus 的 platform nub），把 CPU 枚举完全交给
+   `ArmCpu`——这也更接近 17 线实际生效的路径。
+
+我倾向 2：我们本来就有自己的 `ArmCpu`，让苹果那套 Qualcomm 上不存在的 AIC/PMGR 校验跑起来再去满足它，
+是把复杂度往错的方向加。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
