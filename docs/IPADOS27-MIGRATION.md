@@ -583,6 +583,49 @@ target **和** diversity。错一个槽、取自别的构建、手改过任何�
 夹具落在 `scripts/data/ipados-27.0.1-24A446/{legacy-display,hid-device}.json`，
 来源是 uke `origin/main` 的 `scripts/{legacy-display,hid-device}-24A446.json`。
 
+### 6.21 更正 §6.18：「2122 行重写」是个假前提，storage 只剩三小块
+
+§6.18 把 UFS provider 记成"把 2122 行 `NativeUfs.cpp` 从 original-ABI 绑法改成公共接口"。**分层清点后不成立**：
+
+- 我们的 `drivers/ShengUfs/NativeUfs.cpp`（2122 行）**本来就是公共 `IOBlockStorageDevice`**（`:1278`
+  `class NativeUfsBlock : public IOBlockStorageDevice`），不是 original-ABI 绑定。
+- 四个 provider 符号里**三个已经存在**并把实现写在这个文件里：`native_ufs_block_authenticates`（`:1503`）、
+  `native_verified_block_root_authorized`（`:1657`）、`native_verified_block_volume_device`（`:1663`）。
+- 第四个 `native_verified_block_manifest_sha384` 按 uke 的布局属于 `package/SourceRootBinding.cpp`，
+  **不是驱动**——就是那份还没写的第三个设备源码。
+
+**与 uke 的 27 驱动（`drivers/NativeUfs/NativeUfs.cpp`，2298 行）逐行比较**：总差异 304 行
+（+240 / −64），其中 230 行是 `uke-dpu-scanout` 的显示 stage-1 窗口（**与 storage 无关**，独立开关）。
+真正的差异只有四类：
+
+| 差异 | 方向 | 处置 |
+| --- | --- | --- |
+| `UfsXnuCompat.h`（12377 的 `kmem_alloc`/`vm_map_protect` 兼容层） | 我们独有 | **保留**：uke 直接写 27 原生 API，我们靠兼容头同时支持 17/27 |
+| `muyuLogCopy` + level 9 把日志写进 `vendor_boot_a` 尾部 | 我们独有 | **保留**：这块板没有 UART，这是唯一的落盘通道 |
+| `adoptAndRead` 的 `payload` 写路径 | 我们独有 | **保留**：`native-ufs-store-write` 要用 |
+| `gSmmuTakeover`（`native-ufs-smmu-takeover=1`） | 我们独有 | **保留**：固件留下的 UFS SMMU 映射必须接手 |
+| DPU stage-1 窗口（+230 行） | uke 独有 | 以后要显示直扫时再拿，**不属 storage** |
+
+也就是说 **uke 的驱动不是要"移植"的对象**——两者是同一个上游的两个分支，我们这份还多了四项板级功能。
+
+**而且 uke 那份也没有 `native_ufs_source_create`**：全仓 grep（含 `UniXNU-sheng`、核心 `899fdcb`）只有
+我们的 `SourceStorage.cpp` 声明 + 弱桩。所以这个工厂函数**没有现成实现可抄，得自己写**（约 6 行）。
+
+**storage 的真实剩余工作量**：
+
+| # | 动作 | 规模 | 依赖 |
+| --- | --- | --- | --- |
+| 1 | `package/SourceRootBinding.cpp`（uke 的 121 行） | 移植 + 改我们自己的 UUID/路径 | 无 |
+| 2 | 驱动里补 `native_ufs_source_create()`，用 `-DNATIVE_UFS_SOURCE_API=1` 门控 | ~6 行 | 无 |
+| 3 | 跑 `build-sheng-source-storage.py` 把 27 归档编出来 | 编译调试 | 1、2 |
+| — | （以后）uke 的 DPU stage-1 窗口 | +230 行，门控 | 显示线 |
+
+`build-sheng-source-storage.py`（核心里）已经把契约写死了：驱动路径 `drivers/ShengUfs/NativeUfs.cpp`、
+三份设备源码 `SourceStorage.cpp` / `SourceRootPolicies.cpp` / `SourceRootBinding.cpp`、
+编译开关 `-DNATIVE_UFS_SOURCE_API=1 -DNATIVE_VERIFIED_BLOCK=1 -DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1
+-DNATIVE_VERIFIED_POLICY_HANDOFF=1`。而 `NATIVE_UFS_SOURCE_API` 这个开关**在两个仓库里都没有任何代码引用**，
+也就是说它一直在等我们的工厂函数来兑现。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
