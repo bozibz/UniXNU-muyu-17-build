@@ -22,6 +22,17 @@
 #include <kern/misc_protos.h>
 #include <IOKit/IOLib.h>
 
+// The source-storage archive (-DNATIVE_UFS_SOURCE_API=1, the iPadOS 26+ path) always links
+// BootLogStubs.o, so these seven hooks are ordinary references there. A weak reference becomes a
+// chained *bind* in an arm64e kernel, and the prelink that turns our kernel into a fileset carries
+// rebases across but not binds, so the seven would make the prelink refuse the kernel outright. The
+// board's own build keeps the weak references: there the whole component is optional.
+#if defined(NATIVE_UFS_SOURCE_API) && NATIVE_UFS_SOURCE_API
+#define BOOT_LOG_OPTIONAL
+#else
+#define BOOT_LOG_OPTIONAL __attribute__((weak))
+#endif
+
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak));
 extern uint64_t native_ufs_export_blocks(void) __attribute__((weak));
@@ -67,7 +78,7 @@ extern volatile int native_staged_apps_mib __attribute__((weak));
 extern volatile int native_staged_apps_failed __attribute__((weak));
 extern volatile int native_staged_apps_error __attribute__((weak));
 extern char native_staged_apps_path[96] __attribute__((weak));
-extern const char *boot_progress_tag(void) __attribute__((weak));
+extern const char *boot_progress_tag(void) BOOT_LOG_OPTIONAL;
 extern unsigned boot_ui_trace_role_rows(unsigned, char [][120], unsigned, unsigned) __attribute__((weak));
 extern unsigned boot_ui_trace_hot_rows(char [][120], unsigned) __attribute__((weak));
 extern unsigned long vm_kernel_slide;
@@ -124,10 +135,10 @@ extern unsigned native_legacy_prepare_report(char *, unsigned) __attribute__((we
 extern char native_adreno_metal_rows[48][96] __attribute__((weak));
 extern unsigned native_legacy_state_words(char *, unsigned) __attribute__((weak));
 extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak));
-extern int boot_reset_probe(char *, unsigned) __attribute__((weak));
-extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak));
-extern int boot_reset_mark_bootloader(char *, unsigned) __attribute__((weak));
-extern int boot_reset_watchdog(uint32_t, char *, unsigned) __attribute__((weak));
+extern int boot_reset_probe(char *, unsigned) BOOT_LOG_OPTIONAL;
+extern int boot_reset_bootloader(char *, unsigned) BOOT_LOG_OPTIONAL;
+extern int boot_reset_mark_bootloader(char *, unsigned) BOOT_LOG_OPTIONAL;
+extern int boot_reset_watchdog(uint32_t, char *, unsigned) BOOT_LOG_OPTIONAL;
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak));
 extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((weak));
@@ -177,8 +188,8 @@ volatile int boot_diag_status;
 extern volatile uint32_t boot_diag_files __attribute__((weak));
 extern volatile uint32_t boot_diag_skipped __attribute__((weak));
 extern volatile uint32_t boot_diag_errors __attribute__((weak));
-extern uint64_t boot_diag_scan(uint64_t) __attribute__((weak));
-extern int boot_diag_stream(int (*)(const void *, uint32_t, void *), void *) __attribute__((weak));
+extern uint64_t boot_diag_scan(uint64_t) BOOT_LOG_OPTIONAL;
+extern int boot_diag_stream(int (*)(const void *, uint32_t, void *), void *) BOOT_LOG_OPTIONAL;
 int boot_log_export_put(uint32_t generation, uint32_t total, uint32_t offset, const void *data, uint32_t size) {
   if (!export_lock || !generation || !total || !data || !size || offset > total || size > total - offset) return -1;
   IOLockLock(export_lock);

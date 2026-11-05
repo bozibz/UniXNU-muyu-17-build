@@ -1,0 +1,21 @@
+--- a/osfmk/kern/thread.c	2026-11-05 18:58:49
++++ b/osfmk/kern/thread.c	2026-11-05 18:58:52
+@@ -4439,3 +4439,18 @@
+ 	thread->t_dtrace_flags |= TH_DTRACE_EXECSUCCESS;
+ }
+ #endif /* CONFIG_DTRACE */
++
++/*
++ * The alignment shift of a kernel stack allocation: 32 KiB, so a stack region is always aligned to
++ * 1 << 15 bytes. A 16 KiB-page Apple kernel derives this from the page shift; this port runs a 4 KiB
++ * kernel on the same 32 KiB-aligned allocations, so the number is not PAGE_SHIFT.
++ *
++ * One original component reads it as a page shift for its own bounds check: AppleMobileFileIntegrity
++ * keeps PAGE_SHIFT_CONST in a GOT slot, and its only reader is CoreEntitlements' DER iterator, which
++ * tests sp & ((1 << *slot) - 1) < 0x80 and reports "out of stack" below that. On this kernel a stack
++ * starts 8 KiB into a 32 KiB-aligned region, so the page shift (and 14) makes that test fail at fixed
++ * call depths (OSEntitlements copyDictionary failed with 14 on the exec path). The prelink binds that
++ * one GOT slot to this symbol instead, for which sp & mask stays at least 8 KiB inside any stack; the
++ * other components keep PAGE_SHIFT_CONST for page arithmetic.
++ */
++int unixnu_kernel_stack_shift = 15;

@@ -40,10 +40,12 @@ extern "C" const char *volatile native_ufs_root_failure;
  * the kernel would then boot with a stub provider and no diagnostics.
  */
 
-// NativeUfs polls the optional board progress diagnostic while it reads root windows. The minimal
-// source kernel does not carry it, so a weak definition keeps the archive linkable; the real one wins
-// when that component is built in (the 17 line builds it in package/BootProgress.c).
-extern "C" __attribute__((weak)) void boot_progress_poll(void) {}
+// NativeUfs polls the board progress diagnostic while it reads root windows. The description archive
+// that carries BootProgress.c is not part of the source-storage build, so this archive supplies the
+// (inert) implementation. It has to be a *strong* definition: package/BootLog.c references it without
+// the weak attribute there, and a weak definition would still leave a chained bind in the arm64e
+// kernel, which the prelink refuses.
+extern "C" void boot_progress_poll(void) {}
 
 static const OSMetaClass *storageParent;
 static IOService *storageDriver;
