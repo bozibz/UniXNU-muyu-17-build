@@ -511,6 +511,40 @@ shutil.copyfile(policies, payloads / 'kernel.macho.vroot')
 
 （uke 的 27 线用的也是同一形状：domain 是 ASCII `VerifiedRoot.OwnerBootSet.v1`，不是摘要。）
 
+### 6.19 上游这半个月攒下的东西，27 线能直接复用（2026-11-05）
+
+`UniXNU-uke` 的 `origin/main` 已到 `fcf9fd3`（我们本地 checkout 还停在 `fefbf26`）。差别不是几千行
+`MIGRATION-WORKLOG`，而是**两份正好卡在我们"剩余 archive"上的 24A446 ABI 材料**：
+
+| 文件 | 行数 | 对我们意味着 |
+| --- | --- | --- |
+| `scripts/hid-device-24A446.json` | 842 | 27 的 HID 原始 ABI（vtable 目标 + diversity + 实例布局） |
+| `scripts/legacy-display-24A446.json` | 2487 | 27 的显示原始 ABI（`IOMobileFramebufferLegacy` 全槽） |
+| `scripts/gen-hid27-abi.py` | 28 | 上面那份的生成器 |
+| `scripts/build-native-legacy-display-27.py` | — | 用上面那份夹具绑 arm64e 27 的 GOP 后端 |
+| `scripts/check-legacy27-binds.py` | 67 | 绑定门禁 |
+| `scripts/make-root-policy-27.py` | 209 | 27 的 policy 生成器（我们手写的那条路的对照实现） |
+| `scripts/prepare-uke-gmu.py` | 632 | GMU 准备（GPU 线） |
+
+**关键核对（今天做的）**：两份夹具都钉 `kernelcache_sha256 = 38e6d9fa…`。把我们自己的
+`fw/ipsw/24A446/kernelcache.release.ipad17`（IM4P，24,013,888 B payload）用
+`unixnu.ipsw.im4p_payload()` + `compression_tool -decode -a lzfse` 解开，得到
+**80,035,840 B、`38e6d9fa5f789b8228f4617ef4c6d2a3fd8ab564abdc9b62920f1db53fc1780a`**
+——与夹具的 pin **逐字节相同**。
+
+也就是说：**同样的 iPad17,3 / 24A446 内核**，uke 已经把 27 的 HID 与显示原始 ABI 逐槽审过了。
+我们不用再从 kernelcache 反汇编一遍，只要把夹具里的绝对地址按**我们自己的 slide** 重基
+（夹具写的是 `collection_slide = 0x1f000000000`，槽位是绝对地址；槽号/diversity/实例大小与 slide 无关）。
+
+这条把 §6.5/§6.7 的"HID 在 27 上没有捷径，必须重做 original-ABI 绑定"改写成了"绑定表已有，只差重基+接线"。
+
+其余可复用的（不属 storage，先记着）：`package/DpuProbe.cpp`（`uke-dpu=1|2` 只读快照、
+`uke-dpu-test=1..4` 受控写、5 s 自动回滚）、`docs/dts-reference/mdss-cliffs-map.md`（cliffs MDSS/DPU
+寄存器地图，含上电序列×寄存器×源码行号）、`scripts/parse-dpu-log.py`、`docs/DPU-PORT.md`、`docs/GPU-IOS27.md`
+（27 线 GPU 候选 **2026-11-03 用户真机验收通过**）。
+
+显示分辨率（3.2K 能不能降）的结论单独写在 `docs/DISPLAY-RESOLUTION.md`：编译期没有开关，
+机制是 DPU 的 VIG 缩放器，且它不是当前瓶颈。
 
 ## 7. 分阶段计划（每一步都有判定点）
 
