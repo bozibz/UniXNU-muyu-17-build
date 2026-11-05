@@ -838,6 +838,37 @@ uke 的 README 里写着答案：「160MiB 原 FAT 使用标准 UEFI 压缩运�
 他们的 vendor_boot 只有 44,859,392 B 却装着同样量级的 payload，靠的是 **UEFI 的解压协议**
 （`uefi-uke` 支持解压）。所以 27 线要么给自己的 UEFI 加压缩支持，要么裁掉首启不需要的组件。
 
+### 6.26 payload 已产出，但 94 MiB 装不进 vendor_boot 的安全布局（2026-11-05 20:2x）
+
+`size_mib` 从 60 提到 94 后 payload 出来了：
+
+```
+payload/payload.img  94 MiB
+```
+
+（核心的 vendor_boot 写入器是**替换** vendor ramdisk，不是追加片段，所以 payload 独占分区大小。
+之前那句"96 MiB 放不下 92 MiB"是我把 `size_mib` 的语义当成了片段模式，已纠正。）
+
+但真正装箱的时候撞上**我们自己 2026-10-26 的实测结论**（写在 `scripts/patch-vendor-boot.py` 的文档里）：
+
+| 布局 | 结果 | 上限 |
+| --- | --- | --- |
+| 默认（payload **替换** vendor ramdisk） | 镜像最小，但丢掉 33.8 MB 的 Android ramdisk，**"这块板就不充电了"**（2026-10-26 实测，接哪都不充） | 96 MiB |
+| `--fragments`（保留原 ramdisk 作 fragment 0，payload 作 fragment 1） | 充电正常 | **≈61.9 MiB** |
+
+所以 94 MiB 只能走"不充电"的布局。**payload 必须压到 ≈62 MiB 以下**，或者改固件做压缩运输。
+
+要砍的量：`kernel.macho` 95.7 MB → ≤ ~60 MB。可动的地方（按收益排）：
+
+1. `__LINKEDIT` 13 MB——prelink 产物带符号表，剥掉能省一大块；
+2. closure：`[components] include` 与 prelink `roots` 决定 `__PRELINK_TEXT`（14.5 MB）和并进
+   `__TEXT_EXEC` 的 kext 文本，砍组件是最大杠杆但每个都要试开机；
+3. 容器 `__TEXT_EXEC` 51.7 MB 里原生只占 10.2 MB，其余是 kext 文本，和第 2 条同源。
+
+`unixnu bootimg` 这条路还要 `--fd`（shim + 固件卷），而本地 `Build/muyuPkg/…/SILICIUM_UEFI.fd`
+（3 MB，DEBUG）不符合它的 ARM64 头校验，且没有 edk2 检出、无法重编固件。所以装箱改用设备仓的
+`scripts/patch-vendor-boot.py`（拿现有 vendor_boot 的 header/DTB/table 重排，不需要固件）。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
