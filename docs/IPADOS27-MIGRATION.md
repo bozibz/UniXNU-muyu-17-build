@@ -736,9 +736,28 @@ SHNGROOT v2，4 个对象
 `<x>.dmg.json` 的 `aea_sha256`/`size`/`sha256`），并把它们放进 `<out>/ipsw/24A446/`
 （不是 `fw/ipsw/…`——`Ipsw.cache` 在输出树里），构建就完全离线复用了。硬链接即可，不额外占空间。
 
-**当前阻塞：payload 要 Data seed。** `build payload` 停在
-`CONFIG_XNU_OWNER_DATA_MOUNT requires --data-ramdisk FILE (or [build] data_ramdisk)`——
-27 的 Data 卷种子只能从设备原来的 Data 分区取（不在 IPSW 里），而本机没有留过这份文件。
+**Data seed 已从镜像里取回**（`scripts/unpack-data-seed.py`，新）。种子只能来自设备原 Data 分区，
+不在 IPSW 里；但 17 线把它 pack 进了 vendor_boot 的 payload FAT（`payload.py` 复制成
+`EFI/UniXNU/Payloads/scratch-data.img`）。工具就是 FAT 遍历：
+扫每 512 字节找 BPB（`0x55AA` + 合法 `bytes_per_sector/spc/fats`），按目录项走
+`EFI/Unixnu/Payloads`，再沿 FAT 链读文件。两个坑：
+
+- 名字是 **LFN**：`scratch-data.img` 不合 8.3，短名被压成 `SCRATCH~1.IMG`，只匹配短名会漏；
+- 只按 sector 对齐扫 BPB 会误判大量假扇区，**必须在做任何除法之前**校验 `bytes_per_sector`。
+
+结果：`fw/vendor_boot_nofs1.img` → `fw/data-seed.img`，1,093,760 B（FAT32 @0x1000，cluster 126）。
+
+**新的阻塞：payload 要 sheng PMGR 整合。** 加入 `--data-ramdisk` 后 `build payload` 走到
+`check_native_root()`：`native-ufs-root=1` 的板子必须同时带 `sheng-pmgr=2` 且内核里有
+`_sheng_pmgr_run`，否则 AMFI 以 "No PMGR?" 恐慌。把 `build-sheng-platform-power.py` 加进归档后，
+它内部的 `audit-amfi-pmgr-contract.py` 挡住两次：
+
+1. 它只认 `build/xnu-prelink/native-owner-ufs-*-candidate.{macho,json}`（17 线的候选命名）；
+2. 它用 `native_prelink.macho()` 读候选，而那只支持普通 arm64 Mach-O，**读不了 27 的 MH_FILESET**。
+
+所以这条要单独做：把该审计改到 `kc_image.Image`（fileset 感知），并把三处 17 线的固定地址契约
+（`0xfffffff005cfad48`/`…ad50`/`…ac68`、`0xfffffff0042dde02` 的 `ApplePMGRNub`）按 24A446 重新推导。
+在那之前 payload 不产出——用桩符号骗过这个门禁等于让 AMFI 拿到一个假 PMGR，不做。
 
 ## 7. 分阶段计划（每一步都有判定点）
 
