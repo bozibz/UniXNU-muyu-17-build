@@ -816,6 +816,28 @@ unixnu: the payload files take 92 MiB; raise size_mib (now 60) in board.toml [pa
 schema 2 的 fileset 发射把原始 kext 代码并进 `__TEXT_EXEC` 时**重复写入**了一份。vendor_boot 分区
 只有 96 MiB，92 MiB 的 payload 放不进去，所以这条必须先查清楚，而不是去调 `size_mib`。
 
+**根因已定位（不是重复写入）**：`__PLK_TEXT_EXEC` 这个独立段只存在于 17 线走的
+`emit_prelink.py`（`COALESCED = {'__PRELINK_TEXT': '__TEXT', '__PLK_TEXT_EXEC': '__TEXT_EXEC', …}`），
+24A446 走的 fileset 路径（`fileset_layout.py`）**没有这个段**——它排布时直接把 `__TEXT_EXEC` 的
+范围扩到覆盖原始模块代码（`self.reserve('__TEXT_EXEC', align(end_kept))`）。
+
+也就是说 95.7 MB 是**真实内容**，不是 bug：
+
+| 组成 | 17 线 | 27 线 |
+| --- | --- | --- |
+| 原生内核 `__TEXT_EXEC` | 8.6 MB | 10.2 MB（prelink 前实测） |
+| 原始 kext 代码 `__PRELINK_TEXT` | 7.0 MB | 14.5 MB |
+| 容器 `__TEXT_EXEC`（并入 kext 文本） | — | 51.7 MB |
+| `__LINKEDIT` | 7.5 MB | 13.0 MB |
+| 合计 | 52.8 MB | 95.7 MB |
+
+27 线挂了 39 个组件、`__PRELINK_TEXT` 是 17 线的两倍，文件自然翻倍。**vendor_boot 只有 96 MiB，
+92 MiB 的 payload 放不进去**，所以这不是调 `size_mib` 能解决的。
+
+uke 的 README 里写着答案：「160MiB 原 FAT 使用标准 UEFI 压缩运输，vendor_boot 采用压缩文件」——
+他们的 vendor_boot 只有 44,859,392 B 却装着同样量级的 payload，靠的是 **UEFI 的解压协议**
+（`uefi-uke` 支持解压）。所以 27 线要么给自己的 UEFI 加压缩支持，要么裁掉首启不需要的组件。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
