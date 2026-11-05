@@ -978,6 +978,38 @@ panic: init.c:1107 Assertion failed: !((pmap->type == ARMPTE_EMPTY) ||
 再决定是补 pmap/SPTE 的 4 KiB 适配，还是调整 prelink 对这几个 GOT 槽的绑定（参考
 `kits/XnuPrelink/fixtures/fileset-24A446-symbols.json` 里 `_unixnu_kernel_stack_shift` 那种逐槽绑定的做法）。
 
+### 6.30 修正：panic 在我们自己的代码里；`use_contiguous_hint=0` 越过后到 CPU 拓扑（2026-11-05 21:2x）
+
+§6.29 把断言判成"苹果原始代码"是**读错了**：panic 里的 `ARMPTE` 其实是 `ARM_PTE_*`，
+定义在**我们自己的** `osfmk/arm64/proc_reg.h`。真正的断言：
+
+```c
+osfmk/arm64/arm_vm_init.c:1107
+assert(!kva_active || (ppte[i] == ARM_PTE_EMPTY) ||
+       ((ppte[i] & ARM_PTE_HINT) == (ptmp & ARM_PTE_HINT)));
+```
+
+`ARM_PTE_HINT` 是连续项提示（128×4 KiB = 512 KiB 一起映射）。`arm_vm_init` 在 `kva_active`
+为真时重新映射内核 `_start.._end`，撞上"引导阶段已映射、但没带 hint"的页。17 线把原始 kext 放在
+独立的 `__PLK_TEXT_EXEC`，27 的 fileset 发射把它们并进 `__TEXT_EXEC`，`_end` 覆盖的区间因此跨进
+那片区域——同一条断言在 17 线不炸，就是布局差异造成的。
+
+`use_contiguous_hint` 是一个**启动参数**（`arm_vm_init.c:2090` `PE_parse_boot_argn`），所以不用改代码：
+加 `use_contiguous_hint=0` 后**越过了这个断言**，panic 前进到下一步。
+
+**新 panic**：
+
+```
+"CPU configuration in device tree is invalid" @AppleARMCPU.cpp:111
+TCR=0x00080022a51a251a  SCTLR=0x00000000fc54799d
+pages=0x00000000012558f  free=0x000000000124ccf
+```
+
+进到苹果 AppleARMCPU 解析设备树的阶段了。我们的 `dts/muyu.dts` 给六个核写
+`cortex-a520`、三个 `cortex-a720`、一个 `cortex-x4`；17 线的 ADT 和另一块 27 板
+（uke）都是**所有核同一个 `compatible`**。已改成统一 `arm,cortex-a720`（E/P 仍由
+`unixnu,cluster-type` 表达），等设备回到 fastboot 再刷。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
