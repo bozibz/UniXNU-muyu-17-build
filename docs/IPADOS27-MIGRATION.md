@@ -914,6 +914,40 @@ header/DTB/bootconfig/table 一个字节都不变。
 注意：A 布局**会覆盖 userdata**（17 线那套），且**期间平板不充电**；恢复办法是
 `tools/muyu-flash-mode.sh restore-stock --yes` 刷回 `fw/stock/` 里的原厂镜像。
 
+### 6.28 首次上机：`Not Found` → `Unsupported`，卡点是内核格式（2026-11-05 20:5x）
+
+刷写过程全部成功（userdata 15.2 GB sparse，345.97 s，rc=0；vendor_boot 95.8 MiB，OKAY），
+UEFI 菜单两次都起来了。两次点"1"的结果：
+
+| 轮次 | 菜单报错 | 含义 |
+| --- | --- | --- |
+| 第 1 次（payload 里是 `kernel.macho.0/.1`） | `returned: Not Found` | 启动的 `boot.img`（2026-10-26）里 DarwinBoot 比 `.0/.1` 拼装支持（commit `1598841`）**老**，它只找 `kernel.macho` |
+| 第 2 次（`split_kernel = false`，单文件 95.7 MB） | `returned: Unsupported` | 文件找到了，但**解析不了** |
+
+第二轮把根因钉死了：
+
+```
+17 线 kernel.macho  filetype 2   MH_EXECUTE    arm64
+27 线 kernel.macho  filetype 12  MH_FILESET    arm64e
+DarwinBoot 里 "FILESET" 出现次数：0
+```
+
+DarwinBoot **完全没有 fileset 解析**，所以 24A446 的 `MH_FILESET` 内核一律 `EFI_UNSUPPORTED`。
+这也解释了为什么一定要 fileset 发射器：24A446 的 kernelcache 本身就是 fileset，17 线那套
+`emit_prelink.py`（产出 `MH_EXECUTE` + `__PLK_TEXT_EXEC`）吃不下它。
+
+**两条路**：
+
+| 路 | 做法 | 代价 |
+| --- | --- | --- |
+| 1 | 给 DarwinBoot 加 `MH_FILESET` 载入（遍历 `LC_FILESET_ENTRY`，找到内核入口，按段加载后再交 boot_args） | 需要 EDK2 检出（本机 `Mu_Basecore` 为空、全盘无 `BaseTools`）+ 重编并刷固件；uke 的 `uefi-uke` 是现成参考 |
+| 2 | 让 27 内核回到 `MH_EXECUTE` | 要和 24A446 fileset kernelcache 的格式对抗，等于给旧发射器补一套 fileset 输入解析 |
+
+推荐 1：和上游对齐、两种内核格式只留一种，且 uke 已经在同硅片上做通了。
+
+已同时修好两处构建侧问题（都留在仓库里）：`split_kernel` 板级开关（默认 true，27 板显式 false）、
+以及 `seeds`/`payload` 相关的脚本遮蔽。
+
 另外修了一个**设备仓库脚本遮蔽核心**的坑：`patch-xnu-entry-probe.py` 的 `kernel_symbols()` 解析
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
