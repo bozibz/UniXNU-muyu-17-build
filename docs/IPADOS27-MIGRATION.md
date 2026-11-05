@@ -710,6 +710,36 @@ source-storage 构建（`-DNATIVE_UFS_SOURCE_API=1`，该构建必然带 `BootLo
 
 下一步就是 27 根镜像（`build userdata`），然后才是上机。
 
+### 6.24 27 根镜像也出来了（2026-11-05 19:5x）
+
+```
+userdata-root.img   15,753,805,824 B   sha256 981110dacccc9ee7…
+SHNGROOT v2，4 个对象
+  OS          9,613,344,768 B @ 0x100000       sha256 8a12cdad…  ✅ = policy
+  SystemOS    6,016,729,088 B @ 0x23d100000    sha256 d5b4873d…  ✅ = policy
+  OS.vroot       75,104,256 B @ 0x3a3b00000
+  SystemOS.vroot 47,005,696 B @ 0x3a8300000
+```
+
+**这一块最有用的一条经验：AEA 镜像不需要 `ipsw` 工具。**
+`decrypt_aea()` 要 `ipsw fw aea --key` 去 Apple 取密钥，而 macOS 自己就能挂：
+`diskutil image attach --readOnly --mountOptions nobrowse <x>.dmg.aea` 会给出 `/dev/diskN`
+（本次 `diskN` = 9,613,344,768 B，正好等于 policy 里的 `media_bytes`），
+直接 `dd if=/dev/diskN of=<x>.dmg bs=8m` 就得到**与 policy 逐字节一致**的明文镜像：
+
+| 成员 | aea sha256 | 解出的镜像 sha256 | 与 policy |
+| --- | --- | --- | --- |
+| OS `043-68950-668` | `ada8410…` | `8a12cdad…` | ✅ |
+| SystemOS `043-69086-713` | `ece368c…` | `d5b4873d…` | ✅ |
+
+再按 `decrypt_aea()` 的缓存约定写两份记录（`<x>.dmg.aea.json` 的 `sha256` = aea 摘要，
+`<x>.dmg.json` 的 `aea_sha256`/`size`/`sha256`），并把它们放进 `<out>/ipsw/24A446/`
+（不是 `fw/ipsw/…`——`Ipsw.cache` 在输出树里），构建就完全离线复用了。硬链接即可，不额外占空间。
+
+**当前阻塞：payload 要 Data seed。** `build payload` 停在
+`CONFIG_XNU_OWNER_DATA_MOUNT requires --data-ramdisk FILE (or [build] data_ramdisk)`——
+27 的 Data 卷种子只能从设备原来的 Data 分区取（不在 IPSW 里），而本机没有留过这份文件。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
