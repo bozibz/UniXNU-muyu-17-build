@@ -755,9 +755,31 @@ SHNGROOT v2，4 个对象
 1. 它只认 `build/xnu-prelink/native-owner-ufs-*-candidate.{macho,json}`（17 线的候选命名）；
 2. 它用 `native_prelink.macho()` 读候选，而那只支持普通 arm64 Mach-O，**读不了 27 的 MH_FILESET**。
 
-所以这条要单独做：把该审计改到 `kc_image.Image`（fileset 感知），并把三处 17 线的固定地址契约
-（`0xfffffff005cfad48`/`…ad50`/`…ac68`、`0xfffffff0042dde02` 的 `ApplePMGRNub`）按 24A446 重新推导。
-在那之前 payload 不产出——用桩符号骗过这个门禁等于让 AMFI 拿到一个假 PMGR，不做。
+这条路先放下：`build-sheng-platform-power.py` 里写死了 17 线的 ApplePMGR vtable（实例 0x4b8a8、
+槽 177..340）和一批绝对地址（`0xfffffff005ce26d8`、`0xfffffff004a22568` …），27 上等于要重做一遍
+PMGR 的 original-ABI 移植，不是一个小门禁。
+
+**正解在另一块板的仓库里**：uke 的 `board.toml` 写的是
+
+```
+[adt.defaults.u32]
+"vmm-present" = 1     # 没有 Apple PMGR / SEP：如实声明虚拟平台，AMFI 就不等 ApplePMGRNub
+```
+
+这颗 SoC 本来就没有 Apple PMGR/SEP，所以这不是撒谎，是**如实上报**；`check_native_root()` 见到
+`vmm-present` 就直接返回，`sheng-pmgr=2` 与 stand-in 一并都不需要（sheng 的 iPadOS 27 板同样如此）。
+我们的 spike board 已照此设置，`sheng-pmgr=2` 与 `build-sheng-platform-power.py` 都撤掉。
+
+**于是 payload 的最后一个阻塞变成了 device tree**（schema 2 的必然要求）：
+
+```
+KeyError: 'source'          # scripts/unixnu/devicetree.py:395, ctx.board['device_tree']['source']
+```
+
+schema 2 的 ADT 由 `[device_tree] source = <board.dts>` + `include_dirs = ["soc:dts"]` 经 `dtc` 编出，
+uke 的 `dts/uke.dts` 只有 58 行（内存窗、8 个 CPU、timebase、hand-off 节点），SoC 侧
+`sm7675.dtsi` 在 `UniXNU-sm7675-common`。我们需要等价的两件：`dts/muyu.dts`，以及
+`UniXNU-sm8635-common` 里的 `dts/sm8635.dtsi`。取值可从 `fw/dtb_04.dtb` 反编译核对。
 
 ## 7. 分阶段计划（每一步都有判定点）
 
