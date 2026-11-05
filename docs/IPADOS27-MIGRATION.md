@@ -670,6 +670,46 @@ archive e0822d87c719be29…  1,653,320 B  12 个源
 
    旁证：uke 的 `porting.toml` 记的 27 OS 窗口是 `8a12cdad…`，与我们这份独立生成的 policy 完全一致。
 
+### 6.23 27 线的内核第一次 prelink 出来了（2026-11-05 19:36）
+
+```
+kernel.macho   MH_FILESET  arm64e   95,715,328 B   sha256 5797bce105b9e87e…
+39 个组件      storage 四个入口符号全部就位
+loadable=False mapping_complete=False        ← --allow-missing 的 bring-up 态，正常
+```
+
+从"只有设备仓源码"到"可加载的 fileset 候选"，这一轮跨过的关卡（每一关都是构建期不报、上机才炸的那类）：
+
+| # | 关卡 | 根因 | 处理 |
+| --- | --- | --- | --- |
+| 1 | `kc_image` 找不到 | 新核心不把 `kits/XnuPrelink` 铺进构建树 | 设备仓 `scripts/kc_image.py`（与 `native_prelink.py` 同一病） |
+| 2 | `kernelcache.decompressed` 没有 | 归档阶段早于 prelink，而只有 prelink 会解 IPSW | 按 driver 的缓存约定放到 `<out>/ipsw/24A446/` |
+| 3 | `libSoftwareAES27.a` 被硬编进链接行 | defconfig 里写死；`drivers/SoftwareAES` 树里没有，启动器也不引用 | 从链接行摘掉，注明恢复条件（**改 defconfig 必须同步改 `<out>/.config`**，driver 不重跑 defconfig） |
+| 4 | 8 个 boot-log 符号无定义 | `BootLog.c` 的一半接口在 `libBravearkLastLog.a` 里 | 非 force_load 挂上去，只拉 `BootLogStubs.o`，不与库内 `boot_log_tick` 冲突 |
+| 5 | `boot_progress_poll` 无定义 | 描述 archive（`BootProgress.c`）不在这一批 | 由 `SourceStorage.cpp` 提供；**必须强定义**，见下 |
+| 6 | `Chained fixup imports are not supported` | see 下 | 消除 weak import |
+| 7 | `Split-segment pointer disagrees with fixup` | 同一根因的另一面 | 同上 |
+| 8 | 缺 `_unixnu_kernel_stack_shift` | 24A446 的 reviewed fixture 指名要这个原生符号 | 新增 `patches/xnu/native-stack-shift.patch`（`= 15`，即 32 KiB 栈对齐移位） |
+| 9 | 回归策略挡下 3 处 stub | 我们的 archive 组合与 24A446 基线不同 | 逐条进 `prelink-regression.json` 并写明理由 |
+| 10 | `required_original_branches` 不满足 | 那两条分支属于显示与 HID，这批不含 | 移到 `required_original_branches_deferred`，注明恢复时机 |
+
+**第 6/7 关值得单独记**：arm64e 内核里，`__attribute__((weak))` 的**引用**会被链接器写成 chained **bind**（不是 rebase）。
+`kc_image` 与 `fileset_layout` 只处理 rebase，所以只要内核里存在一条 weak 引用，prelink 就会连拒两关
+（`imports` 计数、split-segment 指针）。我一开始去改 kit（让它跳过 bind），但那条路要走通必须把 bind 从
+format 7 转写成 format 8 —— 那是另一个工程量。**正解是把 bind 消掉**：`package/BootLog.c` 里那七个可选钩子在
+source-storage 构建（`-DNATIVE_UFS_SOURCE_API=1`，该构建必然带 `BootLogStubs.o`）改成强引用，
+`boot_progress_poll` 改强定义，bind 就归零，kit 一字未改（我改的两处已 revert）。
+
+**剩下的缺口**（都进了策略、有记录）：
+
+| 类别 | 数量 | 内容 |
+| --- | --- | --- |
+| `missing` | 2 | `AppleARMWatchdogTimer` 1、`IOHIDFamily` 1 |
+| `stubbed` | 30 | 分布在 15 个组件里（ApplePlatform 7、Image4 4、HID 3、WatchdogTimer 3、apfs 2、IOGPU 2、IOStorage 2 …） |
+| `missing_address_space` | 1 | `output collection` |
+
+下一步就是 27 根镜像（`build userdata`），然后才是上机。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
