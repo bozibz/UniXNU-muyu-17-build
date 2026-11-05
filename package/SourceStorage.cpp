@@ -40,6 +40,11 @@ extern "C" const char *volatile native_ufs_root_failure;
  * the kernel would then boot with a stub provider and no diagnostics.
  */
 
+// NativeUfs polls the optional board progress diagnostic while it reads root windows. The minimal
+// source kernel does not carry it, so a weak definition keeps the archive linkable; the real one wins
+// when that component is built in (the 17 line builds it in package/BootProgress.c).
+extern "C" __attribute__((weak)) void boot_progress_poll(void) {}
+
 static const OSMetaClass *storageParent;
 static IOService *storageDriver;
 static bool attempted;
