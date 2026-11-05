@@ -1188,6 +1188,58 @@ controller->initCPUInterruptController (cpuCount, 1);     // ← ml_set_max_cpus
 `wakeRedistributor` / `initDistributor` 的 `waitClear`），没字 = 失败点更靠后
 （`IOCPU::start` / 控制器分配 / `ml_processor_register`）。
 
+#### 6.33.2 根因：设备树没有导出 `/arm-io/intc`（2026-11-05 22:0x，已修）
+
+`armcpu-skip-gic=1` 下探针**有字**，于是失败点缩小到 `prepareGic()`。往下看 `mapGic()` 的三个硬条件：
+
+```cpp
+gic = IORegistryEntry::fromPath ("/arm-io/intc", gIODTPlane);   // 节点必须存在且叫 intc
+ranges->getLength () == 24   &&    // 6 cell
+reg->getLength () == 32      &&    // 8 cell
+compatible 长度 11 且等于 "arm,gic-v3"
+```
+
+而 schema-2 生成器**只导出手写 `unixnu,adt-name` 的硬件节点**：
+
+```python
+hardware = [entry for entry in entries if 'unixnu,adt-name' in entry.properties and entry.enabled()]
+... node('arm-io', [...], [node(name, hardware_properties(entry, handles, base)) for name, entry in zip(names, hardware)])
+```
+
+`dts/muyu.dts` 的 `intc` / `ufshc` 都没写这个属性，所以 ADT 的 `arm-io` 下面只有
+`device_type` / `#address-cells` / `#size-cells` / `ranges`——**没有 intc 节点**（导出的 ADT 里
+搜不到 `arm,gic-v3`，这一点是判定依据，不用上机）。
+
+于是 `fromPath("/arm-io/intc")` 返回 nullptr → `prepareGic()` false → `start()` 返回 false →
+`initCPUInterruptController()` 没跑 → `ml_set_max_cpus()` 没人调 → `kperf_init_early()` 永远睡。
+
+修法（`dts/muyu.dts`，commit `eaf0338`）：
+
+```
+intc: interrupt-controller {
+    unixnu,adt-name = "intc";       # 导出的名字，ArmCpu 按这个名字找
+    compatible = "arm,gic-v3";
+    #interrupt-cells = <3>;
+    interrupt-controller;
+    reg = <0x0 0x100000 0x0 0x10000     # arm-io 是 2/2：一个区间 4 个 cell
+          0x0 0x180000 0x0 0x200000>;   # 两个区间 = 8 个 cell（原来写成 4 个）
+    redistributor-stride = <0x40000>;
+};
+ufshc { unixnu,adt-name = "ufshc"; compatible = "qcom,sm8550-ufshc"; };
+```
+
+ADT 里验证到的结果：`intc` 节点存在，`compatible` 11 字节，`reg` 32 字节且两个区间正是
+0x100000/0x10000 与 0x180000/0x200000，`redistributor-stride` 8 字节。
+
+**上机确认**：去掉 `armcpu-skip-gic`、探针留在 `bsd_init` 第一句，
+`PROBE OK: bsd_init entered (adt intc)` **有字**——真实 GIC 路径通了，内核第一次走进 `bsd_init`。
+这一步之前，27 线从来没有任何一次启动越过 `kperf_init_early`。
+
+**教训（值得记住）**：schema-2 的 DTS 是“显式导出”模型，节点写进 DTS 不等于进 ADT；
+`unixnu,adt-name` 漏一个，驱动侧就是一句 `fromPath` 拿到 nullptr，而它的失败方式只是
+“某个 CPU 相关初始化没做”，表现成**完全不相干的地方**（kperf）永久阻塞。以后新加硬件节点先查
+生成出来的 ADT 里有没有它。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
