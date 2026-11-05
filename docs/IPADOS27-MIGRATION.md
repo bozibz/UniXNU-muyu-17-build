@@ -1140,6 +1140,54 @@ board.toml 侧只有一个开关（`[payload] native_cpu_owner = true`），payl
 也就是 AKS 那一支没有链进 27 内核——`sheng-aks=1` 目前是空转。`NativeUfs`（117 处）和
 `native-ufs-root` 是在的，所以存储组件本身链上了。
 
+#### 6.33.1 再往下两层：`kperf_init_early()` → `ml_wait_max_cpus()` → 没有 CPU 中断控制器（2026-11-05 22:2x）
+
+probe6（`_vm_set_restrictions` 之后，`--in _kernel_bootstrap_thread`）**有字**，于是最后那段
+`_vm_set_restrictions` / `_kperf_init_early` / `_bsd_init` 的三明治被切开：
+
+```
++0x3d0  _PE_lockdown_iokit      probe3 在此停住（有字）
++0x3e0  _vm_set_restrictions    probe6 在此停住（有字）
++0x3e4  _kperf_init_early       ← 卡在这里
++0x3e8  _bsd_init
+```
+
+`_kperf_init_early` 只有 132 字节、四个调用，第一个就是 `ml_wait_max_cpus()`：
+
+```c
+void kperf_init_early(void) { ml_wait_max_cpus(); if (kperf boot arg) kperf_kernel_configure(...); }
+```
+
+`ml_wait_max_cpus()`（`osfmk/arm/machine_routines_common.c:1383`）等的不是“CPU 数量”，而是
+`ml_set_max_cpus()` 被调用——`max_cpus_initialized` 从 `MAX_CPUS_WAIT` 变 `MAX_CPUS_SET`。
+全内核只有两处调用它：
+
+| 调用点 | 谁用 |
+| --- | --- |
+| `iokit/Kernel/IOCPU.cpp:632`（`IOCPUInterruptController::initCPUInterruptController`） | **我们的 `ArmCpu` 走这条** |
+| `iokit/Kernel/arm/AppleARMSMP.cpp:167` | 苹果 SMP 胶水，我们没有 |
+
+所以对这块板子，条件等价于“`ArmCpu::start()` 必须走到 `controller->initCPUInterruptController()`”。
+而 `ArmCpu::start()` 开机核路径是：
+
+```c
+if ((!skipGic && !prepareGic ()) || !IOCPU::start (provider)) { return false; }   // ← prepareGic 失败就 return
+...
+controller = new IOCPUInterruptController;
+controller->initCPUInterruptController (cpuCount, 1);     // ← ml_set_max_cpus 在这里
+```
+
+`start` 返回 false 只表示这个驱动没启动成功，**IOKit 会继续往下走**——这正好解释了
+“probe1 显示 `PE_init_iokit()` 已返回” + “`bsd_init` 永远到不了”：中断控制器没建，`ml_set_max_cpus`
+没人调，`kperf_init_early` 就永远睡着。
+
+`cpus=1` 实测**无效**（关掉后画面不变），印证了这不是“CPU 数量不够”，而是“没人叫醒等待者”。
+
+下一步用现成开关验证：`armcpu-skip-gic=1` 绕过 `prepareGic()`，再看 `_bsd_init` 开头的探针
+（`PROBE OK: bsd_init entered (skip-gic)`）。有字 = 失败点就在 `prepareGic()`（`mapGic` /
+`wakeRedistributor` / `initDistributor` 的 `waitClear`），没字 = 失败点更靠后
+（`IOCPU::start` / 控制器分配 / `ml_processor_register`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
