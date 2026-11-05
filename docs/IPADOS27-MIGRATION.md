@@ -546,6 +546,43 @@ shutil.copyfile(policies, payloads / 'kernel.macho.vroot')
 显示分辨率（3.2K 能不能降）的结论单独写在 `docs/DISPLAY-RESOLUTION.md`：编译期没有开关，
 机制是 DPU 的 VIG 缩放器，且它不是当前瓶颈。
 
+### 6.20 两份夹具已落库并全项验证；顺带查出 27 的 prelink slide 是错的
+
+**不需要"重基"**。夹具里的地址本来就是**未加 slide** 的（`0xfffffe00_0a288c74` 这种），
+`collection_slide` 只是把它推到最终区的那一个常数。所以只要我们的 `[kernel.prelink] slide`
+等于夹具的 `collection_slide`，夹具可以**原样使用**；数字一个都不用改。
+
+**但上游 27 profile 的 slide 是错的。** `profiles/os/ipados-27.0.1-24A446/profile.toml` 写的是
+`"slide" = "-0x1000000"` —— 那是 21H461 的值，照抄过来的：
+
+| | 未加 slide | `-0x1000000`（profile 现值） | `0x1f000000000`（正确） |
+| --- | --- | --- | --- |
+| AMFI `_initializeAppleMobileFileIntegrity` | `0xfffffe00092551ac` | `0xfffffdff082551ac` ❌ | `0xfffffff0092551ac` ✅ |
+| `IOMobileFramebufferLegacy` C2 | `0xfffffe000a288c74` | `0xfffffdff0a288c74` ❌ | `0xfffffff00a288c74` ✅ |
+| 21H461 的同名锚点（对照） | `0xfffffff006ab4ae0` | — | `0xfffffff005ab4ae0` ✅ 同区 |
+
+24A446 的 kext 链接在 `0xfffffe00…`，必须 +`0x1f000000000` 才落到 `0xfffffff0…`
+（和 21H461 最终区相同）。用 `-0x1000000` 会把整批 kext 推到 `0xfffffdff…`，**每一个绑定槽都会指错**，
+而且不会在构建期报错——只会在上机时表现为 vtable 全错。uke 的板子用的就是 `0x1f000000000`。
+
+**门禁已就位**：`scripts/check-ipados27-abi-fixtures.py`（离线，无核依赖）。它把我们自己的
+`kernelcache.release.ipad17`（IM4P）解开，然后逐项核对：
+
+| 项 | 结果 |
+| --- | --- |
+| kernelcache sha256 == 两份夹具的 pin | ✅ `38e6d9fa…` |
+| 两根字符串记录（`checks`）读回逐字节 | ✅ 10/10 |
+| 显示 vtable 379 槽的 **chained fixup 解码 = 夹板的 target+diversity** | ✅ 379/379（3 个纯虚槽按 caller 侧记录） |
+| HID vtable 207 槽同上 | ✅ 207/207 |
+| 211 个槽名的 ptrauth discriminator | ✅ 211/211 |
+| 限定绑定符号落在内核内（代码绑定须是 arm64e 函数入口） | ✅ 14/14 + 4/4 |
+
+最关键的是 vtable 那一项：arm64e 内核里每个槽是一条 chained fixup，解码链必须逐槽复现夹具的
+target **和** diversity。错一个槽、取自别的构建、手改过任何一处，都过不了。
+
+夹具落在 `scripts/data/ipados-27.0.1-24A446/{legacy-display,hid-device}.json`，
+来源是 uke `origin/main` 的 `scripts/{legacy-display,hid-device}-24A446.json`。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
