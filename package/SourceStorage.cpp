@@ -32,23 +32,13 @@ extern "C" bool native_source_root_policies_load(void);
 extern "C" volatile uint32_t native_ufs_root_step;
 extern "C" const char *volatile native_ufs_root_failure;
 
-/* The 27 build links this archive before those symbols exist; each stub names itself when reached. */
-extern "C" __attribute__((weak)) IOService *
-native_ufs_source_create(void)
-{
-	printf("SourceStorage: the UFS public-interface provider is not ported yet (drivers/ShengUfs)\n");
-	return nullptr;
-}
-
-extern "C" __attribute__((weak)) uint32_t native_ufs_root_step;
-extern "C" __attribute__((weak)) const char *volatile native_ufs_root_failure;
-
-extern "C" __attribute__((weak)) bool
-native_source_root_policies_load(void)
-{
-	printf("SourceStorage: root policy handoff is not ported yet\n");
-	return false;
-}
+/*
+ * No weak stand-ins here: the archive that carries this launcher always carries the three
+ * implementations too (drivers/ShengUfs/NativeUfs.cpp for the provider and its root-step state,
+ * package/SourceRootPolicies.cpp for the handoff). A weak definition in this object would win over
+ * the real one whenever the linker picked this member first, which it does for the launcher symbol -
+ * the kernel would then boot with a stub provider and no diagnostics.
+ */
 
 static const OSMetaClass *storageParent;
 static IOService *storageDriver;

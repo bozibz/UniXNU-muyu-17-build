@@ -626,6 +626,50 @@ target **和** diversity。错一个槽、取自别的构建、手改过任何�
 -DNATIVE_VERIFIED_POLICY_HANDOFF=1`。而 `NATIVE_UFS_SOURCE_API` 这个开关**在两个仓库里都没有任何代码引用**，
 也就是说它一直在等我们的工厂函数来兑现。
 
+### 6.22 storage 归档已编出来（2026-11-05）
+
+上面那三块都做完了，`libShengSourceStorage.a` 在 27 树上**编过并全符号就位**：
+
+```
+target  arm64e-apple-ios27.0
+archive e0822d87c719be29…  1,653,320 B  12 个源
+```
+
+| 符号 | 定义数 | 来源 |
+| --- | --- | --- |
+| `native_ufs_source_create` | 1 | `drivers/ShengUfs/NativeUfs.cpp`（`#if NATIVE_UFS_SOURCE_API`） |
+| `native_verified_block_root_authorized` | 1 | `package/SourceRootBinding.cpp` |
+| `native_verified_block_volume_device` | 1 | `package/SourceRootBinding.cpp` |
+| `native_verified_block_manifest_sha384` | 1 | `package/SourceRootBinding.cpp`（这个符号只有这条路径有） |
+| `native_source_root_policies_load` | 1 | `package/SourceRootPolicies.cpp` |
+| `native_ufs_root_step` | 1 | `drivers/ShengUfs/NativeUfs.cpp` |
+
+过程中暴露的四个真问题（都是"构建期不报，上机才炸"那一类）：
+
+1. **`UfsXnuCompat.h` 拿不到版本号**。组件构建由 `build-arm-driver.py` 传
+   `-DXNU_MUYU_XNU_VERSION=12377`，而 `build-sheng-source-storage.py` 不传，于是走了 17 的 4 参数
+   `kmem_alloc(kma_flags_t…)` 分支——27 头文件里没有 `kma_flags_t`。修法不是去改核心脚本，而是在驱动里
+   按构建器自己的前提补默认值：那个适配器开头就有
+   `parser.error('This adapter requires iPadOS 26 or later')`，所以它的 API 必然是 12377。
+2. **弱桩会赢过真实现**。`SourceStorage.cpp` 里我给未移植符号留的 4 个 weak 桩，在静态库里和
+   `NativeUfs.o` 的强定义并存；链接器为启动器符号拉这个 member 时，弱定义先把它占住——内核会带着
+   一个返回 null 的桩 provider 起来。**已全部删除**，改成注释说明为什么不能留。
+3. **`native_verified_block_root_authorized` / `..._volume_device` 会重复定义**。我们的驱动里有 17 线的
+   "unverified 逃逸"版本，uke 把它们放在 `SourceRootBinding.cpp`。现在驱动那两个用
+   `#if !NATIVE_UFS_SOURCE_API` 让位给验签版，17 线构建不受影响。
+4. **`[root]` 的 `image_sha256` 不是 `.dmg.aea` 的摘要**。builder 比对的是
+   `verification.json` 的 `image_sha256`（原始镜像映射），而容器摘要（`ada8410…` / `ece368c…`）是我们
+   之前记进 `scripts/data/owner-os-policy-27.json` 的 `dmg_sha256`，两者不是一回事。board 的四个值是：
+
+   | 键 | 值 |
+   | --- | --- |
+   | `os_volume_uuid` | `2F8E6EED-68D5-4261-B8A3-12571BAA2DD4` |
+   | `os_image_sha256` | `8a12cdad43f8f0d33dadcf01a800a560222baf40c05f71374c460ba57ba3a739` |
+   | `systemos_volume_uuid` | `F914C62A-AD00-47C6-8281-5746291C339A` |
+   | `systemos_image_sha256` | `d5b4873d35c85f96eaafaa31c59602b485afe33b5067eff1af67ba31204cdb4a` |
+
+   旁证：uke 的 `porting.toml` 记的 27 OS 窗口是 `8a12cdad…`，与我们这份独立生成的 policy 完全一致。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

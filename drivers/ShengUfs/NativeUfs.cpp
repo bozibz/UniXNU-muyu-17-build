@@ -5,12 +5,28 @@
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <libkern/crypto/sha2.h>
+
+// The source-storage build (scripts/build-sheng-source-storage.py in the core, which passes
+// -DNATIVE_UFS_SOURCE_API=1) constructs this provider explicitly from package/SourceStorage.cpp
+// instead of waiting for a device-tree match, and takes the owner-root binding queries from
+// package/SourceRootBinding.cpp. The board's own device-tree build (the iPadOS 17 line) leaves the
+// macro off and keeps its bring-up implementations of those queries.
+#ifndef NATIVE_UFS_SOURCE_API
+#define NATIVE_UFS_SOURCE_API 0
+#endif
+#if NATIVE_UFS_SOURCE_API && !defined(XNU_MUYU_XNU_VERSION)
+// That adapter refuses any OS below iPadOS 26 ("This adapter requires iPadOS 26 or later"), so under it
+// the kernel API is always the 12377 one; the component build passes the number in explicitly instead.
+// UfsXnuCompat.h needs it before it is included, hence this placement.
+#define XNU_MUYU_XNU_VERSION 12377
+#endif
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
 #include "UfsXnuCompat.h"
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/msgbuf.h>
+
 #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
 #include "verified_root.h"
 #include "VerifiedBlockPolicy.h"
@@ -1654,6 +1670,11 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
 // verified VirtIO driver authorizes each volume against the owner policy; this
 // UFS bring-up build accepts only the explicit native-ufs-allow-unverified
 // mode and resolves the published SystemOS volume by its APFS UUID.
+//
+// The source-storage build gets the verified versions of both from
+// package/SourceRootBinding.cpp, which walks the provider chain and asks
+// native_ufs_block_authenticates() instead of accepting the escape hatch.
+#if !NATIVE_UFS_SOURCE_API
 extern "C" int native_verified_block_root_authorized (dev_t device)
 {
   (void) device;
@@ -1716,6 +1737,7 @@ extern "C" int native_verified_block_volume_device (const char *uuid, dev_t *dev
   }
   return 0;
 }
+#endif  // !NATIVE_UFS_SOURCE_API
 
 static void captureMissingMedia (const char *uuid)
 {
@@ -2120,3 +2142,15 @@ void NativeUfs::stop (IOService *provider)
   fMap.reset ();
   IOService::stop (provider);
 }
+
+#if NATIVE_UFS_SOURCE_API
+// The source-storage path builds the provider itself instead of waiting for a device-tree match:
+// package/SourceStorage.cpp calls this, then init()/attach()/start() on what it returns, so the
+// class has to be registered (source_storage_ufs_init, i.e. this file's __GLOBAL__sub_I section)
+// before the call. Returning a bare instance keeps the ownership obvious: SourceStorage releases it.
+extern "C" IOService *native_ufs_source_create (void)
+{
+  return new NativeUfs;
+}
+#endif
+
