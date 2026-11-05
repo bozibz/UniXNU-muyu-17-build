@@ -54,17 +54,24 @@
         ranges = <0x0 0x0 0x0 0x17000000 0x0 0x08000000>;
 
         intc: interrupt-controller {
+            // Only nodes that carry unixnu,adt-name are exported into the ADT
+            // (UniXNU-27/scripts/unixnu/devicetree.py). ArmCpu looks the GIC up as
+            // /arm-io/intc, so the exported name has to be "intc", not the node name.
+            unixnu,adt-name = "intc";
             compatible = "arm,gic-v3";
             #interrupt-cells = <3>;
             interrupt-controller;
-            // distributor at 0x17100000, redistributors at 0x17180000 (offsets inside arm-io).
-            reg = <0x100000 0x10000 0x180000 0x200000>;
+            // arm-io is #address-cells = 2 / #size-cells = 2, so one range is four cells.
+            // distributor at 0x17100000, redistributors at 0x17180000, as offsets inside arm-io.
+            reg = <0x0 0x100000 0x0 0x10000
+                   0x0 0x180000 0x0 0x200000>;
             redistributor-stride = <0x40000>;
         };
 
         // The UFS controller lives at 0x1d84000, below this window, so it carries no reg: the node
         // exists for class matching only and ShengUfs takes its physical windows from GccUfs.h.
         ufshc {
+            unixnu,adt-name = "ufshc";
             compatible = "qcom,sm8550-ufshc";
         };
     };
