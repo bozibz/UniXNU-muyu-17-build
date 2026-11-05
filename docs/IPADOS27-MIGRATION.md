@@ -858,12 +858,26 @@ payload/payload.img  94 MiB
 
 所以 94 MiB 只能走"不充电"的布局。**payload 必须压到 ≈62 MiB 以下**，或者改固件做压缩运输。
 
-要砍的量：`kernel.macho` 95.7 MB → ≤ ~60 MB。可动的地方（按收益排）：
+**先排除了两个"看起来能省"的方向**（2026-11-05 实测）：
 
-1. `__LINKEDIT` 13 MB——prelink 产物带符号表，剥掉能省一大块；
-2. closure：`[components] include` 与 prelink `roots` 决定 `__PRELINK_TEXT`（14.5 MB）和并进
-   `__TEXT_EXEC` 的 kext 文本，砍组件是最大杠杆但每个都要试开机；
-3. 容器 `__TEXT_EXEC` 51.7 MB 里原生只占 10.2 MB，其余是 kext 文本，和第 2 条同源。
+- **不是符号表**：`kernel.macho` 里**没有 `LC_SYMTAB`**，`__LINKEDIT` 那 13 MB 是 chained fixups
+  与导入表，剥符号省不出东西（剥掉会直接坏掉加载）。
+- **不是重复写入**：`__TEXT_EXEC`（51.7 MB）里零字节只占 **8.5%**，而且 `__PRELINK_TEXT` 的
+  两段 4 KB 探针在 `__TEXT_EXEC` 里**都找不到**——两边内容不同，不是同一份抄了两遍。
+
+同时确认闭包是**有选择性**的：`unselected_entries_dropped = 276`、只保留 39 个组件（`__TEXT_EXEC`
+里原生只占 10.2 MB，其余约 41 MB 是原始 kext 被并进来的文本）。所以 95.7 MB 是 24A446 那些
+kext 的真实体积——iPadOS 27 的 kext 本来就比 21H461 大一截（`sandbox` 2.8 MB、
+`AppleM2ScalerCSCDriver` 3.1 MB、`apfs` 2.3 MB …）。
+
+结论：**靠瘦身很难从 95.7 MB 砍到 60 MB**（要砍掉一半以上，等于掏空这个系统）。
+三条路的取舍是硬件层面的决定，需要人来定：
+
+| 路 | 做法 | 代价 |
+| --- | --- | --- |
+| A | vendor_boot 用默认布局（payload 替换 Android ramdisk） | **平板不充电**（2026-10-26 实测），要充电得刷回 17 线镜像 |
+| B | 给 `MuyuPayloadBlockIo` 加解压（`BaseUefiDecompressLib` 已在 `MsCorePkg.dsc:56` 链上），payload 压缩运输 | 要 edk2 检出并重编固件；一次性投入 |
+| C | 砍 closure 到首启最小集 | 大概砍不到 62 MiB；每砍一批都要试开机 |
 
 `unixnu bootimg` 这条路还要 `--fd`（shim + 固件卷），而本地 `Build/muyuPkg/…/SILICIUM_UEFI.fd`
 （3 MB，DEBUG）不符合它的 ARM64 头校验，且没有 edk2 检出、无法重编固件。所以装箱改用设备仓的
