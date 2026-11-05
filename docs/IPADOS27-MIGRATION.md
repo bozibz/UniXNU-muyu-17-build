@@ -1057,6 +1057,57 @@ schema 2 再加 `cluster-type`），而 17 线的 ADT 也没有——**所以 17
 `llvm-nm` 输出时不校验首列是十六进制，fileset 内核会在每个成员前打 `Symbols:` 横幅，于是
 `int('Symbols', 16)` 抛异常。改的是 `UniXNU-muyu/scripts/` 那份（树里实际用的是它），核心保持原样。
 
+### 6.32 走通第 2 条：改 personality，不碰内核（2026-11-05 21:3x）
+
+选了 6.31 的第 2 条，但**答案不在内核补丁里，而在 personality plist 里**——而且姊妹 27 端口
+（`UniXNU-27/docs/devices/sirius.md` §"the next stop was AppleARMPlatform's CPU class"、
+`rmx1971.md` §Configuration）早就把这条路走通了，我们只是没查。
+
+**机制**（sirius 的实测结论，我们的二进制与它一致）：
+
+- 苹果的匹配是 `IODTPlatformExpert` **按前缀**比 `IONameMatch`，所以 `cpu` 会把 `cpu0..cpu7` 全认下来；
+- `AppleARMCPU` 的 personality 就一条：`IOClass = AppleARMCPU`、`IOProviderClass = IOPlatformDevice`、
+  `IONameMatch = cpu`、`IOProbeScore = 100`；
+- 我们的 `ArmCpu` 是 `IOProbeScore = 2000`，**但分数根本救不了**：sirius 加到 40000 也没赢；
+- 缺的 `/cpus/max_cpus`、`cpu-id`、`interrupts`、`function-*` 是苹果设备树的东西，Qualcomm 板上没有，
+  满足它等于给一块没有 AIC 的板子伪造 AIC 语义——方向错。
+
+**做法**：把 `__PRELINK_INFO,__info` 里那份 XML plist 中 `AppleARMCPU` 的 `IONameMatch` 从
+`cpu` 改成 `xpu`。三个字符换三个字符，**镜像里一个 offset 都不动**（plist 长度不变，
+`__LINKEDIT`/chained fixups/segment 布局全部原样）。
+
+实现是两个新文件（核心仓 `UniXNU-27`）：
+
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/patch-prelinked-personality.py` | 定位 `__PRELINK_INFO,__info` → 解析 plist → 找到发布该 personality 的唯一 kext → 同长度改写 → 回读校验 |
+| `scripts/test-patch-prelinked-personality.py` | 合成一个单段 Mach-O 做单元测试：只改一个字节、幂等、长度不等/值不符/找不到 personality/没有 `__PRELINK_INFO` 全部拒绝 |
+
+自检比“写对了”更严格：改写后把那个值再改回旧值，整份 plist 必须与原文**逐字段相等**；
+文件里变化的字节必须全部落在目标 value 的窗口内，且个数等于新旧值的字符差异数
+（`cpu`→`xpu` 只有 `c`→`x` 一个字节）。
+
+board.toml 侧只有一个开关（`[payload] native_cpu_owner = true`），payload 步骤在写完 `kernel.macho`、
+跑 entry-probe 补丁**之前**调用它，报告写进 `payload.json` 的 `personality_rewrites`。门禁留在
+板级而不是核心：真 Apple 树（靠 AppleARMCPU 枚举 CPU 的板子）不能开这个。
+
+**本次产物**：
+
+| 产物 | 值 |
+| --- | --- |
+| `fw/vendor_boot_27.img` | 100,462,592 B，`def7e2cb…`（布局与 6.27 完全一致：ramdisk 98,566,144 @0x1000、dtb 1,885,961 @0x5e01000） |
+| payload | `8f2812ac…`，94 MiB，`personality_rewrites` 已记录 |
+| 旧镜像留档 | `fw/vendor_boot_27-6.31.img`（`ad4b…`，panic 现场那一版） |
+
+**顺手确认的两件事**：
+
+- `payload.json` 的 `kernel_sha256`（`5797bce1…`）没变：这次没有重编内核，改的只是 payload 里的副本。
+  `payload_kernel_sha256`（`a1037870…`）也没变，因为内核被切成 `.0/.1` 两半、它算的是前半，
+  而改动的那一个字节在 92 MB 处、落在 `.1` 里——所以这两个字段不能当“payload 有没有变”的判据，
+  要看 `payload_sha256`。
+- ADT 的 `adt_sha256` 每次构建都会变，**不是**我们的改动引起的：`/chosen/random-seed` 是生成器每次
+  现取的 64 字节随机数（`cmp` 两个 ADT 只有那 64 字节不同）。要拿 ADT 做逐字节对比，得先排除这个字段。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
