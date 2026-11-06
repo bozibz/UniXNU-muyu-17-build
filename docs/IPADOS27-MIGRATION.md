@@ -2172,6 +2172,72 @@ native 内核的 `__TEXT_EXEC`（0xac84000–0xb648000）里**，而是落在合
 - 同一个目标被多个 kext import 时，用 auth-GOT 槽位把"哪个 kext 的哪个 stub"钉死；
   `stub_sites` 里同一 target 出现多次不等于多个调用点。
 
+### 6.58 u39：thread_tid 修好了，launchd 真跑起来了；卡点变成 dyld 共享缓存（2026-11-06 22:0x）
+
+u39（`fw/vendor_boot_27-u39.img`，内核 `16c6e7e3…`）的屏上读数：
+
+```
+… NativeUFS: published OS
+[os] Got boot device = IOService:/NativeUfs/IOBlockStorageDriver/Native OS Media/AppleAPFSContainerScheme/
+     AppleAPFSMedia/AppleAPFSContainer/Rave24A446…/J0J7J0J8J020J0210501
+BSD root: disk5s1, major 1, minor 0
+apfs_vfsop_mountroot:3156: apfs: mountroot called!
+…
+initproc failed to start -- exit reason namespace 6 subcode 0x1 description: Library not loaded: /usr/lib/libSystem.B.dylib
+    Referenced from: <CA54230D-4005-3131-8DC3-CCB7E7EF18E6> /sbin/launchd
+    Reason: tried: '/usr/lib/libSystem.B.dylib' (no such file, no dyld cache)
+```
+
+即：`fileset: original component called an unmapped kernel function` 不再出现，**exec 成功了、dyld 真的
+在跑**；launchd 退出的原因是找不到 dyld 共享缓存（`namespace 6 = OS_REASON_LD`，dyld 的
+`abort_with_payload` 描述）。这是"进用户态"之后的第一个真问题，不是 prelink 的。
+
+**离线取证（挂 24A446 的两个镜像读出来的，不是猜）**
+
+| 位置 | 事实 |
+| --- | --- |
+| OS 卷（`043-68950-668.dmg`，root） | `/System/Library/Caches` 只有 `com.apple.factorydata`（symlink）和 `com.apple.kernelcaches`，**没有 `com.apple.dyld`**；有 `/usr/lib/dyld`；`/System/Cryptexes/OS` 是 symlink → `../../private/preboot/Cryptexes/OS`；`/private/preboot` 是**空目录** |
+| SystemOS cryptex（`043-69086-713.dmg`） | `/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e` + `.01`–`.81`（约 5.7 GiB）；`/usr/lib/libSystem.B.dylib` **不存在** |
+
+所以：`libSystem.B.dylib` 在任何卷上都不是普通文件，只能来自共享缓存；而缓存在 SystemOS cryptex 里，
+Apple 的规范路径是 `/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/` → 经 symlink 落到
+`/private/preboot/Cryptexes/OS`，本板启动时**从来没挂过 Preboot**，这条链是断的。
+dyld 二进制里同时有 `DYLD_SHARED_CACHE_DIR`、`/System/Library/Caches/com.apple.dyld/`、
+`/System/Cryptexes/OS`、`no shared cache in cryptex` 这些字符串，说明它两条路都会试。
+
+**u40 的改法：换成同一条 owner patch 的 non-union 分支**（只改 `.config`，不动内核代码）
+
+`native_owner_cache_prepare()` 本来就有两条 proven 路径：
+
+- union（u37–u39）：`mount("apfs", "/", MNT_UNION)`，**不设** `DYLD_SHARED_CACHE_DIR`；
+- non-union（21H461 线一直在用）：`mount("apfs", "/private/preboot")`，并把
+  `DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld`、
+  （可选）`DYLD_FALLBACK_LIBRARY_PATH=/private/preboot/usr/lib` 放进 init 的 env。
+
+于是：
+
+```
+# /tmp/spike27-out/…/muyu-27/.config
+# CONFIG_XNU_OWNER_UNION_SYSTEMOS is not set     # 原为 =y，备份在 .config.u39-union
+```
+
+`/private/preboot` 在 OS 卷上是现成的空目录，不需要 mkdir，也不需要改补丁。
+
+产物：内核 `93e29400…`、payload `cba5f2d1…`、**u40 = `fw/vendor_boot_27-u40.img` = `96d6b498…`**
+（100,462,592 B）。已刷入并启动。
+
+**若 u40 仍报 owner 门禁失败**，panic 自带 `stage/… mount/ro/dev/ver/vol`，按 §6.52 的读法看是哪一步；
+若它过了门禁但 dyld 仍说 `no dyld cache`，下一步就在 patch 里给 **union 分支也加**上
+`/private/preboot` 的第二次挂载 + `DYLD_SHARED_CACHE_DIR`（u39 期间已经写好过一版补丁草稿，
+位置在 `native_owner_cache_prepare()` stage 5 之后）。
+
+**顺带修掉的一个坑：** 直接 `git checkout` 单个源文件会把 `.cache/xnu-work` 里按序应用的补丁一起
+清掉，而 `scripts/unixnu/patches.py` 只在**补丁哈希变化**时才重建工作树（stamp 是
+`xnu-inputs.json`）。恢复办法是把 `xnu-patches.list` 里所有 `+++ b/bsd/kern/kern_exec.c` 的补丁按序
+`git apply --include=bsd/kern/kern_exec.c`（本次 7 个：public-entitlements-header、
+offline-owner-z-air-init、offline-owner-systemos-mount、zzy-native-gpu-addon-mount、
+zzy-staged-system-apps、zzyb-native-cryptex-os-view、zzz-boot-progress）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
