@@ -1755,6 +1755,46 @@ if (!PE_parse_boot_argn("muyu-source-storage", &enabled, sizeof(enabled)) || ena
 
 `u13`（`52e0d57b…`，payload 重打，内核不变 `fd92998b…`）把 `muyu-source-storage=1` 加进了 kernel args。
 
+### 6.48 根卷策略通过了，新的 panic 在 VM：wired 页没有 tag（2026-11-06 20:1x）
+
+`u13`（真参数 `muyu-source-storage=1`）把流程推到 `SourceStorage.cpp:89`：
+
+```
+SourceStorage: root policy handoff or authentication failed @SourceStorage.cpp:89
+```
+
+说明这几步都过了：`IOStorageFamily` 加载、`IOBlockStorageDevice` 布局核对。卡在
+`native_source_root_policies_load()` —— 它第一步就去 `/chosen/memory-map` 找 `RootPolicies` 这 16 字节
+(phys,len)，而我们从没发布过：payload 只有在 `[payload] root_policies` 指向 bundle 时才会
+复制 `kernel.macho.vroot` 并让 ADT 放出这个映射。bundle 本身是好的
+（`tree/build/sheng-source-storage/root-policies.bin`，`VROOTB01`、2 条策略、1152 B）。
+
+`u14` 加上 `root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"` 之后，
+**策略这一关过了**，新的 panic 落在 VM：
+
+```
+vm_resident.c:3408 Assertion failed: !VM_PAGE_WIRED(mem) || vm_page_is_canonical(mem) ||
+    (tag != VM_KERN_MEMORY_NONE)
+pc 0xfffffff00b5b6a24 = _vm_page_insert_internal.cold.1+0xc
+lr 0xfffffff00ae3fce0 = _vm_page_insert_internal+0x110
+x0/x19/x26 0xfffffff153062f90   x8 0xfffffff007eb5118   x24 0xffffffff
+F0 _sleh_synchronous_sp1  F1 _sleh_synchronous+0x740  F2 _fleh_synchronous+0x18
+```
+
+即**插入一个已 wired、却没有内存标签的页**。这一环紧接着策略加载（那里有
+`IOMemoryDescriptor::withPhysicalAddress` + `map()` + `kmem_alloc(kernel_map, …)`），
+或者就是 `native_ufs_source_create()/init()/attach()/start()` 里的分配。现在还没法从寄存器区分：
+帧链被 panic 路径本身占住了（F1/F2 都是 sleh），拿不到最初调用者。
+
+**下一步（明确的实验，不需要再猜）**：在 `package/SourceStorage.cpp` 的
+`native_source_storage_start()` 里，在每个阶段前打一行 `printf`：
+`policies ok` → `ufs create` → `init` → `attach` → `start`。下一次 panic 落在哪两行之间，
+就锁定是哪一次分配触发的 VM 断言；然后对那个分配改用**带 tag** 的接口
+（`kmem_alloc_flags(..., VM_KERN_MEMORY_*)` / `IOMallocData` / `kalloc_tag`），
+27 的 `vm_page_insert_internal` 对"wired 且 tag==VM_KERN_MEMORY_NONE"是硬断言，17 线没这么严。
+
+当前产物：`u14 = 787ba3a9…`（已刷，内核 `fd92998b…`，`sheng-smp=0`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
