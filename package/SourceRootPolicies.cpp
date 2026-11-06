@@ -19,6 +19,8 @@
 // signatures match osfmk/i386/machine_routines.h and the exported symbols.
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t size);
+// pexpert physical word read (osfmk/arm64/loose_ends.c): four bytes, no mapping.
+extern "C" unsigned int ml_phys_read(vm_offset_t paddr);
 #include <mach/vm_prot.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
@@ -69,36 +71,25 @@ native_source_root_policies_load(void)
 	    physical > UINT64_MAX - length) {
 		return false;
 	}
-	printf("SourceStorage: 2a descriptor\n");
-	IOMemoryDescriptor *descriptor = IOMemoryDescriptor::withPhysicalAddress(physical, length, kIODirectionIn);
-	if (!descriptor) {
-		return false;
-	}
-	/* Read the handoff through the pexpert physical window instead of mapping the
-	 * descriptor. A raw physical IOMemoryDescriptor map inserts its pages with no VM
-	 * tag, and this kernel's vm_page_insert_internal() asserts on "wired page with
-	 * VM_KERN_MEMORY_NONE" (2026-11-06: panic right after this point, pc =
-	 * _vm_page_insert_internal.cold.1+0xc). ml_io_map builds a device window and
-	 * needs no vm_object, so nothing is inserted. */
-	printf("SourceStorage: 2b map\n");
-	vm_offset_t window = ml_io_map(physical, length);
-	if (!window) {
-		descriptor->release();
-		return false;
-	}
+	printf("SourceStorage: 2a read physical\n");
+	/* Read the handoff with the pexpert physical word reader: no IOMemoryDescriptor, no
+	 * mapping, no vm_object. Two earlier attempts failed this kernel's
+	 * vm_page_insert_internal() assertion "wired page with VM_KERN_MEMORY_NONE"
+	 * (vm_resident.c:3408):
+	 *   - IOMemoryDescriptor::withPhysicalAddress(...)->map() inserted pages itself;
+	 *   - the probe before ml_io_map() showed the registry lookup, the RootPolicies
+	 *     property (physical 0x8c5c0000, length 1152) and withPhysicalAddress() are fine,
+	 *     so the assertion was at or after the map, and ml_io_map() was still not enough.
+	 * 1152 bytes at four bytes a read needs no mapping at all. */
 	vm_offset_t allocation = 0;
 	const vm_size_t allocationBytes = round_page(static_cast<vm_size_t>(length));
-	const kern_return_t allocated = kmem_alloc(kernel_map, &allocation, allocationBytes);
-	if (allocated == KERN_SUCCESS) {
-		memcpy(reinterpret_cast<void *>(allocation),
-		    reinterpret_cast<const void *>(window), length);
-	}
-	ml_io_unmap(window, length);
-	descriptor->release();
-	printf("SourceStorage: 2c kmem_alloc %llx\n", (unsigned long long)allocation);
-	if (allocated != KERN_SUCCESS) {
+	if (kmem_alloc(kernel_map, &allocation, allocationBytes) != KERN_SUCCESS) {
 		return false;
 	}
+	for (uint64_t at = 0; at < length; at += 4) {
+		*reinterpret_cast<uint32_t *>(allocation + at) = ml_phys_read(physical + at);
+	}
+	panic("SourceStorage: at 2c copied, allocation %p", (void *)allocation);
 	/* Protect the copy before authenticating it: no later firmware or source mapping can change it. */
 	printf("SourceStorage: 2d protect\n");
 	if (mach_vm_protect(kernel_map, allocation, allocationBytes, TRUE, VM_PROT_READ) != KERN_SUCCESS) {

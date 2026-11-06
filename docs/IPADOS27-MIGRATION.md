@@ -1839,6 +1839,38 @@ ml_io_unmap(window, length);
 先在 `2b` 之前 `panic("SourceStorage: at 2b")`。如果屏幕画出这句话，就证明标记可靠、且之前的位置是
 `printf` 没被画出来（控制台时序），然后逐步把 panic 往后挪，直到落在真正的断言上。
 
+### 6.50 策略读取：映射绕不开，问题在分配（2026-11-06 20:3x）
+
+一路二分（全部用**一问制 panic**，不依赖滚屏日志，因为照片很难拍全控制台尾巴）：
+
+| 版本 | 探针位置 | 屏上结果 | 结论 |
+| --- | --- | --- | --- |
+| `u20` | `ml_io_map()` 之前 | `SourceStorage: at 2b, physical 8c5c0000 length 1152` | 注册表查询、`RootPolicies` 属性、`withPhysicalAddress()` **全部干净**；物理地址 0x8c5c0000、长度 1152 完全合理 |
+| `u21` | 复制之后（已去掉描述符与映射，改为 `kmem_alloc` + `ml_phys_read` 逐字读） | 仍是 `vm_resident.c:3408` 断言，且日志尾行只到 `2a read physical` | 断言发生在 **`kmem_alloc` / `ml_phys_read`**，与映射无关 |
+
+关键发现（读 12377 的 `osfmk/vm/vm_kern.c`）：内核内部的
+
+```c
+kmem_alloc(vm_map_t map, vm_offset_t *addrp, vm_size_t size, int flags, vm_tag_t tag)
+```
+
+是**五个参数**（tag 由 `vm_tag_bt()` 传），而 `osfmk/vm/vm_kern.h` 给 kext 的声明是**三个参数**。
+我们这份从 17 线搬来的代码按三参数调用，x4/x5 里的 tag/flags 就是垃圾 —— 一旦为 0，插入的 wired 页
+tag 就是 `VM_KERN_MEMORY_NONE`，正好命中 12377 的硬断言。
+
+**下一轮的唯一改动**：策略加载里不要用 `kmem_alloc`，换成 IOKit 的带 tag 数据分配 ——
+
+```c
+void *allocation = IOMallocData(allocationBytes);   // 或 IOMalloc + 显式 tag
+... IOMemcpy ...
+IOFreeData(allocation, allocationBytes);
+```
+
+（`IOMallocData`/`IOFreeData` 是 kext ABI，标签由 IOKit 自己管，不踩这个五参数坑。）
+改完去掉 `at 2c copied` 这句探针，`step 3…7` 会继续告诉我们走到哪。
+
+当前产物：`u21 = 0593ccfc…`（已刷，内核 `61ce1b85…`，`sheng-smp=0`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
