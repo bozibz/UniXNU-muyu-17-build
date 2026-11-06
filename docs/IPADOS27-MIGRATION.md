@@ -2020,6 +2020,51 @@ u36 因此看到 `SourceStorage: Data disk started`、`ready=1 bytes=21474836480
 
 当前：`u37 = 925096a2…`（内核 `b1579e51…`，UUID 已确认编进去）。
 
+### 6.54 进用户态了：root 挂载 + launchd exec，被 AMFI 的 trust cache 拦下（2026-11-06 21:4x）
+
+u37 的照片是这条线第一次进入用户态的完整证据：
+
+```
+apfs_sysctl_register:1338: done registering sysctls
+dev_init:299: disk0 device_handle block size 4096 block count 5242880
+nx_mount:1509: disk0 stable checkpoint indices: desc 0 data 0
+NativeUFS: SystemOS volume F941C62E-A00D-4705-0281-5746231C339E ready
+NativeUFS: published OS
+dev_init:299: disk4 ... block count 2347008
+nx_mount:1402: disk4 checkpoint search: largest xid 463, best xid 463
+Got boot device = IOService:/NativeUfs/IOBlockStorageDriver/Native OS Media/AppleAPFSContainerScheme/
+                   AppleAPFSMedia/AppleAPFSContainer/Rave24A446…/J0J7J0J8J020J0210501
+BSD root: disk5s1, major 1, minor 0
+apfs_vfsop_mountroot:3156: apfs: mountroot called!
+```
+
+也就是说：**UFS 窗口 → APFS 容器 → 卷 → 根挂载 → exec launchd 全通了**。新的 panic 在
+exec 阶段：
+
+```
+unexpected SIGKILL of launchd with reason -- namespace 9 code 0x8 description none
+```
+
+`namespace 9 = OS_REASON_EXEC`、`code 8 = EXEC_EXIT_REASON_SECURITY_POLICY`，而且没有
+`(CS_KILLED)` 字样、description 为 none —— 符合 `mac_execve` 的 `ip_mac_return != 0` 分支
+（`bsd/kern/kern_exec.c` 的 "image activation may be failed due to policy"），BT 也指向
+`load_init_program → load_init_program_at_path → __mac_execve → process_signature`。
+
+uke 在 2026-11-03 遇到过完全相同的 panic，结论是 trust cache：24A446 的 `/sbin/launchd`
+CDHash `3d2ccf3d…` 不在 21H461 的 bundle 里。本板 `payload.json` 显示
+`trust_cache_sha256: null` —— **载荷里根本没有 trust cache**。
+
+修法（内核不动，只换 payload 输入）：
+
+1. `fw/ipsw/24A446/043-68950-668.dmg.aea.trustcache`（3547 条，含 `3d2ccf3d…`）与
+   `043-69086-713.dmg.aea.trustcache`（130 条）用
+   `UniXNU-27/scripts/bundle-ipsw-trust.py` 打成 bundle，
+   `fw/trust-24A446/24A446-original-trust.bundle` = 88,308 B / `dc655bcb…`（与 uke 当年那份字节一致）；
+2. `board.toml [payload] trust_cache_sha256` 换成 `dc655bcb…`；
+3. `build payload --trust-cache fw/trust-24A446/24A446-original-trust.bundle`。
+
+当前：`u38 = 21578bcf…`（内核 `b1579e51…`，含 24A446 trust cache）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
