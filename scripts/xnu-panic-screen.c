@@ -22,7 +22,10 @@ struct vc_info {
   u64 v_baseaddr;
 };
 
-#define SCALE   3
+/* 2026-11-06: 4 instead of 3 and a 44-column wrap. On the 3.2K panel the message used to
+ * run the full width in 18 px cells, which photographs as a smear; wrapping keeps every
+ * line inside a third of the panel and the glyphs are a third larger. */
+#define SCALE   4
 
 extern const u64 gFont[];
 
@@ -174,19 +177,20 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
     }
     u64 v = args[used++];
     if (c == 's') {
+      /* 2026-11-06: the argument is printed, never dereferenced. On 12377 a panic message can carry
+       * a %s whose pointer is not readable (or the readable() translation probe lets it through), and
+       * the byte load then takes a data abort inside this function - which panics again and paints a
+       * second message over the first, so the screen becomes unreadable (pc 0xfffffff00aeef6a8:
+       * LDRB W8,[X20,W28,UXTW]). The diagnostic text people need is in the format string and the
+       * file:line tail, so losing the expansion costs little. */
       const char *s = (const char *)v;
-      u32 k;
-      for (k = 0; k < precision; k++) {
-        if (!readable (s + k, args)) {
-          put (g, '<');
-          number (g, (u64)(s + k), 16, 0, 0);
-          put (g, '>');
-          break;
-        }
-        u8 ch = (u8)s[k];
-        if (!ch) break;
-        put (g, ch);
+      if (s == 0) {
+        put (g, '0');
+      } else {
+        hex (g, "<str ", (u64)s);
+        put (g, '>');
       }
+      (void)precision;
     } else if (c == 'x' || c == 'X') {
       number (g, longs ? v : (v & 0xFFFFFFFFu), 16, width, zero);
     } else if (c == 'u' || c == 'd') {
@@ -222,10 +226,20 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   u32 row, col;
 
   __asm__ volatile ("msr daifset, #15");
+  /* Only the base address is taken from vinfo. The geometry is the panel this board really has
+   * (3200x2136, 32 bpp, 12800-byte stride); on 12377 the vinfo that initialize_screen publishes does
+   * not describe it, and the clear loop below then walks past the end of the mapped frame buffer and
+   * takes a data abort inside this function (seen 2026-11-06: pc 0xfffffff00aeef6a8). */
+#define PANEL_WIDTH   3200
+#define PANEL_HEIGHT  2136
+#define PANEL_STRIDE  12800
   g.base = (u8 *)v->v_baseaddr;
-  g.rb   = v->v_rowbytes;
-  g.w    = v->v_width;
-  g.h    = v->v_height;
+  g.rb   = PANEL_STRIDE;
+  g.w    = PANEL_WIDTH;
+  if (g.w > 44 * 6 * SCALE) {
+    g.w = 44 * 6 * SCALE;   /* wrap at 44 columns */
+  }
+  g.h    = PANEL_HEIGHT;
   if (g.base == 0 || v->v_depth != 32 || fmt == 0) {
     park ();
   }
@@ -236,16 +250,19 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) {
     park ();
   }
+  /* 2026-11-06: no clear. XNU's own console output is the primary evidence on this board - it
+   * prints the data abort line and x0..x28 - and clearing from h/8 down erased all of it below the
+   * first eighth. The renderer's own few lines go into the bottom rows instead, where nothing else
+   * writes. */
   g.x = 0;
-  g.y = g.h / 8;
+  g.y = g.h - 12 * (14 * SCALE);   /* bottom band: 12 text lines above the last row */
+  if (g.y < g.h / 2) {
+    g.y = g.h / 2;
+  }
   g.log = 0;
   g.logn = 0;
-  for (row = g.y; row < g.h; row++) {
-    for (col = 0; col < g.w; col++) {
-      *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
-    }
-  }
-  g.y += 8;
+  (void)row;
+  (void)col;
   /* The board's live banner keeps showing this text after the next swap paints over the screen (BootProgress.c,
    * boot_progress_panic_text). The first panic's text is kept: a buffer that already holds one is left alone. */
   if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
