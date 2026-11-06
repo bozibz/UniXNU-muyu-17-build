@@ -1393,6 +1393,41 @@ IOCPUInterruptController: not registry member at registerService()      <- 最�
 若卡在 1，就是 `ShengUfs` 还没在 27 上发布根媒体（这条线的第一站是 `NativeUfs::start` 的
 `native-ufs-root` 路径）；若卡在 2，就是 APFS 挂载参数/容器问题。
 
+### 6.38 根设备之前的新障碍：`PAC failure … with IB key while returning`（2026-11-06 19:0x）
+
+上一节的两个探针结果：
+
+| 探针 | 结果 |
+| --- | --- |
+| `--in _bsd_init --fb-probe-after _IOFindBSDRoot` | **有字（`R1`）** → 内核走到“等根设备”这一步 |
+| `--in __ZN9NativeUfs5startEP9IOService --fb-probe-after __ZN9NativeUfs9startRootEP9IOService` | **无字**，并且这次抓到 panic 文本 |
+
+抓到的 panic（控制台清屏后**可读**）：
+
+```
+PAC Failure from kernel with IB key while returning at pc 0xfffffff00aee8d80, lr 0x0000000000000000
+pc: 0xfffffff00aee8d80   cpsr: 0x604003c4   esr: 0x0000000072000001   far: 0x0
+fp/lr/sp 大半为 0
+```
+
+也就是 **arm64e 的指针认证失败**：一个函数返回时 `autibsp` 校验不过（IB key = 返回地址用的 key），
+lr/fp 已经变成 0，栈不可信。pc 落在 `__TEXT_EXEC` 里、位于 panic 渲染器代码
+（`0xfffffff00aeef560`）**之前**的一段——那是**被并进 `__TEXT_EXEC` 的 kext 代码**。
+
+这类失败在 27 上是可预期的：`fileset_layout` 把 kext 文本从 kernelcache 搬到 `__TEXT_EXEC`，
+任何用“自身地址参与 PAC 修饰”的代码在搬家后就校验不过。**这也是 27 线特有的、和 17 线（arm64，
+没有 PAC）不同的一类问题**。
+
+**下一步（明天）**：
+
+1. 先把 `pc 0xfffffff00aee8d80` 归属到具体 kext：在 `kernel.map.json`（17062 条函数映射）里它没有命中，
+   说明这段不在映射表覆盖范围内，需要从 `fileset_layout` 的搬移记录里反查（或者按 `__TEXT_EXEC` 的
+   搬移顺序 + 各 kext 的 `_PrelinkExecutableSize` 推算）。
+2. 归属确定后，检查该 kext 的文本里是否有 `pacib`/`autib` 用了“函数自身地址”当 modifier；
+   若有，可以在搬移时把这类指令按新地址重算，或把该 kext 排除出闭包先绕过去。
+3. 另一条并行的路：把 `ShengUfs` 的根卷路径从“依赖 IOKit 匹配”改成“在 `bsd_init` 之后由内核直接调用”，
+   绕开 kext 匹配/返回路径上的 PAC 风险（这条实现快，但会偏离上游结构）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
