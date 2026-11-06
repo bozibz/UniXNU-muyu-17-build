@@ -15,6 +15,10 @@
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
 #include <mach/mach_vm.h>
+// Arm64 declares these in osfmk/arm64 headers the kext build does not include; the
+// signatures match osfmk/i386/machine_routines.h and the exported symbols.
+extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t size);
 #include <mach/vm_prot.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
@@ -65,12 +69,20 @@ native_source_root_policies_load(void)
 	    physical > UINT64_MAX - length) {
 		return false;
 	}
+	printf("SourceStorage: 2a descriptor\n");
 	IOMemoryDescriptor *descriptor = IOMemoryDescriptor::withPhysicalAddress(physical, length, kIODirectionIn);
 	if (!descriptor) {
 		return false;
 	}
-	IOMemoryMap *mapping = descriptor->map();
-	if (!mapping) {
+	/* Read the handoff through the pexpert physical window instead of mapping the
+	 * descriptor. A raw physical IOMemoryDescriptor map inserts its pages with no VM
+	 * tag, and this kernel's vm_page_insert_internal() asserts on "wired page with
+	 * VM_KERN_MEMORY_NONE" (2026-11-06: panic right after this point, pc =
+	 * _vm_page_insert_internal.cold.1+0xc). ml_io_map builds a device window and
+	 * needs no vm_object, so nothing is inserted. */
+	printf("SourceStorage: 2b map\n");
+	vm_offset_t window = ml_io_map(physical, length);
+	if (!window) {
 		descriptor->release();
 		return false;
 	}
@@ -79,14 +91,16 @@ native_source_root_policies_load(void)
 	const kern_return_t allocated = kmem_alloc(kernel_map, &allocation, allocationBytes);
 	if (allocated == KERN_SUCCESS) {
 		memcpy(reinterpret_cast<void *>(allocation),
-		    reinterpret_cast<const void *>(mapping->getVirtualAddress()), length);
+		    reinterpret_cast<const void *>(window), length);
 	}
-	mapping->release();
+	ml_io_unmap(window, length);
 	descriptor->release();
+	printf("SourceStorage: 2c kmem_alloc %llx\n", (unsigned long long)allocation);
 	if (allocated != KERN_SUCCESS) {
 		return false;
 	}
 	/* Protect the copy before authenticating it: no later firmware or source mapping can change it. */
+	printf("SourceStorage: 2d protect\n");
 	if (mach_vm_protect(kernel_map, allocation, allocationBytes, TRUE, VM_PROT_READ) != KERN_SUCCESS) {
 		return false;
 	}

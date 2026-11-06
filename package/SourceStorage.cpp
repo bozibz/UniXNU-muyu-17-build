@@ -71,6 +71,7 @@ native_source_storage_start(void)
 	}
 	attempted = true;
 
+	printf("SourceStorage: step 1 load IOStorageFamily\n");
 	OSReturn status = OSKextLoadKextWithIdentifier("com.apple.iokit.IOStorageFamily");
 	if (status != kOSReturnSuccess) {
 		panic("SourceStorage: IOStorageFamily load failed %x", status);
@@ -85,13 +86,16 @@ native_source_storage_start(void)
 		panic("SourceStorage: original base layout %u differs from source %lu",
 		    storageParent ? storageParent->getClassSize() : 0, sizeof(IOBlockStorageDevice));
 	}
+	printf("SourceStorage: step 2 root policies\n");
 	if (!native_source_root_policies_load()) {
 		panic("SourceStorage: root policy handoff or authentication failed");
 	}
+	printf("SourceStorage: step 3 load apfs\n");
 	status = OSKextLoadKextWithIdentifier("com.apple.filesystems.apfs");
 	if (status != kOSReturnSuccess) {
 		panic("SourceStorage: APFS load failed %x", status);
 	}
+	printf("SourceStorage: step 4 class registration\n");
 	void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
 	if (!handle) {
 		panic("SourceStorage: cannot begin class registration");
@@ -104,15 +108,18 @@ native_source_storage_start(void)
 		panic("SourceStorage: class registration failed %x", status);
 	}
 
+	printf("SourceStorage: step 5 wait platform root\n");
 	OSDictionary *matching = IOService::serviceMatching("IOPlatformExpertDevice");
 	IOService *provider = matching ? IOService::waitForMatchingService(matching, 5000000000ULL) : nullptr;
 	if (!provider) {
 		panic("SourceStorage: platform root unavailable");
 	}
+	printf("SourceStorage: step 6 ufs create\n");
 	storageDriver = native_ufs_source_create();
 	if (!storageDriver) {
 		panic("SourceStorage: cannot allocate the UFS service");
 	}
+	printf("SourceStorage: step 7 ufs init/attach/start\n");
 	const char *step = !storageDriver->init() ? "init" : !storageDriver->attach(provider) ? "attach" :
 	    !storageDriver->start(provider) ? "start" : nullptr;
 	if (step) {

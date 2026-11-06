@@ -1795,6 +1795,50 @@ F0 _sleh_synchronous_sp1  F1 _sleh_synchronous+0x740  F2 _fleh_synchronous+0x18
 
 当前产物：`u14 = 787ba3a9…`（已刷，内核 `fd92998b…`，`sheng-smp=0`）。
 
+### 6.49 策略加载里的 `descriptor->map()` 触发 VM tag 断言（2026-11-06 20:2x）
+
+`u16` 把阶段标记真正编进内核之后（上一版改的是仓里的副本，构建读的是设备副本 —— 同一个坑我踩了第二次，
+记在这里：**改 `UniXNU-muyu/package/*.cpp` 必须同步到 `/tmp/spike27/package/`**），屏幕给出了确切位置：
+
+```
+SourceStorage: step 1 load IOStorageFamily
+SourceStorage: step 2 root policies
+SourceStorage: 2a descriptor
+SourceStorage: 2b map            ← 之后就是 vm_resident.c:3408 的断言
+```
+
+即 `native_source_root_policies_load()` 里
+
+```c
+IOMemoryDescriptor *descriptor = IOMemoryDescriptor::withPhysicalAddress(physical, length, kIODirectionIn);
+IOMemoryMap *mapping = descriptor->map();     /* ← 这里 */
+```
+
+`step 2` 的语义也顺便确认了：`/chosen/memory-map/RootPolicies` 这次**有值**（否则会在 `SourceStorage.cpp:89`
+直接 panic），说明 `[payload] root_policies` 生效、`kernel.macho.vroot` 已被装进内存。
+
+原因是 27 的内核（12377）在 `vm_page_insert_internal()` 里对"wired 且 `tag == VM_KERN_MEMORY_NONE`"是
+**硬断言**，而对裸物理区间做 `IOMemoryDescriptor::map()` 会插入这类页；17 线的内核不查这个。
+
+**改法**（`package/SourceRootPolicies.cpp`）：不再对物理描述符做 `map()`，改用 pexpert 的物理窗口 ——
+
+```c
+extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t size);
+...
+vm_offset_t window = ml_io_map(physical, length);
+memcpy((void *)allocation, (const void *)window, length);
+ml_io_unmap(window, length);
+```
+
+`ml_io_map` 建的是设备窗口，不经过 `vm_object`，因此不插入任何页；后面的
+`mach_vm_protect` + 逐个 envelope 认证逻辑未改。`u18 = 28552bad…` 是这一版。
+
+**下一轮要做的事（因为屏幕日志在 u18 里又只到 `set subsystem 8 strings`，看不到 `2b/2c`）**：
+把阶段标记从 `printf` 换成 `panic`（我们的渲染器画 panic 文本是可靠的），按二分推进：
+先在 `2b` 之前 `panic("SourceStorage: at 2b")`。如果屏幕画出这句话，就证明标记可靠、且之前的位置是
+`printf` 没被画出来（控制台时序），然后逐步把 panic 往后挪，直到落在真正的断言上。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
