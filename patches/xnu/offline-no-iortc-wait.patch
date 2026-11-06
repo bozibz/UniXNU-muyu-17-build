@@ -1,0 +1,19 @@
+--- a/iokit/Kernel/IOStartIOKit.cpp	2026-11-06 18:31:59
++++ b/iokit/Kernel/IOStartIOKit.cpp	2026-11-06 18:31:59
+@@ -77,8 +77,14 @@
+ 	t.tv_sec = 30;
+ 	t.tv_nsec = 0;
+ 
+-	IOService::waitForService(
+-		IOService::resourceMatching("IORTC"), &t );
++	/*
++	 * muyu: this board has no IORTC service. The Apple RTC driver is not part of the closure and
++	 * there is no such device on SM8635, so the wait below never matches and the resource-matching
++	 * path faults inside IOKitInitializeTime (measured 2026-11-06: data abort before the
++	 * PEGetUTCTimeOfDay call in clock_initialize_calendar). Skip the wait and let the calendar come
++	 * from whatever the platform expert reports.
++	 */
++	(void)t;
+ #if defined(__i386__) || defined(__x86_64__)
+ 	IOService::waitForService(
+ 		IOService::resourceMatching("IONVRAM"), &t );

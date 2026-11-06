@@ -1272,6 +1272,36 @@ x3  0x0000000706408a7c        ; 同一个坏指针
   渲染器）。早先“27 上控制台完全不画”的结论是错的——那时看到的所有字都是 DarwinBoot 的。
 - 所以**渲染器不该清屏**：它只要不覆盖，XNU 的完整 panic 文本（含寄存器）就是现成的证据。
 
+### 6.35 收窄到 `IOKitInitializeTime()`：没有 IORTC 服务（2026-11-06 18:3x）
+
+继续用同一个探针法（每轮 payload 重建 ≈ 1 分钟，不重编内核），把 panic 的位置一层层夹到函数里。
+**探针语义要记住**：探针是在那个 `bl` 处**取代**该调用并停住，所以“有字”只说明**到达了那个调用点**，
+被调函数本身不执行。
+
+| 轮次 | 探针位置（`--in` / `--fb-probe-after`） | 结果 | 排除掉的东西 |
+| --- | --- | --- | --- |
+| p7 | `_bsd_init` / `_proc_uuid_policy_init`（+0x5c8） | 无字 | panic 在 `bsd_init` 前 0x5c8 字节内 |
+| p8 | `_bsd_init` / `_kauth_init`（+0x60） | **有字** | panic 在 +0x60 之后 |
+| p9 | 同 p7，但关掉三个运行时 kext 加载 | 无字 | 三个 `OSKextLoadKextWithIdentifier` 无罪 |
+| p10 | `_bsd_init` / `_vfsinit`（+0x488） | 无字 | panic 在 `vfsinit` 调用点之前 |
+| p11 | `_bsd_init` / `_kmem_suballoc`（+0x474） | **有字** | panic 在 `kmem_suballoc` 之后 |
+| p12 | `_bsd_init` / `_IOKitInitializeTime`（+0x484） | **有字** | 只剩 `IOKitInitializeTime` 和 `vfsinit` |
+| p13 | `_clock_initialize_calendar` / `_PEGetUTCTimeOfDay` | 无字（有 panic） | panic 在 `PEGetUTCTimeOfDay` **之前**，即 `IOKitInitializeTime` 的第一句 |
+
+结论：崩在 `IOKitInitializeTime()` 的第一句
+
+```c
+IOService::waitForService (IOService::resourceMatching("IORTC"), &t);   // t = 30 秒
+```
+
+这块板子**没有 `IORTC` 服务**（SM8635 上没有 Apple RTC，闭包里也没有那个 kext），所以这个等待永远
+匹配不到，匹配机制在里面踩坏指针；而且它会先睡满 30 秒——所以判断“有没有字”必须等一分钟以上，
+我第一次就是因为等得不够久误判成“没有”。
+
+修法：设备补丁 `patches/xnu/offline-no-iortc-wait.patch` 跳过这个等待（保留 `clock_initialize_calendar()`
+调用），补丁加在 `series-spike27` 末尾。下一步要回答的是：`clock_initialize_calendar()` 里的
+`PEGetUTCTimeOfDay()` 在没有 RTC 时是否也会崩——探针已经留在那里，重编内核后一轮就能知道。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
