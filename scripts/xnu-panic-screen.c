@@ -75,6 +75,9 @@ struct ctx {
 #define PANIC_SHADOW_LEN 0UL
 #endif
 #define PANIC_TEXT_BYTES 256
+#ifndef PANIC_CLAIM
+#define PANIC_CLAIM 0UL
+#endif
 #ifndef PANIC_TRACE_FRAMES
 #define PANIC_TRACE_FRAMES 0
 #endif
@@ -327,16 +330,19 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
     park ();
   }
 
-  /* Claim before clearing or formatting. This is normal kernel BSS, not a
-   * device framebuffer: exclusive operations on device mappings may fault. */
-#if PANIC_SHADOW_LEN
-  u32 unclaimed = 0;
-  if (!__atomic_compare_exchange_n((u32 *)PANIC_SHADOW_LEN, &unclaimed, 1, 0,
-                                  __ATOMIC_RELAXED, __ATOMIC_RELAXED)) park ();
-#endif
-#if !PANIC_SHADOW_LEN
-  volatile u32 *mark = (volatile u32 *)(g.base + (u64)(g.h - 1) * g.rb);
-  if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) park ();
+  /* One renderer per boot. This is normal kernel BSS, not a device framebuffer:
+   * exclusive operations on device mappings may fault, which is why the claim is a
+   * kernel word and not the framebuffer. Without it every CPU that takes the same
+   * fault starts drawing at once and the messages interleave glyph by glyph
+   * (2026-11-06, all eight CPUs hitting the same PAC failure). */
+#if PANIC_CLAIM
+  {
+    u32 unclaimed = 0;
+    if (!__atomic_compare_exchange_n((u32 *)PANIC_CLAIM, &unclaimed, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      park ();
+    }
+  }
 #endif
   g.h = usable_height (&g);
   if (g.h == 0) {
@@ -373,15 +379,6 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
     }
   }
   __asm__ volatile ("dsb sy");
-#if !PANIC_SHADOW_LEN
-  /* The clear has already erased the old marker, so claim again before drawing:
-   * a renderer that starts on another CPU now parks instead of painting its glyphs
-   * through this message (2026-11-06: the frame-trace line came out with two
-   * renders' digits over each other). */
-  mark[0] = 0xC0FFEE11u;
-  mark[1] = 0x5CEEDA7Au;
-  __asm__ volatile ("dsb sy");
-#endif
   /* Geometry first, before the message: if anything below faults, the first line
    * still says which frame buffer, stride and panel this renderer was given. */
   put (&g, 'G');
@@ -411,16 +408,6 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   __asm__ volatile ("dsb sy");
   /* First panic wins: a later one (another thread, or a fault inside this function)
    * finds these two pixels and parks instead of repainting over this message. */
-#if !PANIC_SHADOW_LEN
-  mark[0] = 0xC0FFEE11u;
-  mark[1] = 0x5CEEDA7Au;
-  __asm__ volatile ("dsb sy");
-#endif
-#if PANIC_SHADOW_LEN
-  if (g.logn) {
-    __atomic_store_n((u32 *)PANIC_SHADOW_LEN, g.logn, __ATOMIC_RELEASE);
-  }
-#endif
   park ();
 }
 

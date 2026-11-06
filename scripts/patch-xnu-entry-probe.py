@@ -248,6 +248,16 @@ def assemble_c(source, va, workdir, symbols, trace_frames=0):
         if quiet % 4 or not any(base <= quiet and quiet + 4 <= base + size for base, size, _, _ in SEGMENTS):
             raise SystemExit('Invalid _disableConsoleOutput')
         definitions.append(f'-DPANIC_QUIET={quiet:#x}UL')
+    # Optional: one kernel BSS word used as the renderer's "one per boot" claim. A device
+    # framebuffer cannot take the exclusive access, and without the claim every CPU that
+    # takes the same fault draws over the others. _uke_panic_shadow_len is uke's; on this
+    # board the BootProgress banner's length word (_panic_text_len) is unused (there is no
+    # banner buffer here) and serves the same purpose.
+    claim = symbols.get('_uke_panic_shadow_len') or symbols.get('_panic_text_len')
+    if claim is not None:
+        if claim % 4 or not any(base <= claim and claim + 4 <= base + size for base, size, _, _ in SEGMENTS):
+            raise SystemExit('Invalid panic claim word')
+        definitions.append(f'-DPANIC_CLAIM={claim:#x}UL')
     # Optional: the board's panic shadow and its length word, so a heartbeat thread can print the
     # message after the panic screen has parked the panicking CPU.
     shadow = symbols.get('_uke_panic_shadow')
