@@ -1981,6 +1981,45 @@ if (!root_recheck) error = EAUTH;
 匹配集变了（或遍历顺序变了）。u27 在 `package/SourceRootBinding.cpp` 里把每次查询的
 `matches`/`ufs` 返回值/失败原因/卷 UUID 用 printf 打到控制台，两次查询各一行，直接对比。
 
+### 6.53 Data 盘：类要自己实例化，卷 UUID 是本板种子的（2026-11-06 21:3x）
+
+u35 的证据（`ready=0`、无任何 start panic）：
+
+```
+NativeRamBlock: no IOMedia iterator for 292E72B9-… ready=0 bytes=0
+```
+
+`NativeRamBlock::start()` **从未被调用**。原因不是驱动，是 IOKit 时序：我们的类到
+`SourceStorage: step 4`（`preModLoad` → 初始化器 → `postModLoad`）才注册，而
+`IOResources` 早在 `bsd_init` 之前就发布了，personality 不会为已发布服务再匹配一次。
+uke 的启动器也不依赖 personality —— 它用 `OSMetaClass::allocClassWithName("NativeRamBlock")`
+自己建实例。于是补 `step 8 data disk`：UFS 之后（持久化窗口此时才有）按名分配、`init`、
+`attach(platformExpert)`、`start`，且只在 loader 发布 `PackedRAMDisk`/`RAMDisk` 时进行。
+
+u36 因此看到 `SourceStorage: Data disk started`、`ready=1 bytes=214748364800`（200 GiB 逻辑盘），
+但仍是 `no IOMedia iterator for 292E72B9-…`。
+
+**第二个坑：UUID 抄错了。** `292E72B9-…` 是 **uke** 的种子卷 UUID。本板种子
+（`fw/data-seed.img`，DBRDISK1，逻辑 214748364800 B，6 个 run）解出来后的 APFS 卷超级块：
+
+| 块号 | `APSB` 偏移 | 卷 UUID（字段 +240） |
+| --- | --- | --- |
+| 162 | 663552 | `58B481F8-4243-4430-BF60-DDD1638D4C6E` |
+| 362 | 1482752 | 同上 |
+| 365 | 1495040 | 同上 |
+
+与 `fw/data-seed/seed.json` 的 `volume_uuid` 一致，也与
+`configs/muyu-userland_defconfig` 里的 `CONFIG_XNU_OWNER_DATA_VOLUME_UUID` 一致——只有那份手改的
+`.config` 还留着 uke 的值。改成 `58B481F8-4243-4430-BF60-DDD1638D4C6E` 后清掉
+`ios-obj`/`ios-sym` 重编（这类字符串进 `cpo_CFLAGS_ADD`，不清理不会重编）。
+
+顺带把 `fw/data-seed.img` 的解包方式记下来，以后不用再猜：DBRDISK1 头
+`"DBRDISK1", u32 version=1, u32 block=4096, u64 logical, u64 runs`，每条 run 是
+`u64 offset, u64 length`，数据区紧跟 run 表——把每条 run 的字节放回 `offset` 处，就能直接
+在容器里搜 `NXSB`/`APSB`。
+
+当前：`u37 = 925096a2…`（内核 `b1579e51…`，UUID 已确认编进去）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
