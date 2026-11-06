@@ -2350,6 +2350,31 @@ ignition blob 要等 magazine 就绪；magazine 初始化/写入失败 ⇒ gate 
    `/private/preboot/Cryptexes/OS` —— 一次同时补上 magazine 存储和 cryptex 路径；
    要先解决“同一 APFS 卷二次 rw 挂载”的限制（或用另一块可写卷）。
 
+#### 6.58.5 u48：Data 卷不能既当可写层又当 `/private/var`（2026-11-06 23:0x）
+
+实验：在 `native_owner_cache_prepare` 里把 Data 卷挂到 `/System/Cryptexes` → `mkdir OS` →
+SystemOS 挂到 `/System/Cryptexes/OS`（让 `/System/Cryptexes/OS` 这个断 symlink 真正有内容，
+同时给 Image4 magazine 一个可写存储）。
+
+结果：
+
+```
+offline scratch Data mount failed: 16 stage 2 dev /dev/disk1s1 seed 0+320000000
+```
+
+`16 = EBUSY`：`native_owner_data_prepare()` 随后要把同一个卷挂到 `/private/var`，
+**APFS 不允许同一卷第二次 rw 挂载**。
+
+结论：可写层不能复用 Data 卷。三条出路（按代价）：
+
+1. 给 OS 窗口的 APFS 容器**加一个真正的 Preboot 卷**，并同步更新 owner policy 的
+   `os_image_sha256`（`board.toml [root]` + `scripts/data/owner-os-policy-27.json`），
+   重做根镜像 → 一次解决 cryptex 路径与 magazine 存储；
+2. payload 里再带一块小的可写镜像 + 对应驱动，代价小但要有块设备；
+3. 只在 bring-up 阶段让 `native_owner_data_prepare` 容忍“已挂在别处”（`/private/var` 后续再补）。
+
+u48 的代码已改成 **opt-in**（`muyu-cryptex-stage=1`），默认回到 u47 的行为。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
