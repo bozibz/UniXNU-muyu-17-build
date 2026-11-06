@@ -2238,6 +2238,43 @@ dyld 二进制里同时有 `DYLD_SHARED_CACHE_DIR`、`/System/Library/Caches/com
 offline-owner-z-air-init、offline-owner-systemos-mount、zzy-native-gpu-addon-mount、
 zzy-staged-system-apps、zzyb-native-cryptex-os-view、zzz-boot-progress）。
 
+#### 6.58.1 u40–u43：探针把问题逼到“ignition 被关掉了”（2026-11-06 22:2x）
+
+| 镜像 | 改动 | 结果 |
+| --- | --- | --- |
+| u40 | owner patch 的 non-union 分支（只改 `.config`）：挂 `/private/preboot` + `DYLD_SHARED_CACHE_DIR` | dyld **仍**报 `no dyld cache` |
+| u41 | 同一配置 + 内核里 4 行 `printf` 探针 | 探针行被后面的 Data/APFS 日志挤出可见窗口，读不到 |
+| u42 | 把探针改成 **panic**（数字一定可见） | 得到下面这行 |
+| u43 | 去掉 `dyld_flags |= 8`（= 不关 ignition） | 待读数 |
+
+u42 的 panic（`@kern_exec.c:8106`）：
+
+```
+owner probe: from  on  sel 100005 act 100005 ro 1 page 12/4096 cache0 0/786432 cache1 2/18446744073709551615
+```
+
+- `cache0 0/786432`：`/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e`
+  **可达**，大小正好是缓存主文件的 786,432 B ⇒ 卷挂对了、路径也对了；
+- `cache1 2/…`：`/System/Cryptexes/OS/System/Library/Caches/…` = ENOENT（symlink 指向没挂的
+  `/private/preboot/Cryptexes/OS`）；
+- `page 12/4096`：本内核 4 KiB 页（`ARM_PGSHIFT`=12，非 `APPLE_ARM64_ARCH_FAMILY`）。21H461 线同样是
+  4 KiB 内核却能进桌面，所以页大小本身不是硬阻塞。
+
+也就是说：**文件就在那儿，dyld 没有去读它**。对照 uke 的仓库可以直接看出原因：
+
+- `UniXNU-uke/patches/xnu-12377/uke-ignition-*.patch` 在 trace **`AppleImage4` 的 `ignition_blob` sysctl**，
+  触发者是 **pid 1**（launchd）。这就是 iOS 16+ 的 dyld **ignition**：launchd 通过 sysctl 向
+  AppleImage4 要共享缓存（内核按 boot manifest 的卷身份提供），而不是自己去 open 文件；
+- 本板 27 补丁在 `XNU_OWNER_CACHE_STARTUP` 分支里写了 `dyld_flags |= 8`，注释是
+  “Original dyld bit 3 selects no ignition”，等于**主动关掉 ignition**，把 dyld 推回“自己开文件”的老路，
+  而 24A446 的 dyld 走这条路时只认 cryptex 路径（cache1，恰好是断的）。
+
+u43 的改法：删掉 `dyld_flags |= 8`（`dyld_flags` 保持 0 = ignition 开），其余不动。产物：内核
+`00d9e4db…`、**u43 = `fw/vendor_boot_27-u43.img` = `7a5b8d7b…`**。
+
+如果 u43 走到 ignition 但卡在 uke 记录过的 gate（`gate try-close / gate result / gate wait deadline /
+IOSleep ms`），下一步就是照 uke 的 trace 点加同样的观察，看 AppleImage4 卡在哪一步。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
