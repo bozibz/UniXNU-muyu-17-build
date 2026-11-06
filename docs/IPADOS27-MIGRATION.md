@@ -1302,6 +1302,21 @@ IOService::waitForService (IOService::resourceMatching("IORTC"), &t);   // t = 3
 调用），补丁加在 `series-spike27` 末尾。下一步要回答的是：`clock_initialize_calendar()` 里的
 `PEGetUTCTimeOfDay()` 在没有 RTC 时是否也会崩——探针已经留在那里，重编内核后一轮就能知道。
 
+**重编时踩的坑（记一笔，避免再犯）**：`<out>/…/.config` 是手工维护的（改 `configs/*_defconfig` 不会重跑
+defconfig），里面的
+
+```
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a … {tree}/build/sheng-platform-power/libShengPlatformPower.a"
+```
+
+还挂着 `build/sheng-platform-power/libShengPlatformPower.a`。上一版能链接，只是因为这个 `.a` 还残留在旧
+的 tree/build 目录里；这次 tree 重建清掉了它，链接立刻报
+`clang++: error: no such file or directory: …/libShengPlatformPower.a`。这条本来就不需要
+（`[adt.defaults.u32] "vmm-present" = 1` 已经让 AMFI 不走 PMGR），从 `.config` 里删掉即可。
+
+**通则**：`.config` 里每一个 `{tree}/build/…` 引用都必须有对应的 archive 构建步骤在
+`[kernel] archives` 里，否则它只是“上次留下的文件”在支撑，换一次干净 tree 就断。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
