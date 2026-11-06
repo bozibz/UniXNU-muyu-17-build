@@ -1317,6 +1317,12 @@ CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/
 **通则**：`.config` 里每一个 `{tree}/build/…` 引用都必须有对应的 archive 构建步骤在
 `[kernel] archives` 里，否则它只是“上次留下的文件”在支撑，换一次干净 tree 就断。
 
+**上机结果（2026-11-06 18:5x）**：打完 `offline-no-iortc-wait.patch` 后，探针在
+`_clock_initialize_calendar` / `_PEGetUTCTimeOfDay` **有字**——`PEGetUTCTimeOfDay()` 在没有 RTC 时
+正常返回，`clock_initialize_calendar()` 安全，`IOKitInitializeTime()` 整个过关。同时这次 payload
+带上了修好的 `root_match_volume_uuid`（`2F8E6EED…`，27 根镜像的 OS 卷），下一步是干净启动看
+`bsd_init` 能走到哪。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
