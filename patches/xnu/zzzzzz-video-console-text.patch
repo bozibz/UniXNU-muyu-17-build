@@ -12,6 +12,10 @@ index e9f2f0c..a1c2d3e 100644
 +	    PE_parse_boot_argn("-bravearktextconsole", &text_console, sizeof(text_console)) &&
 +	    text_console) {
 +		initialize_screen(NULL, kPETextScreen);
++		/* DarwinBoot leaves its handoff text on the panel in a 2x font; XNU's console draws a
++		 * smaller font over the same rows and the mixture is unreadable (2026-11-06). One clear
++		 * here makes every later console line - the panic dump included - start on black. */
++		vc_clear_screen(0, 0, 0, vinfo.v_rows, 2);
 +	}
 +
  #if defined(CONFIG_VC_PROGRESS_METER_SUPPORT)

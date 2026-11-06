@@ -1342,6 +1342,17 @@ CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/
 有字 = 到达该调用点，没字 = 在它之前 panic。不要试图读 panic 内容；需要内容时走别的通道
 （把文本写进 ADT 的 pram/panic-log 区域再回读，或等 USB 调试口可用），而不是继续调渲染器。
 
+**最终采用的方案（比渲染器简单得多）**：既然**内核控制台自己的输出是清晰的**，就让控制台从干净屏幕开始。
+端口已有的 `patches/xnu/zzzzzz-video-console-text.patch`（`-bravearktextconsole` → `initialize_screen`）里
+加一句
+
+```c
+vc_clear_screen(0, 0, 0, vinfo.v_rows, 2);   /* whole screen, the console's own geometry */
+```
+
+DarwinBoot 的 2x 大字被清掉之后，所有后续控制台输出（包括 panic dump 的 `x0..x28`）都从黑屏开始，
+`panic_screen` 关掉即可——不再需要渲染器参与。这条同时解释了为什么之前“渲染器 + 控制台”总是互相覆盖。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
