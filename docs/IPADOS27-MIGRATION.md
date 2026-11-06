@@ -2275,6 +2275,32 @@ u43 的改法：删掉 `dyld_flags |= 8`（`dyld_flags` 保持 0 = ignition 开�
 如果 u43 走到 ignition 但卡在 uke 记录过的 gate（`gate try-close / gate result / gate wait deadline /
 IOSleep ms`），下一步就是照 uke 的 trace 点加同样的观察，看 AppleImage4 卡在哪一步。
 
+#### 6.58.2 u44：`ignition_blob` 进去了但**不返回**（2026-11-06 22:3x）
+
+u44 在 `bsd/kern/kern_newsysctl.c` 的 sysctl 分发处加了两行（pid 1 + oid 名 `ignition_blob`），
+boot-arg `muyu-ignition-trace=1`。屏上最后两行：
+
+```
+libignition: 1: halt after stage : n/a
+muyu ignition: enter oldlen=132 newlen=0
+```
+
+**没有 `muyu ignition: returned …`** ⇒ AppleImage4 的 `ignition_blob` handler 进入了、然后阻塞。
+`oldlen=132 newlen=0` 是 libignition 的查询（要 132 字节的 ignition blob，没有输入），返回值永远等不到。
+
+这就是 uke 记录过的 **gate**：`uke-ignition-wait-trace.patch` 在 `osfmk/kern/locks.c` 与
+`iokit/Kernel/IOLib.cpp` 里 trace 的是 `gate try-close / gate result / gate wait deadline /
+IOSleep ms` 四种事件。也就是说 gate 由 AppleImage4 自己用锁 + `IOSleep` 轮询实现，要等某个外部条件。
+
+下一步（按优先级）：
+
+1. 把 uke 的 gate trace 点按同样方式搬到本树（`locks.c` + `IOLib.cpp` 各几行），看清它等的是
+   **哪一个锁/哪一个 deadline**；
+2. 同时检查 gate 的释放条件：最可能是 **boot manifest / Image4 的 ignition 策略**——
+   我们已经用 `native_owner_publish_boot_manifest()` 发布了合成身份，但 AppleImage4 认的是
+   img4 manifest（`/chosen/boot-manifest-hash` + Image4 的 `LwVM`/nonce 状态）。若 gate 等的是
+   “install 完成 / boot 已授权”，就需要让 AppleImage4 看到它要的那份 manifest，而不是绕开它。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
