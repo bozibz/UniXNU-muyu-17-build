@@ -34,6 +34,7 @@ extern const u64 gFont[];
 struct ctx {
   u8  *base;
   u32 rb, w, h, x, y;
+  u32 rot_w, rot_h;   /* unrotated frame-buffer width/height for the rotated writer */
   u8  *log;   /* kernel buffer that also receives the formatted message (PANIC_TEXT), 0 = none */
   u32 logn;
 };
@@ -47,6 +48,20 @@ __attribute__((noreturn)) static void park (void)
 {
   for (;;) {
     __asm__ volatile ("wfe");
+  }
+}
+
+/* The kernel video console on this board draws rotated (zzzzzz-video-console-text.patch); writing
+ * the frame buffer directly, as this renderer does, has to apply the same rotation or the text ends
+ * up running down the panel and shears when read back (2026-11-06). One rotated pixel. */
+static void pix (struct ctx *g, u32 x, u32 y, u32 colour)
+{
+  u32 w = g->w;                       /* unrotated height, kept in g->rot_h below */
+  (void)w;
+  u32 rx = y;                         /* 90 degrees counter-clockwise in frame-buffer space */
+  u32 ry = g->rot_w - 1 - x;
+  if (ry < g->rot_h) {
+    *(volatile u32 *)(g->base + (u64)ry * g->rb + (u64)rx * 4) = colour;
   }
 }
 
@@ -87,7 +102,7 @@ static void put (struct ctx *g, u8 c)
       if ((data >> col) & 1) {
         for (dy = 0; dy < SCALE; dy++) {
           for (dx = 0; dx < SCALE; dx++) {
-            *(volatile u32 *)(g->base + (u64)(g->y + row * SCALE + dy) * g->rb + (u64)(g->x + col * SCALE + dx) * 4) = 0xFFFFFFFFu;
+            pix (g, g->x + col * SCALE + dx, g->y + row * SCALE + dy, 0xFFFFFFFFu);
           }
         }
       }
@@ -226,20 +241,32 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   u32 row, col;
 
   __asm__ volatile ("msr daifset, #15");
-  /* Only the base address is taken from vinfo. The geometry is the panel this board really has
-   * (3200x2136, 32 bpp, 12800-byte stride); on 12377 the vinfo that initialize_screen publishes does
-   * not describe it, and the clear loop below then walks past the end of the mapped frame buffer and
-   * takes a data abort inside this function (seen 2026-11-06: pc 0xfffffff00aeef6a8). */
-#define PANEL_WIDTH   3200
-#define PANEL_HEIGHT  2136
-#define PANEL_STRIDE  12800
+  /* Geometry comes from vinfo after all: this is the same mapping the kernel console draws into,
+   * and the console's own register dump is readable on this panel. Hardcoding 3200x2136/stride
+   * 12800 (2026-11-06) is what broke the glyphs - they came out sheared. Only the base address was
+   * ever in question, and it is fine. */
   g.base = (u8 *)v->v_baseaddr;
-  g.rb   = PANEL_STRIDE;
-  g.w    = PANEL_WIDTH;
+  g.rb   = v->v_rowbytes;
+  g.w    = v->v_width;
   if (g.w > 44 * 6 * SCALE) {
     g.w = 44 * 6 * SCALE;   /* wrap at 44 columns */
   }
-  g.h    = PANEL_HEIGHT;
+  /* vinfo's height is larger than the frame buffer this kernel actually maps: clearing rows all the
+   * way to v_height took a data abort inside this function (2026-11-06, pc 0xfffffff00aeef944,
+   * esr 0x96000045 - an EL1 write fault). The kernel console only ever draws a few lines at the
+   * top, which is why it never hit this. Keep to a band that is certainly mapped. */
+  g.h    = v->v_height;
+  if (g.h > 16 * 14 * SCALE) {
+    g.h = 16 * 14 * SCALE;
+  }
+  g.rot_w = v->v_width;
+  g.rot_h = v->v_height;
+  if (g.rot_w > 4096) {
+    g.rot_w = 4096;
+  }
+  if (g.rot_h > 4096) {
+    g.rot_h = 4096;
+  }
   if (g.base == 0 || v->v_depth != 32 || fmt == 0) {
     park ();
   }
@@ -250,19 +277,23 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) {
     park ();
   }
-  /* 2026-11-06: no clear. XNU's own console output is the primary evidence on this board - it
-   * prints the data abort line and x0..x28 - and clearing from h/8 down erased all of it below the
-   * first eighth. The renderer's own few lines go into the bottom rows instead, where nothing else
-   * writes. */
+  /* Clear the whole screen, then draw from the top. DarwinBoot paints its handoff text with a 2x
+   * font and XNU's console repaints the same area with a smaller one, so anything left uncleared
+   * reads as overlapping garbage. The panic message itself carries pc/lr/esr/far, so the console's
+   * copy is not needed. Geometry is vinfo's, the same mapping the console draws into. */
   g.x = 0;
-  g.y = g.h - 12 * (14 * SCALE);   /* bottom band: 12 text lines above the last row */
-  if (g.y < g.h / 2) {
-    g.y = g.h / 2;
-  }
+  g.y = 0;
   g.log = 0;
   g.logn = 0;
-  (void)row;
-  (void)col;
+  {
+    /* Clear in content space through the same rotation, inside the band. */
+    for (row = 0; row < g.h; row++) {
+      for (col = 0; col < g.w; col++) {
+        pix (&g, col, row, 0);
+      }
+    }
+  }
+  g.y = 8;
   /* The board's live banner keeps showing this text after the next swap paints over the screen (BootProgress.c,
    * boot_progress_panic_text). The first panic's text is kept: a buffer that already holds one is left alone. */
   if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
