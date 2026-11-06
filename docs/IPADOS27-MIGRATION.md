@@ -1644,6 +1644,47 @@ Waiting on <dict ID="0"><key>IOProviderClass</key><string>IOResources</string> �
 **本轮方法上也有一项值得记**：渲染器只清下半屏之后，屏上同时拿到"panic 之前的日志尾巴"和
 panic 本身；这两轮正是靠日志尾巴才敢下"单核不 panic"的结论。
 
+### 6.45 找到根因：UFS 驱动**根本没被匹配**（`XNU_NATIVE_UFS` 没定义）（2026-11-06 19:4x）
+
+`u9`/`u10` 之间这一轮是决定性的，而且结论非常"配置级"：
+
+1. 驱动**在**内核里：`llvm-nm` 数符号，`NativeUfs` 101 个、`ArmCpu` 88、`ArmDTPlatform` 27、
+   `RamBlock` 59。（顺带纠正一个我自己的测量错误：那些 `grep -c` 得 0 的结果，是因为
+   `command -v llvm-nm` 在那个 shell 里返回空、命令根本没运行；后来用
+   `/opt/homebrew/opt/llvm/bin/llvm-nm` 才数对。）
+2. 但**没有任何 NativeUfs 的 personality**。内置驱动的 personality 在
+   `iokit/KernelConfigTables.cpp` 的 `gIOKernelConfigTables` 里，而它写成
+   `#if defined(XNU_NATIVE_UFS) && XNU_NATIVE_UFS`——这个宏来自
+   `build-xnu-4k-baseline.sh` 的 `PERSONALITY_CFLAGS`，开关是 `CONFIG_XNU_NATIVE_UFS`。
+   **我们手维护的 27 线 `.config` 从来没有这一行**（17 线的 `muyu-userland_defconfig` 有），
+   于是 `gIOKernelConfigTables` 里连一个 NativeUfs 条目都没有，IOKit 自然不会去匹配它：
+   类在、代码在，**实例永远不创建**，`NativeUfs::start()` 一次都没跑，OS/Data 卷没人发布，
+   于是停在 `Waiting on <dict … IOResources … 2F8E6EED-…>`。
+3. 打开之后立刻撞到第二个问题：**184 个重复符号**。`libShengSourceStorage.a` 里打包的对象
+   （`NativeUfs.late.o`、`NativeRamBlock.late.o`、`SourceRootBinding.o`、`BootLog.o`、
+   `BootWatchdogPolicy.o`）和 `component:ShengUfs` / `component:RamBlock` 产出的对象是**同一批**。
+   UFS 宏没开时没人引用它们，重复一直没暴露；一开就 ld 报错。修法：`CONFIG_XNU_EXTRA_LD_ARCHIVES`
+   只留 `libBravearkLastLog.a`，驱动走各自的 `*_ARCHIVE` 条目。
+4. **增量构建是个陷阱**：`PERSONALITY_CFLAGS` 是通过
+   `KernelConfigTables.cpo_CFLAGS_ADD=…` 传的，改这个宏**不会**让 make 认为对象过期——
+   我第一次重编出来的内核里 `NativeUfsRoot` 仍然是 0。必须
+   `rm -rf tree/build/xnu/ios-obj tree/build/xnu/ios-sym` 再编。
+
+验证（干净重编后）：
+
+```
+$ strings kernel.macho | grep "= NativeUfs"
+   'IOClass'=NativeUfs; 'IOProviderClass'=IOPlatformDevice; 'IOProbeScore'=1000
+   'IOClass'=NativeUfs; 'IOMatchCategory'=NativeUfsRoot; 'IOProviderClass'=IOPlatformExpertDevice; 'IOProbeScore'=500
+```
+
+产物：内核 `2c65a9b7…`（比原 97e21b7f 多了 UFS 的两个 personality 和 `XNU_NATIVE_UFS` 守卫下的代码），
+payload 重打（panic 渲染器 0xaeb 字节、6 个 frame link），`fw/vendor_boot_27-u10.img` = `a1c162a8…`，
+本轮仍是 `sheng-smp=0`（避开 §6.44 的多核 PAC 陷阱）。
+
+**要长期记住的两条**：内置驱动没有 personality 就等于不存在；改 `CONFIG_XNU_NATIVE_*`
+之后必须清 `ios-obj`。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
