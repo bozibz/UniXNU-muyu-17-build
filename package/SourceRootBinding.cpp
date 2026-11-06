@@ -24,6 +24,7 @@
 #include <sys/param.h>
 
 extern "C" {
+extern int printf(const char *format, ...);
 int native_ufs_block_authenticates(IOService *provider, const char *uuid, uint8_t *digest);
 int native_verified_block_root_authorized(dev_t device);
 int native_verified_block_manifest_sha384(dev_t device, const char *uuid, uint8_t digest[48]);
@@ -49,28 +50,43 @@ static int verifiedVolumeQuery(dev_t device, const char *expectedUUID, uint8_t *
     OSSafeReleaseNULL(properties);
     OSIterator *iterator = ready ? IOService::getMatchingServices(matching) : nullptr;
     OSSafeReleaseNULL(matching);
-    if (!iterator) return 0;
+    if (!iterator) {
+        printf("RootBinding: dev %x has no IOMedia iterator\n", static_cast<unsigned>(device));
+        return 0;
+    }
     bool authenticated = false;
     unsigned matches = 0;
+    const char *reason = "no media with that BSD number";
+    const char *seen = "-";
+    int ufsAnswer = -1;
     while (OSObject *object = iterator->getNextObject()) {
         IOService *media = OSDynamicCast(IOService, object);
         if (!media) continue;
         // Two media with the same BSD number would make "the device" ambiguous: refuse both.
-        if (++matches != 1) { authenticated = false; break; }
+        if (++matches != 1) { authenticated = false; reason = "duplicate BSD number"; break; }
         OSString *uuid = OSDynamicCast(OSString, media->getProperty("UUID"));
-        if (!uuid || uuid->getLength() != 36 ||
-            (expectedUUID && strcmp(expectedUUID, uuid->getCStringNoCopy()))) continue;
+        if (!uuid) { reason = "media has no UUID"; continue; }
+        seen = uuid->getCStringNoCopy();
+        if (uuid->getLength() != 36) { reason = "UUID length"; continue; }
+        if (expectedUUID && strcmp(expectedUUID, uuid->getCStringNoCopy())) { reason = "UUID mismatch"; continue; }
         unsigned depth = 0;
+        reason = "no UFS window in the provider chain";
         for (IOService *provider = media; provider && depth < 64; provider = provider->getProvider(), ++depth) {
             const int ufs = native_ufs_block_authenticates(provider, uuid->getCStringNoCopy(), manifestDigest);
             if (ufs >= 0) {
+                ufsAnswer = ufs;
                 authenticated = ufs == 1;
+                reason = ufs == 1 ? "ok" : "UFS window refused the UUID";
                 break;
             }
         }
     }
     iterator->release();
     if (!authenticated || matches != 1) {
+        // Bring-up diagnostic: the owner mount asks twice (before and after mounting SystemOS) and the
+        // answer changed, so both lines matter. printf reaches the console; IOLog does not.
+        printf("RootBinding: dev %x matches=%u ufs=%d reason=%s uuid=%s\n",
+               static_cast<unsigned>(device), matches, ufsAnswer, reason, seen);
         if (manifestDigest) bzero(manifestDigest, kDigestBytes);
         return 0;
     }

@@ -1942,6 +1942,45 @@ stage=owner signature and hash table result=e00002bc
 
 当前产物：`u25 = ad8ae11b…`（内核 `da0b3ebb…`）。
 
+### 6.52 根卷发布成功；卡点移到 `native_owner_cache_prepare` 的重校验（2026-11-06 20:5x）
+
+u25 照片证明源存储全通：
+
+```
+SourceStorage: step 1 … step 7
+NativeUFS: scan takeover slot=1 sas=8c5c0000 s2r=1 -> bank 70
+SourceStorage: UFS started through the public IOStorageFamily interface
+```
+
+root 挂上了，随后在第一次 exec 时：
+
+```
+offline owner SystemOS mount failed: 80   @kern_exec.c:9123
+```
+
+u26 把 `native_owner_cache_prepare()` 的判定条件打进 panic 后：
+
+```
+offline owner SystemOS failed: 80 stage 6 mount 0 ro 1 dev 1 ver 1 vol 1 @kern_exec.c:9134
+```
+
+- `ro=1 dev=1 ver=1`：root 卷只读挂载、设备有效、`native_verified_block_root_authorized()` 返回 1；
+- `vol=1`：SystemOS 卷（`7A23BAC7-…`）找到了；
+- `mount=0`：`mount("apfs", "/private/preboot", …)` 成功；
+- `stage=6`：函数体一路执行到 `*envp` 设置完。
+
+但 `done:` 处的**重校验**失败了：
+
+```c
+int root_recheck = root_authorized && native_verified_block_root_authorized(root_device);
+if (!root_recheck) error = EAUTH;
+```
+
+同一个查询，进入时 1、退出时 0 —— 变化发生在挂上 SystemOS 卷之后。可能原因是
+`verifiedVolumeQuery()` 要求"该 BSD 号只有一个 IOMedia"，而挂载/`vnode_lookup` 之后
+匹配集变了（或遍历顺序变了）。u27 在 `package/SourceRootBinding.cpp` 里把每次查询的
+`matches`/`ufs` 返回值/失败原因/卷 UUID 用 printf 打到控制台，两次查询各一行，直接对比。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
