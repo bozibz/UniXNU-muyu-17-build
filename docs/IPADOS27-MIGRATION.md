@@ -2119,6 +2119,59 @@ native 内核的 `__TEXT_EXEC`（0xac84000–0xb648000）里**，而是落在合
 
 当前：`u38 = 21578bcf…`（内核 `8b9ce774…`）。
 
+### 6.57 答案：那个返回地址属于 sandbox，缺的是 `thread_tid`（2026-11-06 22:0x）
+
+`0xfffffff00aa7bd74` 是**返回地址**（stub 里 `__builtin_return_address(0)`），所以不能在 `stub_sites`
+（那是 chained-fixup 的**槽位**）里找它。正确的反查顺序是：输出镜像地址 → 段/入口 → 指令 →
+被调用的 stub → auth-GOT 槽位 → 原始 cache 里的 rebase 目标。
+
+1. **地址落在谁身上**：`0xfffffff00aa7bd74` 在 `com.apple.security.sandbox` 的 `__TEXT_EXEC`
+   （`0xfffffff00aa46c70`–`0xfffffff00aa81594`）里，所在函数从 `0xfffffff00aa7bd44` 开始
+   （`bti c; pacibsp; sub sp,#0x60 …`），是 208 号 auth-stub 的调用者。
+2. **调用点是 `bl` 不是 `blr`**：`0xfffffff00aa7bd70` 的 `0x94001529` 目标 `+0x54a4` =
+   `0xfffffff00aa81214`；这是 `__auth_stubs`（`0xfffffff00aa80514`，264 × 16 B）的第 208 项：
+   `adrp x17, 0xfffffff00848d000; add x17, x17, #0x6d0; ldr x16, [x17]; braa x16, x17`。
+   它读的槽位是 `__auth_got`（`0xfffffff00848d050`，264 × 8 B）的第 208 项
+   `0xfffffff00848d6d0`。`braa` 不改 x30，所以 stub 看到的返回地址仍是 `0xaa7bd74`，
+   x0/x1 是 sandbox 那个函数**透传**给导入函数的前两个参数（x0 = `0xfffffff90c244690`，一个 thread 指针）。
+3. **槽位原来指向谁**：原始 cache 里该槽位是 `0x8011000003d90128`，按 chained fixup 解出
+   target = `0xfffffe000ad94128`（运行地址 `0xfffffff00ad94128`）。输出镜像里同一槽位是
+   `0x8011000004583d88`，解出 `0xfffffff00b587d88` = `_unixnu_fileset_unmapped`，两边对得上，
+   证明这次 panic 就是它。
+4. **`0xfffffe000ad94128` 是什么**：只有 16 字节
+   `bti c; cbz x0,+8; ldr x0,[x0,#0x4f0]; ret`，即
+   `thread != THREAD_NULL ? thread->thread_id : 0`——`osfmk/kern/thread.c:3057` 的
+   `thread_tid()` 逐字对应。
+5. **为什么 matcher 没配上**：Apple 的 24A446 `thread` 布局把 `thread_id` 放在 **0x4f0**，
+   本机 DEVELOPMENT 配置的 `thread` 多了字段，native 是 **0x5e8**；shape 比对把 `ldr` 立即数
+   算进形状，于是对不上。用**同一个字段**的已配对函数可以证明：
+   - `thread_create_internal`（thread.c:1430 `new_thread->thread_id = ++thread_unique_id`）
+     original 写 `+0x4f0`、native 写 `+0x5e8`；
+   - `thread_set_thread_name`（thread.c:3796 把 `thread_tid(th)` 传给 `bsd_setthreadname`）
+     original 读 `+0x4f0`、native 读 `+0x5e8`。
+   另外**内核里没有任何函数直接 `bl` 到 0xad94128**——它是只给 kext 用的导出 KPI，所以
+   matcher 的 call/reference 证据本来就不存在。这解释了为什么它落在 "stubbed" 里。
+6. **修法不是补函数**：`_thread_tid` 本来就在本内核里（`0xfffffff00737c94c` link 地址），缺的只是
+   pairing。在 `kits/XnuPrelink/fixtures/fileset-24A446-symbols.json` 加一条 reviewed 记录
+   （original 16 字节 sha256 `486f0d04…` + `native_symbol: _thread_tid` + 证据），并把
+   `scripts/policies/.../prelink-regression.json` 里 5 个 owner 的这条 stub 删掉。
+7. **静态验证**（kernel `16c6e7e3…`）：`stub_sites` 31 → 26；`0xfffffff00ad94128` 不再是任何 owner
+   的 stub；输出镜像里指向 `_thread_tid` 的 fixup 槽位恰好 **5 个**
+   （`0x8123498`、`0x82da958`、`0x833c308`、`0x848d6d0`、`0x849fb48`），对应
+   AppleM2ScalerCSCDriver / apfs / IOAVFamily / IOHDCPFamily / sandbox；
+   `0x848d6d0` 的新字是 `0x8011000003d3894c`，解出 `0xfffffff00ad3c94c` =
+   `_thread_tid`（与 native 逐字节相同：`5f2403d5400000b400f442f9c0035fd6`）。
+
+产物：payload `e2a727c7…`（trust cache `dc655bcb…`）、**u39 = `fw/vendor_boot_27-u39.img` =
+`e40a0197…`**（100,462,592 B）。已刷入并启动，等下一次屏上读数。
+
+顺带记下两条可复用的判据：
+
+- panic 里 `%p` 打的是**返回地址**，先按"输出镜像的段布局"反查，再沿 `bl`→stub→`__auth_got`
+  找槽位；`stub_sites` 是槽位不是调用点。
+- 同一个目标被多个 kext import 时，用 auth-GOT 槽位把"哪个 kext 的哪个 stub"钉死；
+  `stub_sites` 里同一 target 出现多次不等于多个调用点。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
