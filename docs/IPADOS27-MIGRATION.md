@@ -2065,6 +2065,33 @@ CDHash `3d2ccf3d…` 不在 21H461 的 bundle 里。本板 `payload.json` 显示
 
 当前：`u38 = 21578bcf…`（内核 `b1579e51…`，含 24A446 trust cache）。
 
+### 6.55 带 trust cache 启动后出现 fileset stub 陷阱（2026-11-06 21:4x）
+
+u38（24A446 trust cache）没有再出现 launchd 的 exec 拒绝，但在 SystemOS 容器挂载那段之后停住：
+
+```
+nx_mount:1409: disk2 checkpoint search: largest xid 16, best xid 16 @ 7
+nx_mount:1509: disk2 stable checkpoint indices: desc 6 data 14
+fileset: original component called an unmapped kernel function from 0xfffffff00aa7bd74
+         (x0 0xfffffff90c244690 x1 0xfffffffff658e68dd0)
+```
+
+这是 `osfmk/kern/debug.c` 里 `unixnu_fileset_unmapped()` 的 panic：prelink 把**原始 Apple kext 调用本
+内核没有的内核函数**的站点绑到这个 stub 上，返回地址就是那个调用点。
+
+本地已经把每个 stub 站点记进 `kernel/kernel.json` 的 `stub_sites`
+（`fileset_segmented.rebind` 里记录，`fileset_emit.emit_images` 带进报告），31 个站点全部落在
+`0xfffffff007f85…`–`0xfffffff00849f…` 这段（各 kext 的 __TEXT_EXEC），而崩溃点
+`0xfffffff00aa7bd74` **不在其中**：说明这次不是直接分支，而是经函数指针（chained fixup）间接调到 stub，
+返回地址落在别处。
+
+下一步（不需要再猜）：把该地址映射回具体 kext/符号。可用的确定信息是
+`kernel.json` 的 `statistics.segment_layout`（native 段布局）与 `stub_sites`（站点→目标函数地址），
+以及 `kernel.map.json`（original→native 函数配对）。方向是先确认这个间接调用点属于哪个 kext，
+再决定是补上被 stub 的内核函数，还是让该 kext 走另一条路径。
+
+当前：`u38 = 21578bcf…`（内核 `8b9ce774…`，含 `stub_sites` 报告）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
