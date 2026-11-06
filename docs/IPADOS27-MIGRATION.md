@@ -1565,6 +1565,56 @@ RETAx 时打印 "while returning"——说明这个 `pc` 更像是**被认证失
 所以不要去反汇编 "pc 处那条指令"，要看帧链和 `lr`。BT 那一行还出现了两套数字叠在一起，是第二个 CPU
 同时进渲染器造成的，已用"清屏后立即占屏"消除；帧链也改成**一帧一行**（`F0..F5`）。
 
+### 6.43 IRQ 返回路径的 PAC 陷阱，以及把内核日志留在屏上（2026-11-06 19:3x）
+
+`u7`（`bb3d8275…`）第一次给出**单份、完整、可读**的 panic（原子占屏生效）：
+
+```
+G0x00 rb0x3200 0xc80 0x858
+PAC failure from kernel with IB key while returning at pc 0xfffffff00aeed810,
+  lr 0xfffffff00aee4478
+esr: 0x0000000072000001   far: 0xffffffffae0dc8000
+F0 _sleh_synchronous_sp1   F1 _handle_pac_fail+0x294   F2 _sleh_synchronous+0x43c
+```
+
+用**刷进设备的内核本身**反解（见 §6.41 的方法）：
+
+| 值 | 反解 | 含义 |
+| --- | --- | --- |
+| `pc` | `_sleh_irq+0x94` = `RETAB` | IRQ 处理函数的收尾；入口是 `PACIBSP`，key 配对正确 |
+| `lr` | `_arm_init_idle_cpu+0x0` | 一个**函数入口地址**，不是返回地址；`_sleh_irq` 收尾是 `ldp x29,x30,[sp,#0x30]`+`retab`，即它认证的是**从栈帧取回的**那个值 |
+| `fp` | `0x8c0df32f0` | 明显不是内核栈地址 →
+
+ 帧已被破坏 |
+| `esr` | `EC=0x1C`（FPAC 陷阱），`ISS` 低位 1（IB key） | 硬件真的在这条 `retab` 上认证失败 |
+
+**更正一处旧笔记**：`RETAA`/`RETAB` 的编码我之前记反了。`RETAA=0xd65f0bff`（key A）、`RETAB=0xd65f0fff`
+（key B），`PACIBSP`/`AUTIBSP` 是 key B，`PACIASP`/`AUTIASP` 是 key A。所以 `_sleh_irq` 的
+`PACIBSP`+`RETAB` 是**正确**配对，问题不在 key 混用，而在**那张栈帧里的 LR 被写成了别的值**。
+
+`u8` 起渲染器**只清下半屏**，上半屏的内核日志因此第一次被保留下来。日志尾部（照片可读）：
+
+```
+AppleImage4: image4 identity (AMFI) / Security policy: timed for Sandbox, vnguard, SentryCA, ...
+AppleImage4: Failed to open reg-entry /chosen/secure-boot-hashes   (×2，17 线同样缺)
+CoreAnalyticsHub:start(IOservice *)::193: CoreAnalyticsHub start completed
+MFC Framework successfully initialized / mcache: done (96 MB total pool size, (64/32) split)
+dlil_init: all created dlil kernel threads have been scheduled at least once. Proceeding.
+apfs_module_start: load: com.apple.filesystems.apfs, v3280.2.1 ...
+IOCPUInterruptController: not registry member at registerService()
+```
+
+最后那行来自 `IOService.cpp:1060`，是我们自己的 `ArmCpu::start()` 在**尚未 attach** 的
+`IOCPUInterruptController` 上调了 `registerCPUInterruptController()`（它先 `registerService()`）。对照
+`UniXNU/drivers/ArmCpu/ArmCpu.cpp` 与本仓 `UniXNU-27/drivers/ArmCpu/ArmCpu.cpp`：**两份逐字节相同**，
+而 uke 用同一份驱动能进桌面，所以这条警告本身不是故障点；它是"IRQ 控制器没有进入 IORegistry"的
+线索，与 IRQ 路径的失败方向一致，值得单独查，但不能当结论。
+
+**`u9`（单核实验）**：`sheng-smp=0` + `armcpu-spi-ipi=0`。目的只有一个：把**IPI/SPI 投递路径**从
+**定时器/设备 IRQ 路径**里分出来。判别很干净——单核下不再有跨核 IPI：
+若 PAC 陷阱消失 → 问题在 SPI-pended IPI（`ArmCpu::signalCPU` 把 IPI 挂成 1008+core 的 SPI）；
+若仍然出现 → 问题在 CPU0 自己的 IRQ 返回路径（定时器或某个设备中断）或栈本身。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
