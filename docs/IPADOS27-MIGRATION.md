@@ -1731,6 +1731,30 @@ objcopy --remove-section=__DATA,__mod_init_func --globalize-symbol=__GLOBAL__sub
 
 `u11`（`94a47eba…`，内核 `a3741218…`）加上了 `native-source-storage=1`，其余同 `u10`。
 
+### 6.47 参数名：`muyu-source-storage`（不是 `native-source-storage`）（2026-11-06 20:0x）
+
+`u12` 补上了 `bsd_init` 里的调用，屏幕还是 `Couldn't alloc class "NativeUfs"`。回去读
+`package/SourceStorage.cpp` 才发现**门是设备前缀的参数**：
+
+```c
+if (!PE_parse_boot_argn("muyu-source-storage", &enabled, sizeof(enabled)) || enabled != 1 || attempted) return;
+```
+
+注释写得很清楚："Boot argument names the 27 line explicitly so a 17-line boot cannot reach this code."
+我们加的是 `native-source-storage`（uke 那边的名字），所以 `native_source_storage_start()` 直接 return 了。
+
+而这个函数做的恰好就是我们需要的一整套（也说明 `NativeUfsRoot` personality 其实不是必须的）：
+
+1. `OSKextLoadKextWithIdentifier("com.apple.iokit.IOStorageFamily")`，核对 `IOBlockStorageDevice` 布局；
+2. `native_source_root_policies_load()`（根卷策略/认证）；
+3. 加载 apfs；
+4. `preModLoad` → `source_storage_base_init/ufs_init/ram_init` → `postModLoad`
+   —— **NativeUfs / NativeRamBlock 的类注册就在这里**；
+5. `serviceMatching("IOPlatformExpertDevice")` 等到平台根，**自己** `create/init/attach/start` 一个 UFS 服务；
+6. 成功则打印 `SourceStorage: UFS started through the public IOStorageFamily interface`。
+
+`u13`（`52e0d57b…`，payload 重打，内核不变 `fd92998b…`）把 `muyu-source-storage=1` 加进了 kernel args。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
