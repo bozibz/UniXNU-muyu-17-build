@@ -1,17 +1,34 @@
 /* Draw a kernel panic message, with its arguments, on the frame buffer, then stop.
  *
+ * Taken from UniXNU-uke/scripts/xnu-panic-screen.c (2026-11-06). uke boots the
+ * same ipados-27.0.1-24A446 arm64e profile on a 3200x2136 pad panel, so its
+ * renderer is the proven one for this target; the muyu copy had drifted into a
+ * speculative 90-degree rotation, a 16-line band and a pointer-only %s, which is
+ * why a panic photographed as overlapping text cut off after a few lines.
+ *
+ * Kept from uke, because each one answers a failure seen on hardware:
+ *  - two passes: format the whole message into a stack buffer with drawing off,
+ *    then clear the panel and draw the message alone from row 0 (a message drawn
+ *    while the console is still painting collides with it);
+ *  - quiet_console() sets disableConsoleOutput, so the other CPUs stop drawing
+ *    the old log over the panic;
+ *  - PANIC_TRACE_FRAMES walks >=1 bounded frame links and appends "BT <lr>" values,
+ *    which is what attributes a fault to a function when the kernel is stripped;
+ *  - PANIC_TEXT/PANIC_SHADOW/PANIC_FLUSH copies for a board that has them.
+ *
+ * Changed for muyu: %s prints <str 0x...> instead of the bytes when the string is
+ * not provably readable. On 12377 a panic message carried a %s whose page passed
+ * the AT S1E1R probe and the byte load then took a data abort inside this
+ * function. A lost expansion costs one argument; a nested panic costs the screen.
+ *
  * Built freestanding by patch-xnu-entry-probe.py and placed in unused padding
  * of a COPY of the kernel; panic() and its common panic funnel are redirected
- * here. It runs on the kernel's
- * own mapping of the frame buffer. With the board observer it uses the retained
- * GOP mapping prefix; otherwise it uses vinfo.v_baseaddr.
+ * here. It runs on the kernel's own mapping of the frame buffer.
  *
  * panic(fmt, ...) is variadic and the Darwin arm64 ABI passes every variadic
  * argument in an 8-byte stack slot, starting at the stack pointer on entry.
  * A small printf walks the format string over those slots (%s %x %p, with
- * 0-flag, width, precision and l/ll/z). Kernel strings are checked with an
- * active hardware translation query before reading each byte;
- * unmapped/device/user pointers print as pointers. VINFO names that mapping prefix.
+ * # flag, 0-flag, width, precision and l/ll/z).
  */
 typedef unsigned long u64;
 typedef unsigned int u32;
@@ -22,10 +39,9 @@ struct vc_info {
   u64 v_baseaddr;
 };
 
-/* 2026-11-06: 4 instead of 3 and a 44-column wrap. On the 3.2K panel the message used to
- * run the full width in 18 px cells, which photographs as a smear; wrapping keeps every
- * line inside a third of the panel and the glyphs are a third larger. */
-#define SCALE   4
+/* 3x cells: at 1x the panic text is unreadable on this panel. The full text does
+ * not have to fit on screen -- it is staged to the pram and lands in userdata. */
+#define SCALE   3
 
 extern const u64 gFont[];
 
@@ -34,15 +50,35 @@ extern const u64 gFont[];
 struct ctx {
   u8  *base;
   u32 rb, w, h, x, y;
-  u32 rot_w, rot_h;   /* unrotated frame-buffer width/height for the rotated writer */
-  u8  *log;   /* kernel buffer that also receives the formatted message (PANIC_TEXT), 0 = none */
-  u32 logn;
+  u8  *log;   /* buffer that also receives the formatted message, 0 = none */
+  u32 logn, logcap;
 };
 
 #ifndef PANIC_TEXT
 #define PANIC_TEXT 0UL
 #endif
+#ifndef UKE_PANIC_FLUSH
+#define UKE_PANIC_FLUSH 0UL
+#endif
+/* disableConsoleOutput (kern/printf.c through the platform expert): the console keeps drawing from the other CPUs onto the same frame
+ * buffer this screen draws on, so the panic text has to own the panel from here on. */
+#ifndef PANIC_QUIET
+#define PANIC_QUIET 0UL
+#endif
+/* The board's panic shadow (kits/uke/LegacyDisplayProbe.cpp): the message is copied there and the probe's heartbeat thread, which
+ * keeps running on another CPU, prints it into the log. A plain copy, no variadic call: the Darwin ABI passes variadic arguments on
+ * the stack and a call from here reached the kernel's printf with an empty string. */
+#ifndef PANIC_SHADOW
+#define PANIC_SHADOW 0UL
+#endif
+#ifndef PANIC_SHADOW_LEN
+#define PANIC_SHADOW_LEN 0UL
+#endif
 #define PANIC_TEXT_BYTES 256
+#define PANIC_SAVE_BYTES 1024
+#ifndef PANIC_TRACE_FRAMES
+#define PANIC_TRACE_FRAMES 0
+#endif
 
 __attribute__((noreturn)) static void park (void)
 {
@@ -51,27 +87,13 @@ __attribute__((noreturn)) static void park (void)
   }
 }
 
-/* The kernel video console on this board draws rotated (zzzzzz-video-console-text.patch); writing
- * the frame buffer directly, as this renderer does, has to apply the same rotation or the text ends
- * up running down the panel and shears when read back (2026-11-06). One rotated pixel. */
-static void pix (struct ctx *g, u32 x, u32 y, u32 colour)
-{
-  u32 w = g->w;                       /* unrotated height, kept in g->rot_h below */
-  (void)w;
-  u32 rx = y;                         /* 90 degrees counter-clockwise in frame-buffer space */
-  u32 ry = g->rot_w - 1 - x;
-  if (ry < g->rot_h) {
-    *(volatile u32 *)(g->base + (u64)ry * g->rb + (u64)rx * 4) = colour;
-  }
-}
-
 static void put (struct ctx *g, u8 c)
 {
   const u32 cell = 6 * SCALE, line = 14 * SCALE;
   u32 row, col, dy, dx;
 
-  if (g->log && g->logn < PANIC_TEXT_BYTES - 1 && c >= 9 && c <= 126) {
-    g->log[g->logn++] = (c < 32) ? ' ' : c;
+  if (g->log && g->logcap && g->logn < g->logcap - 1 && c >= 9 && c <= 126) {
+    g->log[g->logn++] = c;
     g->log[g->logn] = 0;
   }
 
@@ -102,7 +124,7 @@ static void put (struct ctx *g, u8 c)
       if ((data >> col) & 1) {
         for (dy = 0; dy < SCALE; dy++) {
           for (dx = 0; dx < SCALE; dx++) {
-            pix (g, g->x + col * SCALE + dx, g->y + row * SCALE + dy, 0xFFFFFFFFu);
+            *(volatile u32 *)(g->base + (u64)(g->y + row * SCALE + dy) * g->rb + (u64)(g->x + col * SCALE + dx) * 4) = 0xFFFFFFFFu;
           }
         }
       }
@@ -138,8 +160,44 @@ static int readable (const char *s, const u64 *args)
   u64 a = (u64)s, par;
   (void)args;
   if (a < 0xffff000000000000UL) return 0;
-  __asm__ volatile ("at s1e1r, %1; isb; mrs %0, par_el1" : "=r" (par) : "r" (a) : "memory");
+  __asm__ volatile ("at s1e1r, %1\n\tisb\n\tmrs %0, par_el1" : "=r" (par) : "r" (a) : "memory");
   return !(par & 1) && ((par >> 60) != 0);
+}
+
+/* Probe a row before writing it. muyu's vinfo can describe more rows than the frame
+ * buffer the kernel actually mapped: clearing to v_height took a data abort inside
+ * this renderer (2026-11-06, pc 0xfffffff00aeef944, esr 0x96000045, an EL1 write
+ * translation fault). AT S1E1W asks the MMU the same question the store would, so the
+ * clear stops at the first row that is not provably writable and the message still
+ * gets the rows that are. */
+static int writable (const u8 *p)
+{
+  u64 a = (u64)p, par;
+  __asm__ volatile ("at s1e1w, %1\n\tisb\n\tmrs %0, par_el1" : "=r" (par) : "r" (a) : "memory");
+  return !(par & 1);
+}
+
+/* Rows this renderer may write, and the width the row stride really holds. */
+static u32 usable_height (struct ctx *g)
+{
+  u32 r;
+  if (g->rb >= 4 && g->w * 4 > g->rb) {
+    g->w = g->rb / 4;
+  }
+  for (r = 0; r < g->h; r++) {
+    if (!writable (g->base + (u64)r * g->rb)) {
+      return r;
+    }
+  }
+  return g->h;
+}
+
+static void quiet_console (void)
+{
+#if PANIC_QUIET
+  *(volatile int *)(PANIC_QUIET) = 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 }
 
 static void format (struct ctx *g, const char *fmt, const u64 *args)
@@ -153,11 +211,18 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
       continue;
     }
     u32 width = 0;
-    int zero = 0, longs = 0;
+    int zero = 0, longs = 0, hash = 0;
     c = (u8)fmt[++i];
-    if (c == '0') {
-      zero = 1;
-      c = (u8)fmt[++i];
+    for (;;) {
+      if (c == '#') {
+        hash = 1;
+        c = (u8)fmt[++i];
+      } else if (c == '0') {
+        zero = 1;
+        c = (u8)fmt[++i];
+      } else {
+        break;
+      }
     }
     while (c >= '0' && c <= '9') {
       width = width * 10 + (c - '0');
@@ -192,21 +257,43 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
     }
     u64 v = args[used++];
     if (c == 's') {
-      /* 2026-11-06: the argument is printed, never dereferenced. On 12377 a panic message can carry
-       * a %s whose pointer is not readable (or the readable() translation probe lets it through), and
-       * the byte load then takes a data abort inside this function - which panics again and paints a
-       * second message over the first, so the screen becomes unreadable (pc 0xfffffff00aeef6a8:
-       * LDRB W8,[X20,W28,UXTW]). The diagnostic text people need is in the format string and the
-       * file:line tail, so losing the expansion costs little. */
+      /* Expand the string only while every byte in it is proven readable, and
+       * never past 160 characters. The check runs before each load, in this
+       * order, because a %s that passed the AT S1E1R probe and then faulted on
+       * the load is what took a nested data abort here on 12377. */
       const char *s = (const char *)v;
-      if (s == 0) {
-        put (g, '0');
-      } else {
-        hex (g, "<str ", (u64)s);
+      u32 k = 0, ok = (s != 0);
+      if (ok && precision < 160) {
+        precision = 160;
+      }
+      while (ok && k < precision) {
+        if (!readable (s + k, args)) {
+          ok = 0;
+          break;
+        }
+        if (s[k] == 0) {
+          break;
+        }
+        k++;
+      }
+      if (ok) {
+        for (u32 j = 0; j < k; j++) {
+          put (g, (u8)s[j]);
+        }
+      } else if (s != 0) {
+        put (g, '<');
+        put (g, 's');
+        put (g, 't');
+        put (g, 'r');
+        put (g, ' ');
+        number (g, v, 16, 0, 0);
         put (g, '>');
       }
-      (void)precision;
     } else if (c == 'x' || c == 'X') {
+      if (hash) {
+        put (g, '0');
+        put (g, 'x');
+      }
       number (g, longs ? v : (v & 0xFFFFFFFFu), 16, width, zero);
     } else if (c == 'u' || c == 'd') {
       number (g, longs ? v : (v & 0xFFFFFFFFu), 10, width, zero);
@@ -238,88 +325,139 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
 {
   volatile struct vc_info *v = (volatile struct vc_info *)VINFO;
   struct ctx g;
-  u32 row, col;
+  u32 row, col, saved, saved_h;
+  u8 save[PANIC_SAVE_BYTES];
+  u8 *banner = 0;
 
   __asm__ volatile ("msr daifset, #15");
-  /* Geometry comes from vinfo after all: this is the same mapping the kernel console draws into,
-   * and the console's own register dump is readable on this panel. Hardcoding 3200x2136/stride
-   * 12800 (2026-11-06) is what broke the glyphs - they came out sheared. Only the base address was
-   * ever in question, and it is fine. */
   g.base = (u8 *)v->v_baseaddr;
   g.rb   = v->v_rowbytes;
   g.w    = v->v_width;
-  if (g.w > 44 * 6 * SCALE) {
-    g.w = 44 * 6 * SCALE;   /* wrap at 44 columns */
-  }
-  /* vinfo's height is larger than the frame buffer this kernel actually maps: clearing rows all the
-   * way to v_height took a data abort inside this function (2026-11-06, pc 0xfffffff00aeef944,
-   * esr 0x96000045 - an EL1 write fault). The kernel console only ever draws a few lines at the
-   * top, which is why it never hit this. Keep to a band that is certainly mapped. */
   g.h    = v->v_height;
-  if (g.h > 16 * 14 * SCALE) {
-    g.h = 16 * 14 * SCALE;
-  }
-  g.rot_w = v->v_width;
-  g.rot_h = v->v_height;
-  if (g.rot_w > 4096) {
-    g.rot_w = 4096;
-  }
-  if (g.rot_h > 4096) {
-    g.rot_h = 4096;
-  }
   if (g.base == 0 || v->v_depth != 32 || fmt == 0) {
     park ();
   }
 
-  /* First panic wins: a marker in the last row's first two pixels means a panic already drew
-   * the screen; a later panic (another thread or exception) must not overwrite it. */
+  /* Claim before clearing or formatting. This is normal kernel BSS, not a
+   * device framebuffer: exclusive operations on device mappings may fault.
+   * The shadow length has no other writer; nonzero also blocks nested panics.
+   * Publish the real nonzero length only after copying the complete shadow. */
+#if PANIC_SHADOW_LEN
+  u32 unclaimed = 0;
+  if (!__atomic_compare_exchange_n((u32 *)PANIC_SHADOW_LEN, &unclaimed, 1, 0,
+                                  __ATOMIC_RELAXED, __ATOMIC_RELAXED)) park ();
+#endif
+#if !PANIC_SHADOW_LEN
   volatile u32 *mark = (volatile u32 *)(g.base + (u64)(g.h - 1) * g.rb);
-  if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) {
-    park ();
-  }
-  /* Clear the whole screen, then draw from the top. DarwinBoot paints its handoff text with a 2x
-   * font and XNU's console repaints the same area with a smaller one, so anything left uncleared
-   * reads as overlapping garbage. The panic message itself carries pc/lr/esr/far, so the console's
-   * copy is not needed. Geometry is vinfo's, the same mapping the console draws into. */
+  if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) park ();
+#endif
   g.x = 0;
   g.y = 0;
   g.log = 0;
   g.logn = 0;
-  {
-    /* Clear in content space through the same rotation, inside the band. */
-    for (row = 0; row < g.h; row++) {
-      for (col = 0; col < g.w; col++) {
-        pix (&g, col, row, 0);
-      }
+  g.logcap = 0;
+  save[0] = 0;
+  g.h = usable_height (&g);
+  if (g.h == 0) {
+    park ();
+  }
+  /* The final message starts at row zero. Quiesce the ordinary console before
+   * clearing that same full area, including the old top-of-screen log. */
+  quiet_console ();
+  for (row = 0; row < g.h; row++) {
+    for (col = 0; col < g.w; col++) {
+      *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
     }
   }
-  g.y = 8;
   /* The board's live banner keeps showing this text after the next swap paints over the screen (BootProgress.c,
    * boot_progress_panic_text). The first panic's text is kept: a buffer that already holds one is left alone. */
   if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
-    g.log = (u8 *)PANIC_TEXT;
+    banner = (u8 *)PANIC_TEXT;
   }
+  g.log = save;
+  g.logn = 0;
+  g.logcap = sizeof(save);
+  /* First pass formats the whole message into the buffer and draws nothing: the stack after the assertion would fill the panel and
+   * anything drawn over it would collide with it. The stack still reaches the pram through the flush below. */
+  saved_h = g.h;
+  g.h = 0;
   format (&g, fmt, args);
-  g.log = 0;
+#if PANIC_TRACE_FRAMES
+  /* Bounded frame links from this CPU. Raw authenticated LR values are kept
+   * for offline symbolization; never follow an unchecked stack pointer. */
+  {
+    const u64 *fp = (const u64 *)__builtin_frame_address(0);
+    for (u32 i = 0; i < PANIC_TRACE_FRAMES; ++i) {
+      if (!readable((const char *)fp, 0) || !readable((const char *)(fp + 1), 0)) break;
+      format(&g, i ? " %p" : "\nBT %p", fp + 1);
+      const u64 next = fp[0], at = (u64)fp;
+      if ((next & 15) || next <= at || next - at > 0x4000) break;
+      fp = (const u64 *)next;
+    }
+  }
+#endif
+  saved = g.logn;
+  g.h = saved_h;
+#if PANIC_TEXT
+  /* The board's boot-page banner buffer, for kernels that have one (the GPU configuration has no BootProgress: PANIC_TEXT is 0 and
+   * this copy is compiled out, which is what keeps the screen inside the kernel's padding). */
+  if (banner) {
+    u32 n = saved < PANIC_TEXT_BYTES - 1 ? saved : PANIC_TEXT_BYTES - 1;
+    u32 i;
+    for (i = 0; i < n; i++) {
+      banner[i] = save[i] < 32 ? ' ' : save[i];
+    }
+    banner[n] = 0;
+  }
+#endif
   __asm__ volatile ("dsb sy");
   /* Sample the active CPU translation regime, without changing it. This is
    * panic-time evidence only; it does not establish early mappings or EL0 ABI. */
-  {
-    u64 tcr, sctlr;
-    __asm__ volatile ("mrs %0, tcr_el1" : "=r" (tcr));
-    __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (sctlr));
-    hex (&g, "\nTCR=", tcr);
-    hex (&g, "\nSCTLR=", sctlr);
+  /* The register and memory samples this screen once printed (TCR, SCTLR, pages, free) are gone: the code has to stay inside the
+   * kernel's padding and what a panic on this board is read for is the message's own first lines, which the block below redraws. The
+   * memory counters still reach the log from the probe's UKE MEM rows while the system is alive. */
+  g.log = 0;
+  /* The message, drawn once and alone from its start: the assertion and its first frames are what a photograph of a panic is read
+   * for. Whatever does not fit the panel is still in the pram (the flush below) and in the next boot's log. */
+  if (saved) {
+    u32 i;
+    g.x = 0;
+    g.y = 0;
+    for (i = 0; i < saved; i++) {
+      put (&g, (u8)save[i]);
+    }
+    __asm__ volatile ("dsb sy");
   }
-  /* Resolved from this candidate's symbols by the patcher, never fixed addresses.
-   * Values are sampled at panic time and need not form an atomic VM snapshot. */
-  (void)MAX_MEM;
-  hex (&g, "\npages=", *(volatile const u32 *)PAGE_TOTAL);
-  hex (&g, "\nfree=", *(volatile const u32 *)PAGE_FREE);
-  /* The raw argument slots are not dumped: the formatted message above already carries them (room for the PANIC_TEXT copy). */
+  /* The raw argument slots are not dumped: the formatted message above already carries them. */
+#if !PANIC_SHADOW_LEN
+  /* Kernels with the atomic BSS claim above already exclude nested panics.
+   * Keep the framebuffer marker only for the older fallback path. */
   mark[0] = 0xC0FFEE11u;
   mark[1] = 0x5CEEDA7Au;
   __asm__ volatile ("dsb sy");
+#endif
+#if PANIC_SHADOW
+  if (saved) {
+    volatile char *shadow = (volatile char *)PANIC_SHADOW;
+    u32 n = saved < 1023 ? saved : 1023, i;
+    for (i = 0; i < n; i++) {
+      shadow[i] = save[i];
+    }
+    shadow[n] = 0;
+    __asm__ volatile("dsb sy" ::: "memory");
+#if PANIC_SHADOW_LEN
+    __atomic_store_n((u32 *)PANIC_SHADOW_LEN, n, __ATOMIC_RELEASE);
+#endif
+  }
+#endif
+  /* Hand the saved text to the boot-log writer's pram staging block. The claim
+   * above is already set, so a fault here parks a nested panic instead of
+   * repainting over this one. */
+#if UKE_PANIC_FLUSH
+  if (saved) {
+    ((void (*)(const char *))UKE_PANIC_FLUSH)((const char *)save);
+  }
+#endif
   park ();
 }
 

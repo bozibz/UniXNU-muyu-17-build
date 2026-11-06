@@ -1428,6 +1428,71 @@ lr/fp 已经变成 0，栈不可信。pc 落在 `__TEXT_EXEC` 里、位于 panic
 3. 另一条并行的路：把 `ShengUfs` 的根卷路径从“依赖 IOKit 匹配”改成“在 `bsd_init` 之后由内核直接调用”，
    绕开 kext 匹配/返回路径上的 PAC 风险（这条实现快，但会偏离上游结构）。
 
+### 6.39 其他设备早就有现成经验：uke 的 panic 渲染器（2026-11-06 19:1x）
+
+用户问"其他设备没有现成的经验吗"。有，而且是最近的一台：**`UniXNU-uke`（小米平板 7，SM7675）**
+跑的就是**同一个 `ipados-27.0.1-24A446` / arm64e / XNU 12377** 配置，面板同为 3200x2136，已经能进桌面。
+它的 `scripts/xnu-panic-screen.c` 是这块屏上**已经被照片验证过**的渲染器，而我们在 27 线上把它改坏了。
+
+对照 `UniXNU-uke/scripts/xnu-panic-screen.c`，muyu 那份在 2026-11-06 自己加了三样东西，每一样都恰好
+能造成"字重叠 / 只剩前几行"：
+
+| muyu 2026-11-06 的改动 | 后果 | uke 的做法 |
+| --- | --- | --- |
+| `pix()` 里 90° 旋转（`rx=y; ry=rot_w-1-x`） | 面板并不旋转（`zzzzz-video-console-physical-fb` / `uke-video-console-text` 都没有旋转代码），横排字被画成竖排并与下一行互相覆盖 | 直接线性写 `base + y*rb + x*4` |
+| 清屏只清 `16*14*SCALE` 的带 | `panic_plain` 的消息有 16 行寄存器，第 17 行起被丢掉，照片永远只剩开头 | 清整个 `v_height`，再**从第 0 行单独重画一遍消息** |
+| `%s` 只打印指针、不解引用 | PAC panic 的消息体是 `panic_plain("%s at pc ...", msg, ...)`，`msg` 就是原因；指针化等于把"为什么 panic"整段丢掉 | 逐字节 `readable()` 后解引用 |
+
+uke 那份还多两件我们没有的：`quiet_console()`（写 `disableConsoleOutput`，否则其它 CPU 继续往同一块
+framebuffer 打旧日志，正好覆盖 panic 文字）和 `PANIC_TRACE_FRAMES`（沿 frame pointer 打 `BT <lr>`，
+这是内核被 strip 后**唯一**能把故障归到某个函数的证据）。它的两遍式流程也是关键：第一遍只格式化、
+不画（`g.h = 0`），第二遍清屏后从第 0 行画——否则消息和 console 正在画的内容互撞。
+
+**本轮动作**：`UniXNU-muyu/scripts/xnu-panic-screen.c` 换成 uke 的结构（保留 muyu 的两点适配），
+`patch-xnu-entry-probe.py` 补上 uke 的可选宏（`PANIC_QUIET`/`PANIC_TEXT`/`PANIC_SHADOW`/`UKE_PANIC_FLUSH`）
+并把 frame link 数量改成按剩余 padding **自适应**（能放几帧放几帧，放不下就减，不报错）。
+
+两点 muyu 适配，都不是抄：
+
+1. `%s` 在 uke 的逐字节 `readable()` 之上再限长 160，且**先探测后读**。12377 上出现过探测通过、
+   `LDRB` 却 data abort 的实例（§6.36），一次嵌套 panic 会把屏幕毁掉；解引用失败时打印 `<str 0x…>`。
+2. 清屏高度用 **`AT S1E1W` 逐行探测**（`usable_height()`），在第一行不可写处停下。uke 的面板上
+   `v_height` 与实际映射一致，muyu 这里不一致：清到 `v_height` 曾在渲染器内部写故障
+   （`pc 0xfffffff00aeef944`，`esr 0x96000045`）。探测让"映射完整"时仍然清全屏，不完整时降级而不是 panic。
+
+**padding 只剩一页**：panic 代码区在 `__TEXT_EXEC` 尾部，从 `0xfffffff00aeef5c0` 起，页边界
+`0xfffffff00aeff000` 之后就是真实内容（把 `PANIC_CAVE_END` 加 0x1000 会被"padding 不空"门禁挡下，
+已实测）。所以新渲染器编出来 `0xa18` 字节，**只能放 0 个 frame link**。归因不靠 BT 也够用：
+`panic_plain` 自己会打 `pc/lr/fp/sp` 和 x0–x28，见 §6.40。
+
+本轮产物（未刷）：
+
+| 项 | 值 |
+| --- | --- |
+| `payload.img` | 98,566,144 B，`49026cae…` |
+| `payload_kernel_sha256` | `d0ca6785…`（内核 `.0` 半 + panic 渲染器） |
+| `fw/vendor_boot_27-u2.img` | 100,462,592 B，`fc1c28b6…` |
+| 渲染器 | `0xa18` B @ `0xfffffff00aeef5c0`，common funnel `_panic_trap_to_debugger` @ `0xfffffff00acd5ee4`，0 frame link |
+
+### 6.40 下一次刷机的读法：panic 自己带全部寄存器
+
+`osfmk/arm64/sleh.c:622 panic_with_thread_kernel_state()` 调的是
+
+```c
+panic_plain("%s at pc 0x%016llx, lr 0x%016llx (saved state: %p%s)\n"
+            "\t  x0: ... x28: ... fp: ... lr: ... sp: ...\n"
+            "\t  pc: ... cpsr: ... esr: ... far: ...\n", msg, ...);
+```
+
+即渲染器只要把这一整段画出来，就同时拿到：**原因字符串**（`%s` = `msg`）、**故障 pc/lr/fp/sp**、
+**全部 31 个通用寄存器**、`cpsr/esr/far`。这比 frame link 更有用，因为 `fp` 给了帧链起点、
+`lr` 给了直接调用者，配合 `kernel.map.json`（native 侧 `0xfffffff0072c4000` 起）和
+`fileset_layout` 的搬移量（kernel 自己的 `__TEXT_EXEC`：`0xac84000` 起、`0x9c0000` 长，
+所以 `pc - 0xac84000 + 0x72c4000` 就是 map 里的地址）**离线**就能定位。
+
+注意 `%s` 不再是 `<str 0x…>`：本轮换成 uke 的逐字节探测 + 160 字上限，原因字符串会正常展开。
+如果仍然看到 `<str 0x…>`，说明那个指针确实不可读，此时以 `pc/lr/fp` 为准。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

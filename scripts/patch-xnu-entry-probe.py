@@ -216,7 +216,7 @@ def find_call(data, symbols, function, name, occurrence):
     return hits[occurrence - 1]
 
 
-def assemble_c(source, va, workdir, symbols):
+def assemble_c(source, va, workdir, symbols, trace_frames=0):
     """Build a freestanding C file for VA; returns (bytes, load address of the first byte, address of panic_screen).
 
     The linker may start .text a little after VA (it keeps the ELF headers in front), so the
@@ -233,24 +233,38 @@ def assemble_c(source, va, workdir, symbols):
         # can still patch the panic screen.
         font_dir = ROOT / 'scripts'
     obj, elf, binary = (workdir / name for name in ('panic.o', 'panic.elf', 'panic.bin'))
-    definitions = []
-    for macro, name, width in (('MAX_MEM', '_max_mem', 8),
-                               ('PAGE_TOTAL', '_vm_page_pages', 4),
-                               ('PAGE_FREE', '_vm_page_free_count', 4)):
-        address = symbols.get(name)
-        if address is None or address % width or not any(
-                base <= address and address + width <= base + size
-                for base, size, _, _ in SEGMENTS):
-            raise SystemExit(f'Missing or invalid diagnostic symbol {name}')
-        definitions.append(f'-D{macro}={address:#x}UL')
+    definitions = [f'-DPANIC_TRACE_FRAMES={trace_frames}']
     # Optional: the board's banner buffer for the panic message (kits/braveark/BootProgress.c); kernels without it get 0 (no copy).
     text = symbols.get('_boot_progress_panic_text')
     if text is not None:
         if not any(base <= text and text + 256 <= base + size for base, size, _, _ in SEGMENTS):
             raise SystemExit('Invalid _boot_progress_panic_text')
         definitions.append(f'-DPANIC_TEXT={text:#x}UL')
+    # Optional: disableConsoleOutput, so the console (still drawn by the other CPUs onto the same
+    # frame buffer) cannot overwrite the panic text after it is drawn. Ported from UniXNU-uke,
+    # whose renderer is the same one this file is built from.
+    quiet = symbols.get('_disableConsoleOutput')
+    if quiet is not None:
+        if quiet % 4 or not any(base <= quiet and quiet + 4 <= base + size for base, size, _, _ in SEGMENTS):
+            raise SystemExit('Invalid _disableConsoleOutput')
+        definitions.append(f'-DPANIC_QUIET={quiet:#x}UL')
+    # Optional: the board's panic shadow and its length word, so a heartbeat thread can print the
+    # message after the panic screen has parked the panicking CPU.
+    shadow = symbols.get('_uke_panic_shadow')
+    if shadow is not None and any(base <= shadow and shadow + 1024 <= base + size for base, size, _, _ in SEGMENTS):
+        definitions.append(f'-DPANIC_SHADOW={shadow:#x}UL')
+        length = symbols.get('_uke_panic_shadow_len')
+        if length is not None and length % 4 == 0 and any(base <= length and length + 4 <= base + size for base, size, _, _ in SEGMENTS):
+            definitions.append(f'-DPANIC_SHADOW_LEN={length:#x}UL')
+    # Optional: the boot-log writer's pram staging, called from the panic screen because the normal
+    # panic funnel is redirected to this screen.
+    flush = symbols.get('_uke_panic_flush')
+    if flush is not None:
+        if flush % 4 or not any(base <= flush < base + size for base, size, _, _ in SEGMENTS):
+            raise SystemExit('Invalid _uke_panic_flush')
+        definitions.append(f'-DUKE_PANIC_FLUSH={flush:#x}UL')
     subprocess.run([clang, '--target=aarch64-none-elf', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
-                    '-mgeneral-regs-only', '-fno-pic', '-mcmodel=tiny', '-Oz', f'-DVINFO={VINFO_VA:#x}UL',
+                    '-mgeneral-regs-only', '-mno-outline-atomics', '-fno-pic', '-mcmodel=tiny', '-Oz', f'-DVINFO={VINFO_VA:#x}UL',
                     *definitions, f'-I{font_dir}', '-c', source, '-o', obj], check=True)
     script = workdir / 'panic.ld'
     script.write_text('SECTIONS { . = %#x; .text : { *(.text.a_entry) *(.text.a_common) *(.text*) *(.rodata*) } /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.ARM.*) } }\n' % va)
@@ -506,11 +520,20 @@ def main():
         PANIC_CAVE = max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE
         if word(PANIC_VA) in (0, 0xFFFFFFFF) or any(data[file_offset(PANIC_CAVE):file_offset(PANIC_CAVE_END)]):
             raise SystemExit('panic() or the panic screen padding is not as expected')
-        with tempfile.TemporaryDirectory() as tmp:
-            code, load, entry = assemble_c(ROOT / 'scripts/xnu-panic-screen.c', PANIC_CAVE, Path(tmp), kernel_names)
-            common_entry = panic_common_entry(Path(tmp), code, load)
-        if load + len(code) > PANIC_CAVE_END:
-            raise SystemExit(f'panic screen is {len(code):#x} bytes at {load:#x}, the padding ends at {PANIC_CAVE_END:#x}')
+        # The frame trace costs roughly a hundred bytes per link. Keep as many bounded
+        # frame links as the kernel's padding holds, and drop the newest ones rather than
+        # fail: the message plus its first frames is what a photographed panic is read for.
+        built = None
+        for frames in (6, 5, 4, 3, 2, 1, 0):
+            with tempfile.TemporaryDirectory() as tmp:
+                code, load, entry = assemble_c(ROOT / 'scripts/xnu-panic-screen.c', PANIC_CAVE,
+                                               Path(tmp), kernel_names, trace_frames=frames)
+                if load + len(code) <= PANIC_CAVE_END:
+                    built = (code, load, entry, panic_common_entry(Path(tmp), code, load), frames)
+                    break
+        if built is None:
+            raise SystemExit(f'panic screen does not fit the padding before {PANIC_CAVE_END:#x}')
+        code, load, entry, common_entry, trace_frames = built
         if any(data[file_offset(load):file_offset(load) + len(code)]):
             raise SystemExit(f'Padding at {load:#x} is not empty')
         data[file_offset(load):file_offset(load) + len(code)] = code
@@ -519,7 +542,8 @@ def main():
         if common is None or word(common) in (0, 0xFFFFFFFF):
             raise SystemExit('Common panic funnel is missing; refuse a partially covered panic screen')
         struct.pack_into('<I', data, file_offset(common), branch(common, common_entry))
-        description += f', panic screen ({len(code):#x} bytes at {entry:#x}; common funnel at {common:#x})'
+        description += (f', panic screen ({len(code):#x} bytes at {entry:#x}; common funnel at {common:#x};'
+                        f' {trace_frames} frame link(s))')
     args.kernel.write_bytes(data)
     print(f'patched {args.kernel.name}: stage 1 blue bar, stage 2 magenta bar, {description}')
 
