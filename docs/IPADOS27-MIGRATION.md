@@ -1871,6 +1871,77 @@ IOFreeData(allocation, allocationBytes);
 
 当前产物：`u21 = 0593ccfc…`（已刷，内核 `61ce1b85…`，`sheng-smp=0`）。
 
+### 6.51 `IOMallocData` 之后一路走到 step 7；根清单是 **version 2**（2026-11-06 20:4x）
+
+`kmem_alloc` → `IOMallocData` 这一处改动就把 u22 推到了 `step 7`，照片里第一次看到完整的
+SourceStorage 序列：
+
+```
+SourceStorage: step 1 load IOStorageFamily
+SourceStorage: step 2 root policies
+SourceStorage: 2a read physical
+SourceStorage: 2c copied
+SourceStorage: step 3 load apfs          <- apfs 3280.2.1 起来了
+SourceStorage: step 4 class registration
+SourceStorage: step 5 wait platform root
+SourceStorage: step 6 ufs create
+SourceStorage: step 7 ufs init/attach/start
+NativeUFS: scan takeover slot=1 sas=8c5c0000 s2r=1 -> bank 70
+```
+
+也就是说：**主控接管、RootPolicies 认证、类注册、服务创建都通了**，`NativeUfs::start` 真的跑起来了。
+新的失败点：
+
+```
+SourceStorage: UFS start failed (root step 3; root manifest rejected)   @SourceStorage.cpp:127
+```
+
+`root step 3` 是 `startRoot()` 里的清单状态检查（`layout->manifestStatus != 0`）。
+
+**根因不在驱动，在清单格式。** 直接解 `/tmp/userdata-root-27.sparse` 的头（4096 字节）：
+
+| # | 名字 | 偏移 | 大小 | block | flags |
+| --- | --- | --- | --- | --- | --- |
+| 0 | `OS` | 0x100000 | 9168 MiB | 512 | 1 |
+| 1 | `SystemOS` | 0x23d100000 | 5738 MiB | 512 | 1 |
+| 2 | `OS.vroot` | 0x3a3b00000 | 0x47a0000 | 4096 | 3 |
+| 3 | `SystemOS.vroot` | 0x3a8300000 | 0x2cd4000 | 4096 | 3 |
+
+`header[8] = 2` —— **manifest version 2**。27 线的 `scripts/unixnu/userdata.py` 写的就是 v2：
+"Version 2 adds data objects with block_size 4096 and flags 3: the kernel reads them itself and never
+publishes them as block devices (the hash tables of header-only root policies, firmware)."
+而从 17 线搬来的 `RootLayout.h` 只认 `version == 1`，于是 `manifestStatus = 2` 直接判死。
+
+两个 `*.vroot` 的大小正好是 `窗口字节 / 4096 * 32`（9168 MiB → 0x47a0000），也就是**只有哈希表**，
+签名头仍然在启动握手（RootPolicies，header-only 信封）里。`vr_open()` 要的是
+`header(160) + signature(384) + 每块 32 字节的表` 这一整段，并且用头里 +88 的摘要校验整张表。
+
+**改动（`drivers/ShengUfs/`）：**
+
+1. `RootLayout.h`：接受 v1/v2；按 `(block_size, flags)` 把条目分成窗口（512/1）和数据对象（4096/3），
+   边界、重名、重叠三类校验对两者都做；新字段 `objects`、`object[4]`、`manifestVersion`。
+   只有窗口进 `ufsBuildRootPlan`，数据对象绝不发布成块设备。
+2. `NativeUfs.cpp`：
+   - `startRoot()` 把数据对象记进 `gVrootObjects[]`（绝对偏移 = `userdataFirst*4096 + object.offset`）；
+   - `configureVerification()` 改为：按窗口名找 `<name>.vroot`，从握手策略里挑 `image_bytes == 窗口大小`
+     的 544 字节签名头，把哈希表用 128 KiB 一次（`kDataMax/4096 = 32` 块）读进 wired 内存拼成完整信封，
+     再 `vr_open()`；失败时（`native-ufs-diagnostics=1`）panic 一行短消息带 `vr_open` 状态码。
+3. `UfsXnuCompat.h`：`ufs_alloc_security_storage()` 走的也是三参数 `kmem_alloc`（同一个 ABI 坑，只是没跑到），
+   一并换成 `IOMallocData`/`IOFreeData`，12377 上 `ufs_protect_read_only()` 变成空操作
+   （kalloc 数据本来就没有需要保护的 kernel_map 映射）。
+
+中间照片证据：`u24` 加了 `native-ufs-diagnostics=1` 后打出
+
+```
+UFS ROOT FAILURE: root window preparation failed
+stage=owner signature and hash table result=e00002bc
+```
+
+—— `stage` 就停在 `vr_open()` 那一行，说明**对象找到了、71.6 MiB 也读完了**，只是当时拿"整段对象"
+当信封喂给 `vr_open()`（少 544 字节头）所以必然失败；这也顺带证明了 `IOMallocData` 能扛 70 MiB 级分配。
+
+当前产物：`u25 = ad8ae11b…`（内核 `da0b3ebb…`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

@@ -9,6 +9,16 @@ struct RootWindow {
   uint8_t sha256[32];
 };
 
+// A version-2 data object: the kernel reads it itself through the transport and never publishes it as
+// a block device. `OS.vroot` / `SystemOS.vroot` carry the full verified-root envelope (signed header +
+// signature + the 32-byte hash of every 4096-byte block) of the window with the matching name.
+struct RootObject {
+  char name[32];
+  uint64_t offset;   // bytes from the start of the userdata partition
+  uint64_t size;     // bytes
+  uint8_t sha256[32];
+};
+
 struct RootLayout {
   uint64_t userdataFirst, userdataLast;   // 4096-byte LBAs on LUN 0
   uint64_t imageBytes;                    // size of the flashed root image from the manifest (0 when none)
@@ -16,6 +26,9 @@ struct RootLayout {
   uint32_t gptHeaderCrc, gptEntriesCrc, gptEntryCount;
   uint32_t windows;
   RootWindow window[4];
+  uint32_t objects;
+  RootObject object[4];
+  uint32_t manifestVersion;               // 1 = windows only, 2 = windows + data objects
   uint32_t manifestStatus;                // 0 ok, 1 no manifest magic, 2 bad version/count, 3 hash, 4 bounds, 5 names, 6 overlap, 7 attributes
   uint32_t magic0, magic1;                // first 8 bytes of the partition's first block
   uint32_t ext4Magic;                     // 16 bits at byte 1080 of the partition (0xef53 on Linux ext4)
@@ -157,8 +170,13 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   if (layout->magic0 == 0x474e4853U && layout->magic1 == 0x544f4f52U) {        // "SHNGROOT"
     uint32_t version = le32 (gScratch + 8), n = le32 (gScratch + 12);
     uint64_t imageBytes = le64 (gScratch + 16);
+    // Version 1 lists windows only; version 2 appends data objects (block_size 4096, flags 3) that the
+    // kernel reads itself -- the full verified-root envelopes named "<window>.vroot". Both are read here;
+    // only the windows are ever published as block devices.
+    layout->manifestVersion = version;
     layout->manifestStatus = 2;
-    if (version == 1 && n && n <= 4) {
+    const uint32_t maxEntries = version == 2 ? 8 : 4;
+    if ((version == 1 || version == 2) && n && n <= maxEntries) {
       SHA256_CTX context;
       uint8_t digest[32];
       SHA256_Init (&context);
@@ -169,16 +187,23 @@ static bool findRootLayout (RootLayout *layout, const char **why)
         uint64_t partitionBytes = (layout->userdataLast - layout->userdataFirst + 1) * 4096ULL;
         layout->manifestStatus = 4;
         bool bounds = imageBytes >= 4096 && !(imageBytes & 4095) && imageBytes <= partitionBytes;
+        uint32_t windows = 0, objects = 0;
         for (uint32_t index = 0; index < n && bounds; index++) {
           const uint8_t *entry = gScratch + 24 + 128 * index;
           uint64_t offset = le64 (entry + 32), size = le64 (entry + 40);
-          if ((offset & 4095) || offset < 4096 || (size & 511) || !size || offset >= imageBytes ||
-              size > imageBytes - offset || ((size + 4095) & ~4095ULL) > imageBytes - offset) {
+          uint32_t blockBytes = le32 (entry + 48), flags = le32 (entry + 52);
+          const bool isObject = blockBytes == 4096 && flags == 3;
+          if ((offset & 4095) || offset < 4096 || (size & (isObject ? 4095 : 511)) || !size ||
+              offset >= imageBytes || size > imageBytes - offset ||
+              ((size + 4095) & ~4095ULL) > imageBytes - offset) {
             bounds = false;
             break;
           }
-          if (le32 (entry + 48) != 512 || le32 (entry + 52) != 1) {
+          if (isObject ? blockBytes != 4096 : (blockBytes != 512 || flags != 1)) {
             layout->manifestStatus = 7; bounds = false; break;
+          }
+          if (isObject ? objects >= 4 : windows >= 4) {
+            layout->manifestStatus = 2; bounds = false; break;
           }
           unsigned length = 0;
           while (length < 32 && entry[length] >= 0x20 && entry[length] <= 0x7e) ++length;
@@ -186,25 +211,41 @@ static bool findRootLayout (RootLayout *layout, const char **why)
             layout->manifestStatus = 5; bounds = false; break;
           }
           for (uint32_t prior = 0; prior < index; ++prior) {
-            const RootWindow &other = layout->window[prior];
-            if (!strcmp (reinterpret_cast<const char *> (entry), other.name)) {
+            const uint8_t *otherEntry = gScratch + 24 + 128 * prior;
+            const char *otherName = reinterpret_cast<const char *> (otherEntry);
+            if (!strcmp (reinterpret_cast<const char *> (entry), otherName)) {
               layout->manifestStatus = 5; bounds = false; break;
             }
-            // Include the final sector padding that a physical 4K read fetches.
-            if (offset < other.offset + ((other.size + 4095) & ~4095ULL) &&
-                other.offset < offset + ((size + 4095) & ~4095ULL)) {
+            // Objects live in the same address space as the windows: overlap is rejected the same way,
+            // including the final sector padding that a physical 4K read fetches.
+            uint64_t otherOffset = le64 (otherEntry + 32), otherSize = le64 (otherEntry + 40);
+            if (offset < otherOffset + ((otherSize + 4095) & ~4095ULL) &&
+                otherOffset < offset + ((size + 4095) & ~4095ULL)) {
               layout->manifestStatus = 6; bounds = false; break;
             }
           }
           if (!bounds) break;
-          memcpy (layout->window[index].name, entry, 32);
-          layout->window[index].name[31] = 0;
-          layout->window[index].offset = offset;
-          layout->window[index].size = size;
-          memcpy (layout->window[index].sha256, entry + 56, 32);
+          if (isObject) {
+            RootObject &object = layout->object[objects];
+            memcpy (object.name, entry, 32);
+            object.name[31] = 0;
+            object.offset = offset;
+            object.size = size;
+            memcpy (object.sha256, entry + 56, 32);
+            ++objects;
+          } else {
+            RootWindow &window = layout->window[windows];
+            memcpy (window.name, entry, 32);
+            window.name[31] = 0;
+            window.offset = offset;
+            window.size = size;
+            memcpy (window.sha256, entry + 56, 32);
+            ++windows;
+          }
         }
-        if (bounds) {
-          layout->windows = n;
+        if (bounds && windows) {
+          layout->windows = windows;
+          layout->objects = objects;
           layout->imageBytes = imageBytes;
           layout->manifestStatus = 0;
         }
@@ -215,5 +256,6 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   gRootDiagnostic.magic1 = layout->magic1;
   gRootDiagnostic.manifest = layout->manifestStatus;
   gRootDiagnostic.windows = layout->windows;
+  gRootDiagnostic.objects = layout->objects;
   return true;
 }

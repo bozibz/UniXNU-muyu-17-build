@@ -9,7 +9,7 @@ struct UfsRootDiagnostics {
   uint32_t smr = 0, s2cr = 0, cbar = 0, sctlr = 0;
   uint32_t type = 0, opcode = 0, lun = 0, command = 0, ocs = 0xff, scsi = 0xffff;
   uint32_t response = 0, result = 0, power = 0, manifest = 0xffffffff;
-  uint32_t magic0 = 0, magic1 = 0, windows = 0, prepared = 0, published = 0;
+  uint32_t magic0 = 0, magic1 = 0, windows = 0, objects = 0, prepared = 0, published = 0;
   uint32_t verify = 0xffffffff;
   uint32_t protocol = 0, residual = 0, sense = 0;
   uint64_t far = 0, contiguous = 0;
@@ -34,7 +34,7 @@ static inline int formatUfsRootDiagnostics(char *buffer, size_t capacity,
     "FAULT global=%x->%x syn=%x cb=%x->%x syn=%x far=%llx id2=%x cba2r=%x\n"
     "UIC pa=%08x dl=%08x net=%08x tr=%08x dme=%08x\n"
     "GPT/read lba=%llx userdata=%llx..%llx magic=%08x %08x manifest=%u\n"
-    "WINDOWS found=%u prepared=%u published=%u bytes=%llx policies=%llu verify=%08x\n"
+    "WINDOWS found=%u objects=%u prepared=%u published=%u bytes=%llx policies=%llu verify=%08x\n"
     "IO reads=%llu failures=%llu pubPhase=%u window=%u\n",
     title, reason, d.stage, d.result, d.cap, d.version, d.hcs, d.hce, d.doorbell, d.interrupt,
     (unsigned long long)d.dma, (unsigned long long)d.list, d.smr, d.s2cr, d.cbar, d.sctlr,
@@ -44,7 +44,7 @@ static inline int formatUfsRootDiagnostics(char *buffer, size_t capacity,
     d.gfsrBefore, d.gfsr, d.gsyn, d.fsrBefore, d.fsr, d.fsyn, (unsigned long long)d.far,
     d.smmuId2, d.cba2r, d.uic[0], d.uic[1], d.uic[2], d.uic[3], d.uic[4],
     (unsigned long long)d.lba, (unsigned long long)d.first, (unsigned long long)d.last,
-    d.magic0, d.magic1, d.manifest, d.windows, d.prepared, d.published,
+    d.magic0, d.magic1, d.manifest, d.windows, d.objects, d.prepared, d.published,
     (unsigned long long)d.windowBytes, (unsigned long long)d.policyCount, d.verify,
     (unsigned long long)d.reads, (unsigned long long)d.failures, d.publicationPhase, d.publicationWindow);
 }

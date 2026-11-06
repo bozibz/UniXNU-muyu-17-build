@@ -24,34 +24,46 @@
 #endif
 
 #if defined(UFS_XNU_12377)
-extern "C" kern_return_t kmem_alloc(vm_map_t map, vm_offset_t *address, vm_size_t bytes);
-extern "C" kern_return_t mach_vm_protect(vm_map_t map, mach_vm_address_t address,
-    mach_vm_size_t bytes, boolean_t set_maximum, vm_prot_t protection);
-extern "C" kern_return_t mach_vm_deallocate(vm_map_t map, mach_vm_address_t address,
-    mach_vm_size_t bytes);
+#include <IOKit/IOLib.h>
 #else
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
 #endif
 
-/* Wired kernel memory for the verified-root policy table, tagged as security data on the 17 line. */
+/* Wired kernel memory for the verified-root policy table, tagged as security data on the 17 line.
+ *
+ * 12377 is different in a way that only shows up at run time: kmem_alloc() there takes five arguments
+ * (map, addressp, size, flags, tag), while vm_kern.h still hands an out-of-tree archive the
+ * three-argument spelling the 17 line had. The call links, and the undefined tag in x4 then makes
+ * vm_page_insert() assert "wired page with VM_KERN_MEMORY_NONE" (vm_resident.c:3408, seen on this
+ * port). IOMallocData() takes the tagged path inside the kernel (kalloc data heap, VM tag supplied
+ * by the allocator), so nothing here has to guess an ABI. */
 static inline kern_return_t
 ufs_alloc_security_storage(vm_offset_t *address, vm_size_t bytes)
 {
 #if defined(UFS_XNU_12377)
-	return kmem_alloc(kernel_map, address, bytes);
+	void *storage = IOMallocData(bytes);
+	if (!storage) {
+		return KERN_RESOURCE_SHORTAGE;
+	}
+	*address = reinterpret_cast<vm_offset_t>(storage);
+	return KERN_SUCCESS;
 #else
 	return kmem_alloc(kernel_map, address, bytes,
 	    static_cast<kma_flags_t>(KMA_KOBJECT | KMA_DATA), VM_KERN_MEMORY_SECURITY);
 #endif
 }
 
-/* Make the policy table read-only once it is written. */
+/* Make the policy table read-only once it is written. The 12377 allocation is ordinary wired kalloc
+ * data rather than a kernel_map mapping, so there is no protection to set: it is already unreachable
+ * from user space and nothing here maps it again. */
 static inline kern_return_t
 ufs_protect_read_only(vm_offset_t address, vm_size_t bytes)
 {
 #if defined(UFS_XNU_12377)
-	return mach_vm_protect(kernel_map, address, bytes, TRUE, VM_PROT_READ);
+	(void)address;
+	(void)bytes;
+	return KERN_SUCCESS;
 #else
 	return vm_map_protect(kernel_map, address, address + bytes, VM_PROT_READ, TRUE);
 #endif
@@ -61,7 +73,7 @@ static inline void
 ufs_free_security_storage(vm_offset_t address, vm_size_t bytes)
 {
 #if defined(UFS_XNU_12377)
-	(void)mach_vm_deallocate(kernel_map, address, bytes);
+	IOFreeData(reinterpret_cast<void *>(address), bytes);
 #else
 	kmem_free(kernel_map, address, bytes);
 #endif

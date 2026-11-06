@@ -1078,6 +1078,15 @@ struct StoreGeometry {
   uint32_t headerCrc, entriesCrc, entryCount;
 };
 StoreGeometry gStoreGeometry;
+// The version-2 manifest's data objects that carry a window's verified-root envelope ("<window>.vroot").
+// Filled once by startRoot from the parsed layout; the block objects read them through the transport.
+struct VrootObject {
+  char name[32];
+  uint64_t absolute;   // byte offset on LUN 0
+  uint64_t bytes;
+};
+VrootObject gVrootObjects[4];
+unsigned gVrootObjectCount;
 uint64_t gStoreRegionFirst, gStoreRegionBlocks;
 // The diagnostic log (sheng-log=1): always the last 32 MiB of userdata, so the Data store's place does not depend on logging.
 constexpr uint64_t kLogReserveBlocks = 8192;
@@ -1404,24 +1413,52 @@ volatile uint64_t native_ufs_verify_ticks = 0, native_ufs_read_ticks = 0;
 static inline uint64_t timerTicks (void) {uint64_t v; __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (v)); return v;}
 
 #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
+// The full verified-root envelope of `windowName` ("OS" -> the "OS.vroot" data object). The boot handoff
+// carries header-only envelopes, which authenticate the identity but cannot verify blocks: the 32-byte
+// hash of every 4096-byte block lives in this object, and the kernel reads it itself. Not a block device.
+static const VrootObject *vrootObjectFor (const char *windowName)
+{
+  if (!windowName) {
+    return nullptr;
+  }
+  char wanted[32];
+  unsigned length = 0;
+  while (windowName[length] && length < sizeof (wanted) - 7) {
+    wanted[length] = windowName[length];
+    ++length;
+  }
+  memcpy (wanted + length, ".vroot", 7);
+  for (unsigned index = 0; index < gVrootObjectCount; ++index) {
+    if (!strcmp (gVrootObjects[index].name, wanted)) {
+      return &gVrootObjects[index];
+    }
+  }
+  return nullptr;
+}
+
 bool NativeUfsBlock::configureVerification ()
 {
   gRootDiagnostic.stage = "policy selection";
   gRootDiagnostic.windowBytes = bytes;
   gRootDiagnostic.policyCount = verified_root_policy_count;
   gRootDiagnostic.verify = 0xffffffff;
-  // Select the one policy whose signed image size equals this window; two matches are refused.
-  const uint8_t *manifest = nullptr;
-  uint64_t manifestBytes = 0;
-  if (!verified_root_policy_count || verified_root_policy_count > 16) {
-    gRootDiagnostic.stage = "policy count invalid";
+  // The version-2 data object holds only the hash table of this window (32 bytes per 4096-byte block:
+  // 0x47a0000 for the 9168 MiB OS window); the signed 544-byte header comes from the boot handoff. The
+  // header's digest at +88 covers the table, so assembling the two here authenticates both.
+  const VrootObject *object = vrootObjectFor (label);
+  if (!object || object->bytes < 32 || (object->bytes & 4095)) {
+    gRootDiagnostic.stage = object ? "vroot object size invalid" : "no vroot data object for the window";
+    if (gRootDiagnosticEnabled) {
+      panic ("NativeUfs: %s has no usable .vroot object (bytes %llx)", label,
+             (unsigned long long)(object ? object->bytes : 0));
+    }
     return false;
   }
-  for (uint64_t index = 0; index < verified_root_policy_count; ++index) {
+  const uint8_t *header = nullptr;
+  for (uint64_t index = 0; index < verified_root_policy_count && index < 16; ++index) {
     const NativeVerifiedBlockPolicy &policy = verified_root_policies[index];
     if (!policy.manifest || policy.manifestBytes < VR_HEADER_BYTES + VR_SIGNATURE_BYTES) {
-      gRootDiagnostic.stage = "policy envelope invalid";
-      return false;
+      continue;
     }
     uint64_t imageBytes = 0;
     for (unsigned i = 0; i < 8; ++i) {
@@ -1430,29 +1467,53 @@ bool NativeUfsBlock::configureVerification ()
     if (imageBytes != bytes) {
       continue;
     }
-    if (manifest) {
+    if (header) {
       gRootDiagnostic.stage = "duplicate capacity-matching policy";
       return false;
     }
-    manifest = policy.manifest;
-    manifestBytes = policy.manifestBytes;
+    header = policy.manifest;
   }
-  if (!manifest) {
-    gRootDiagnostic.stage = "no capacity-matching policy";
+  if (!header) {
+    gRootDiagnostic.stage = "no signed header for the window";
+    if (gRootDiagnosticEnabled) {
+      panic ("NativeUfs: %s no signed header; handoff policies %llu bytes %llx", label,
+             (unsigned long long)verified_root_policy_count, (unsigned long long)bytes);
+    }
     return false;
   }
   gRootDiagnostic.stage = "policy storage";
-  vm_size_t tableBytes = round_page (static_cast<vm_size_t> (manifestBytes));
-  if (tableBytes < manifestBytes || tableBytes > UINT64_MAX - 4096) {
+  const uint64_t envelopeBytes = VR_HEADER_BYTES + VR_SIGNATURE_BYTES + object->bytes;
+  vm_size_t tableBytes = round_page (static_cast<vm_size_t> (envelopeBytes));
+  if (tableBytes < envelopeBytes || tableBytes > UINT64_MAX - 4096) {
     gRootDiagnostic.stage = "policy size overflow";
     return false;
   }
   verifiedStorageBytes = tableBytes + 4096;
   gRootDiagnostic.stage = "policy allocation";
   if (ufs_alloc_security_storage (&verifiedStorage, verifiedStorageBytes) != KERN_SUCCESS) {
+    if (gRootDiagnosticEnabled) {
+      panic ("NativeUfs: %s envelope allocation %llx failed", label, (unsigned long long)tableBytes);
+    }
     return false;
   }
-  memcpy (reinterpret_cast<void *> (verifiedStorage), manifest, manifestBytes);
+  uint8_t *envelope = reinterpret_cast<uint8_t *> (verifiedStorage);
+  memcpy (envelope, header, VR_HEADER_BYTES + VR_SIGNATURE_BYTES);
+  // 32 blocks (128 KiB) per READ(10), the transport's largest single transfer.
+  const uint32_t chunkBlocks = static_cast<uint32_t> (kDataMax / 4096);
+  const uint64_t tableAt = VR_HEADER_BYTES + VR_SIGNATURE_BYTES;
+  for (uint64_t done = 0; done < object->bytes; ) {
+    const uint64_t left = object->bytes - done;
+    const uint32_t blocks = left < chunkBlocks * 4096ULL ? static_cast<uint32_t> (left / 4096) : chunkBlocks;
+    if (!blocks || hostRead4k (0, object->absolute / 4096 + done / 4096, blocks,
+            envelope + tableAt + done) != kIOReturnSuccess) {
+      gRootDiagnostic.stage = "vroot hash table read";
+      if (gRootDiagnosticEnabled) {
+        panic ("NativeUfs: %s hash table read failed at %llx", label, (unsigned long long)done);
+      }
+      return false;
+    }
+    done += static_cast<uint64_t> (blocks) * 4096;
+  }
   uint8_t *key = reinterpret_cast<uint8_t *> (verifiedStorage + tableBytes);
   memcpy (key, verified_root_key, VR_KEY_BYTES);
   gRootDiagnostic.stage = "policy read-only protection";
@@ -1460,10 +1521,16 @@ bool NativeUfsBlock::configureVerification ()
     return false;
   }
   gRootDiagnostic.stage = "owner signature and hash table";
-  int status = vr_open (reinterpret_cast<const uint8_t *> (verifiedStorage), manifestBytes, key, 1,
-                        &vr_xnu_crypto, &verified);
+  int status = vr_open (envelope, static_cast<size_t> (envelopeBytes), key, 1, &vr_xnu_crypto, &verified);
   gRootDiagnostic.verify = static_cast<uint32_t> (status);
-  return status == VR_OK && verified.image_bytes == bytes;
+  if (status != VR_OK || verified.image_bytes != bytes) {
+    if (gRootDiagnosticEnabled) {
+      panic ("NativeUfs: %s vr_open %d table %llx window %llx", label, status,
+             (unsigned long long)object->bytes, (unsigned long long)bytes);
+    }
+    return false;
+  }
+  return true;
 }
 
 bool NativeUfsBlock::authenticatesVolume (const char *uuid, uint8_t *manifestDigest) const
@@ -2039,13 +2106,24 @@ bool NativeUfs::startRoot (IOService *provider)
   native_ufs_root_step = 3;
   if (layout->manifestStatus != 0) {
     rootDiagnosticFailure ("root manifest rejected");
-    IOLog ("NativeUfs: no valid root manifest in userdata (status %u, magic %08x %08x)\n",
-           layout->manifestStatus, layout->magic0, layout->magic1);
+    IOLog ("NativeUfs: no valid root manifest in userdata (status %u, manifest version %u, magic %08x %08x)\n",
+           layout->manifestStatus, layout->manifestVersion, layout->magic0, layout->magic1);
     IOFree (layout, sizeof (RootLayout));
     return false;
   }
   gStoreGeometry = { true, layout->userdataFirst, layout->userdataLast, layout->imageBytes, layout->gptEntriesLba,
                      layout->gptHeaderCrc, layout->gptEntriesCrc, layout->gptEntryCount };
+  // Version-2 data objects: the verified-root envelope of each window, read through the transport by the
+  // block objects (never published). Absent on version 1, where the envelopes come from the boot handoff.
+  gVrootObjectCount = 0;
+  for (unsigned i = 0; i < layout->objects && i < 4; ++i) {
+    VrootObject &object = gVrootObjects[gVrootObjectCount++];
+    memcpy (object.name, layout->object[i].name, sizeof (object.name));
+    object.absolute = layout->userdataFirst * 4096ULL + layout->object[i].offset;
+    object.bytes = layout->object[i].size;
+  }
+  IOLog ("NativeUfs: root manifest version %u windows=%u objects=%u\n",
+         layout->manifestVersion, layout->windows, layout->objects);
   const char *names[4] = {};
   for (unsigned i = 0; i < layout->windows; ++i) names[i] = layout->window[i].name;
   if (!ufsBuildRootPlan (names, layout->windows, gPublicationPlan)) {

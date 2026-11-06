@@ -7,8 +7,12 @@
 // Nothing here trusts a firmware-supplied hash: each envelope's *signed header* is verified, and its digest
 // must equal the value generated for this OS line (package/OwnerBootIdentity.h).
 //
-// Unlike the 17.7.11 line, this file only targets XNU 12377: kmem_alloc has no flags/tag arguments there and
-// the protection call is mach_vm_protect.
+// Unlike the 17.7.11 line, this file only targets XNU 12377. Two ABI facts shaped the copy below:
+//   - kmem_alloc inside 12377 takes five arguments (vm_map, vm_offset_t *, vm_size_t, int flags, vm_tag_t),
+//     while vm_kern.h hands a kext a three-argument declaration. Calling it three-argument leaves flags/tag
+//     undefined, and a zero tag trips vm_resident.c:3408 ("wired page with VM_KERN_MEMORY_NONE").
+//   - IOMallocData() is the tagged IOKit allocator (a kalloc heap with its own VM tag), so the copy lands in
+//     ordinary wired kernel data with no vm_object and nothing to protect afterwards.
 #include <IOKit/IOService.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -35,7 +39,6 @@ extern const uint8_t verified_root_key[];
 extern const struct vr_crypto vr_xnu_crypto;
 NativeVerifiedBlockPolicy verified_root_policies[16];
 uint64_t verified_root_policy_count;
-extern "C" kern_return_t kmem_alloc(vm_map_t, vm_offset_t *, vm_size_t);
 extern "C" kern_return_t mach_vm_protect(vm_map_t, mach_vm_address_t, mach_vm_size_t, boolean_t, vm_prot_t);
 }
 
@@ -72,30 +75,29 @@ native_source_root_policies_load(void)
 		return false;
 	}
 	printf("SourceStorage: 2a read physical\n");
-	/* Read the handoff with the pexpert physical word reader: no IOMemoryDescriptor, no
-	 * mapping, no vm_object. Two earlier attempts failed this kernel's
-	 * vm_page_insert_internal() assertion "wired page with VM_KERN_MEMORY_NONE"
-	 * (vm_resident.c:3408):
-	 *   - IOMemoryDescriptor::withPhysicalAddress(...)->map() inserted pages itself;
-	 *   - the probe before ml_io_map() showed the registry lookup, the RootPolicies
-	 *     property (physical 0x8c5c0000, length 1152) and withPhysicalAddress() are fine,
-	 *     so the assertion was at or after the map, and ml_io_map() was still not enough.
-	 * 1152 bytes at four bytes a read needs no mapping at all. */
-	vm_offset_t allocation = 0;
-	const vm_size_t allocationBytes = round_page(static_cast<vm_size_t>(length));
-	if (kmem_alloc(kernel_map, &allocation, allocationBytes) != KERN_SUCCESS) {
+	/* Read the handoff with the pexpert physical word reader into tagged IOKit data. No
+	 * IOMemoryDescriptor, no mapping, no vm_object, no untagged kmem_alloc:
+	 *   - IOMemoryDescriptor::withPhysicalAddress(...)->map() inserted untagged pages and failed;
+	 *   - the probe before ml_io_map() showed the registry lookup, the RootPolicies property
+	 *     (physical 0x8c5c0000, length 1152) and withPhysicalAddress() were fine, so the fault lay
+	 *     at or after the map, and ml_io_map() was still not enough;
+	 *   - kmem_alloc() has a five-argument ABI in this kernel, so the three-argument call left the
+	 *     page tag undefined and vm_page_insert() asserted on VM_KERN_MEMORY_NONE.
+	 * 1152 bytes read four at a time needs no mapping at all. */
+	void *allocationStorage = IOMallocData(static_cast<vm_size_t>(length));
+	if (!allocationStorage) {
 		return false;
 	}
+	const vm_offset_t allocation = reinterpret_cast<vm_offset_t>(allocationStorage);
 	for (uint64_t at = 0; at < length; at += 4) {
 		*reinterpret_cast<uint32_t *>(allocation + at) = ml_phys_read(physical + at);
 	}
-	panic("SourceStorage: at 2c copied, allocation %p", (void *)allocation);
-	/* Protect the copy before authenticating it: no later firmware or source mapping can change it. */
-	printf("SourceStorage: 2d protect\n");
-	if (mach_vm_protect(kernel_map, allocation, allocationBytes, TRUE, VM_PROT_READ) != KERN_SUCCESS) {
-		return false;
-	}
 	const auto *bytes = reinterpret_cast<const uint8_t *>(allocation);
+	const uint64_t magic = read64(bytes);
+	if (magic != 0x313042544f4f5256ULL) { /* "VROOTB01" little-endian */
+		panic("SourceStorage: at 2c bad magic %x %x", (unsigned)(magic & 0xffffffff), (unsigned)(magic >> 32));
+	}
+	printf("SourceStorage: 2c copied\n");
 	if (memcmp(bytes, "VROOTB01", 8) || read64(bytes + 8) != 1 || read64(bytes + 24) != length) {
 		return false;
 	}
