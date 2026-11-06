@@ -2301,6 +2301,27 @@ IOSleep ms` 四种事件。也就是说 gate 由 AppleImage4 自己用锁 + `IOS
    img4 manifest（`/chosen/boot-manifest-hash` + Image4 的 `LwVM`/nonce 状态）。若 gate 等的是
    “install 完成 / boot 已授权”，就需要让 AppleImage4 看到它要的那份 manifest，而不是绕开它。
 
+#### 6.58.3 u46/u47：gate 之后还有“cork ready”标志（2026-11-06 23:0x）
+
+u46（只记录）：`close ra 0xfffffff009024198 tid 101`，之后没有任何 open/steal；关门线程 tid 101
+与 ignition 调用者 tid 215 不同。
+
+u47（`muyu-ignition-force=1`，在 `lck_mtx_gate_try_close` 失败时 `gate_steal`）：gate 被强行接管
+（`try_close 0`），但 handler 随后进入 **每 1 ms 一次的轮询**：
+
+```
+fc54: ldaprb w8, [x22, #0x10]   ; cork +0x10 的 ready 字节
+fc5c: tbnz   w8, #0, 0xfc6c     ; bit0 置位才退出
+fc64: bl     _IOSleep           ; 1 ms
+fc68: b      0xfc54
+```
+
+`x22` 来自 `0x9023a4c`（`"get userspace cork"`：`[x19+0x10]` → `+0x80`）。
+
+所以 gate 只是第一道门；真正缺的是**把 cork ready 置位、把 blob 写好的那条路径**。它原本由
+gate 的持有者（tid 101）完成。下一步：打印 tid 101 的 PC/LR，或离线找出谁通过函数指针调用
+`0x9023de4`（代码段里没有直接 `bl`），从而判断那段 magazine 工作为什么没被触发。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
