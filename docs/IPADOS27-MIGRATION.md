@@ -2092,6 +2092,33 @@ fileset: original component called an unmapped kernel function from 0xfffffff00a
 
 当前：`u38 = 21578bcf…`（内核 `8b9ce774…`，含 `stub_sites` 报告）。
 
+### 6.56 把 `0xfffffff00aa7bd74` 的三条映射路径都试了一遍（2026-11-06 22:0x）
+
+结论先说：这个地址**既不在原始 kext 的 `__PRELINK_TEXT`（0x700c000–0x7de4000）里，也不在
+native 内核的 `__TEXT_EXEC`（0xac84000–0xb648000）里**，而是落在合并后 `__TEXT_EXEC`
+（0x8500000–0xb64c000）的**低半段**，即被 prelink 挪过去的原始 kext 代码区。
+
+三条路径的实测：
+
+1. **输出镜像的 LC_FILESET_ENTRY**：没有。`kernel/kernel.macho`（与 payload 里
+   `kernel.macho.0+.1` 同尺寸 95,715,328）是 `MH_MAGIC_64`（0xfeedfacf），不是 MH_FILESET
+   （0xcffaedfe），所以拿不到"哪个 entry 覆盖这个地址"。
+2. **原始 kernelcache 的 fileset entry**：那是 `0x80000035`（`LC_FILESET_ENTRY`，不是 0x1f，
+   第一次解析踩了这个坑），308 个 entry 全在 `0xfffffe00…`（加 slide `0x1f000000000` 才是运行地址）；
+   换算后 `0xfffffe000aa7bd74` 已经**越过最后一个 entry**，仍然无解。
+3. **`__PRELINK_INFO`**：39 个 kext 的 `_PrelinkExecutableLoadAddr`（有符号 64 位，要 `&
+   0xffffffffffffffff`）全部落在 `0xfffffff007114000`–`0xfffffff007dc74e0`，即 `__PRELINK_TEXT`
+   区，同样覆盖不到 0xaa7bd74。
+
+也就是：kext 的**头/数据**在 `__PRELINK_TEXT`，而它们的**可执行代码**被搬到 `__TEXT_EXEC`
+低半段，`__PRELINK_INFO` 记的 load addr 不是代码地址——所以现有三份表都指不到这个站点。
+
+下一步（已经想好，不需要再猜）：**给每个被 stub 的目标函数生成独立的 trampoline**，把目标地址
+作为立即数，panic 时直接打出"缺的是哪个内核函数"，比反查调用点更可靠；或者让 prelink 报告额外输出
+"合并后 `__TEXT_EXEC` 内每个 kext 代码段的 [start,end)" 表，运行时的返回地址一查即得。
+
+当前：`u38 = 21578bcf…`（内核 `8b9ce774…`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
