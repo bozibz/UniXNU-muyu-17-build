@@ -461,7 +461,13 @@ def main():
     # (site, cave stage, symbols the cave is linked with)
     # The frame-buffer probe parks right after PE_create_console, so the entry bars
     # would only be overwritten; dropping them leaves room for the panic screen.
-    sites = [] if (args.fb_probe_after or args.fill_screen is not None) else [
+    # The two entry bars are a boot-progress signal for a run that has nothing else to
+    # report. A panic screen paints over them on its first clear, and they take the two
+    # lowest caves, so a run that wants the panic screen and no reset/fb probe drops them
+    # and gives the renderer 0x60 more bytes of padding.
+    bars_wanted = not (args.panic_screen and args.no_reset and not args.fb_probe_after
+                       and args.fill_screen is None)
+    sites = [] if (args.fb_probe_after or args.fill_screen is not None or not bars_wanted) else [
         (ENTRY_VA, 1, {'target': START_FIRST_CPU}),
         (MMU_ENABLE_VA, 2, {'target': MMU_ENABLE_VA + 4})]
     sources = {}
@@ -517,7 +523,7 @@ def main():
         struct.pack_into('<I', data, file_offset(site), branch(site, CAVES[stage]))
     if args.panic_screen:
         # Right after the last probe cave in use, so the padding is shared as tightly as possible.
-        PANIC_CAVE = max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE
+        PANIC_CAVE = (max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE) if sites else CAVES[1]
         if word(PANIC_VA) in (0, 0xFFFFFFFF) or any(data[file_offset(PANIC_CAVE):file_offset(PANIC_CAVE_END)]):
             raise SystemExit('panic() or the panic screen padding is not as expected')
         # The frame trace costs roughly a hundred bytes per link. Keep as many bounded
@@ -545,7 +551,8 @@ def main():
         description += (f', panic screen ({len(code):#x} bytes at {entry:#x}; common funnel at {common:#x};'
                         f' {trace_frames} frame link(s))')
     args.kernel.write_bytes(data)
-    print(f'patched {args.kernel.name}: stage 1 blue bar, stage 2 magenta bar, {description}')
+    bars = 'stage 1 blue bar, stage 2 magenta bar, ' if sites and not args.panic_screen else ''
+    print(f'patched {args.kernel.name}: {bars}{description}')
 
 if __name__ == '__main__':
     main()

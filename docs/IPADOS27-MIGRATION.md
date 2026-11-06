@@ -1537,6 +1537,34 @@ panic 渲染器都在），所以一个 `pc` 值可以直接落成 `符号+偏�
 **注意**：`u2`/`u3` 两次刷机没有改动内核，只重打了 payload；`u3` 的 `payload_kernel_sha256` 是
 `cb6ef7cb…`，`u4` 的渲染器是 0x9b8 字节、6 个 frame link。
 
+### 6.42 几何参数、首个真 panic、以及"嵌套"的来源（2026-11-06 19:2x）
+
+`u5`（`e0c5e2ec…`，渲染器 0xab6 字节、6 个 frame link、去掉了 entry 条带）第一次把**几何**和**真 panic**
+同时拿到：
+
+```
+G rb=0x3200 w=0xc80 h=0x858          (12800 / 3200 / 2136，全部正确)
+PAC failure from kernel with IB key while returning at pc 0xfffffff00ae6d800,
+  lr 0xfffffff00b4a0a80
+pc: 0xfffffff00ae6d800 cpsr: 0x604003c4 esr: 0x0000000072000001 far: 0
+BT 0xfffffff00b5c4ce0 …
+```
+
+三条结论：
+
+1. **vinfo 没问题**：`rb/w/h = 0x3200/0xc80/0x858` 正是 3200×2136×32bpp，之前所有"几何错/字体剪切"的猜测可以
+   彻底放弃；问题在渲染器自己（见 §6.41）和下面第 3 条。
+2. **PAC 失败是真的**（`esr` 的 `EC=0x1C` 是 FPAC 陷阱，`ISS` 低位 `1` 是 IB key），不是 17 线那种没有 PAC 的
+   症状；这与 §6.38 一次一致，但现在有了完整寄存器与帧链。
+3. **这一版看到的还是"嵌套"的 panic**：BT 第 0 帧是 `_sleh_synchronous_sp1`（`0xb5c4ce0`），也就是异常发生在
+   **SP1 已选中的异常处理路径内部**（`el1_sp1_synchronous_vector_long`）。上一版 `u5` 的标记是在画完之后才写，
+   所以嵌套的 panic 把第一条消息清掉重画了；`u6` 把"占屏"改到清屏之后、落字之前，第一条 panic 会留在屏上。
+
+顺带一个反证：`pc` 处的指令在镜像里是 `ldr w8,[sp,#0x38]`，不是 RETAx，而 `handle_pac_fail` 只会在解码到
+RETAx 时打印 "while returning"——说明这个 `pc` 更像是**被认证失败后的跳转目标**（FPAC 陷阱的 ELR 语义），
+所以不要去反汇编 "pc 处那条指令"，要看帧链和 `lr`。BT 那一行还出现了两套数字叠在一起，是第二个 CPU
+同时进渲染器造成的，已用"清屏后立即占屏"消除；帧链也改成**一帧一行**（`F0..F5`）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

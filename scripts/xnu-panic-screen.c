@@ -217,38 +217,26 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
       put (g, c);
       continue;
     }
-    u32 width = 0;
-    int zero = 0, longs = 0, hash = 0;
+    u32 width = 0, precision = 160;
+    int zero = 0, longs = 0;
     c = (u8)fmt[++i];
-    for (;;) {
-      if (c == '#') {
-        hash = 1;
-        c = (u8)fmt[++i];
-      } else if (c == '0') {
-        zero = 1;
-        c = (u8)fmt[++i];
-      } else {
-        break;
-      }
+    if (c == '0') {
+      zero = 1;
+      c = (u8)fmt[++i];
     }
     while (c >= '0' && c <= '9') {
       width = width * 10 + (c - '0');
       c = (u8)fmt[++i];
     }
-    u32 precision = 4000;
     if (c == '.') {
+      /* Only '%.Ns' is used in practice; anything else keeps the 160-byte default. */
       precision = 0;
       c = (u8)fmt[++i];
-      if (c == '*') {
-        precision = (u32)args[used++];
+      while (c >= '0' && c <= '9') {
+        if (precision < 200) precision = precision * 10 + (c - '0');
         c = (u8)fmt[++i];
-      } else {
-        while (c >= '0' && c <= '9') {
-          if (precision < 4000) precision = precision * 10 + (c - '0');
-          c = (u8)fmt[++i];
-        }
       }
-      if (precision > 4000) precision = 4000;
+      if (precision == 0 || precision > 200) precision = 200;
     }
     if (width > 256) width = 256;
     while (c == 'l' || c == 'z' || c == 'h') {
@@ -297,10 +285,6 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
         put (g, '>');
       }
     } else if (c == 'x' || c == 'X') {
-      if (hash) {
-        put (g, '0');
-        put (g, 'x');
-      }
       number (g, longs ? v : (v & 0xFFFFFFFFu), 16, width, zero);
     } else if (c == 'u' || c == 'd') {
       number (g, longs ? v : (v & 0xFFFFFFFFu), 10, width, zero);
@@ -389,7 +373,41 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
     }
   }
   __asm__ volatile ("dsb sy");
+#if !PANIC_SHADOW_LEN
+  /* The clear has already erased the old marker, so claim again before drawing:
+   * a renderer that starts on another CPU now parks instead of painting its glyphs
+   * through this message (2026-11-06: the frame-trace line came out with two
+   * renders' digits over each other). */
+  mark[0] = 0xC0FFEE11u;
+  mark[1] = 0x5CEEDA7Au;
+  __asm__ volatile ("dsb sy");
+#endif
+  /* Geometry first, before the message: if anything below faults, the first line
+   * still says which frame buffer, stride and panel this renderer was given. */
+  put (&g, 'G');
+  hex (&g, "", g.rb);
+  hex (&g, " ", g.w);
+  hex (&g, " ", g.h);
+  put (&g, '\n');
   format (&g, fmt, args);
+#if PANIC_TRACE_FRAMES
+  /* Bounded frame links from this CPU: raw authenticated LR values, kept for
+   * offline symbolization. Never follow an unchecked stack pointer. */
+  {
+    const u64 *fp = (const u64 *)__builtin_frame_address(0);
+    u32 i;
+    for (i = 0; i < PANIC_TRACE_FRAMES; ++i) {
+      if (!readable ((const char *)fp, 0) || !readable ((const char *)(fp + 1), 0)) break;
+      put (&g, '\n');
+      put (&g, 'F');
+      put (&g, (u8)('0' + (i % 10)));
+      format (&g, " %p", fp + 1);
+      const u64 next = fp[0], at = (u64)fp;
+      if ((next & 15) || next <= at || next - at > 0x4000) break;
+      fp = (const u64 *)next;
+    }
+  }
+#endif
   __asm__ volatile ("dsb sy");
   /* First panic wins: a later one (another thread, or a fault inside this function)
    * finds these two pixels and parks instead of repainting over this message. */
