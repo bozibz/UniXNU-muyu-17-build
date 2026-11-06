@@ -1615,6 +1615,35 @@ IOCPUInterruptController: not registry member at registerService()
 若 PAC 陷阱消失 → 问题在 SPI-pended IPI（`ArmCpu::signalCPU` 把 IPI 挂成 1008+core 的 SPI）；
 若仍然出现 → 问题在 CPU0 自己的 IRQ 返回路径（定时器或某个设备中断）或栈本身。
 
+### 6.44 单核越过了 IRQ 的 PAC 陷阱，卡点回到"等 Data 卷"（2026-11-06 19:3x）
+
+`u9`（`sheng-smp=0` + `armcpu-spi-ipi=0`，payload 重打，内核未动）：**没有 panic**，日志一路走到
+
+```
+AMFI: skipping PMGRM latch due to MVD
+AMFI: Enabling developer mode since protected data is not available
+IOCPUInterruptController: not registry member at registerService()
+apfs_sysctl_register:1328: done registering sysctls.
+Waiting on <dict ID="0"><key>IOProviderClass</key><string>IOResources</string> …
+        ID="3">2F8E6EED-68D5-4261-B8A3-12571BAA2DD4</string></dict></dict>
+```
+
+两件事同时成立：
+
+1. **IRQ 返回路径的 PAC 陷阱与多核相关**。单核时 `_sleh_irq+0x94` 的 `retab` 不再失败，
+   说明它来自**次级 CPU 的启动/投递路径**（`sheng-smp`），要么是 PSCI CPU_ON/GIC redistributor
+   那一侧，要么是 `armcpu-spi-ipi` 把 IPI 挂成 1008+core SPI 的那一侧。本轮把两者一起关了，
+   所以下一轮的隔离实验是 **`sheng-smp=1` + `armcpu-spi-ipi=0`**：若仍 panic → 次级核启动；
+   若不 panic → SPI-pended IPI。
+2. **新的（其实是原本的）卡点回到 Data 卷**：`native_owner_data_prepare()` 里
+   `native_ram_block_volume_seed(XNU_OWNER_DATA_VOLUME_UUID, …)`（`bsd/kern/kern_exec.c:8920`）
+   在等一个 `IOResources` 下、属性里带 `2F8E6EED-68D5-4261-B8A3-12571BAA2DD4` 的服务，
+   没人发布它，于是 `IOServiceWaitForMatchingService` 一直等。这与 §6.38 的根设备问题同一处：
+   UFS/Data 的 provider 还没出现在 IORegistry。
+
+**本轮方法上也有一项值得记**：渲染器只清下半屏之后，屏上同时拿到"panic 之前的日志尾巴"和
+panic 本身；这两轮正是靠日志尾巴才敢下"单核不 panic"的结论。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
