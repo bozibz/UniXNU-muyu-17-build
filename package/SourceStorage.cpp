@@ -51,6 +51,30 @@ static const OSMetaClass *storageParent;
 static IOService *storageDriver;
 static bool attempted;
 
+// The Data seed the loader placed in /chosen/memory-map. Its disk is a plain IOBlockStorageDevice, and
+// IOResources published long before the classes above registered, so nothing matches the personality on
+// its own: allocate and start it here, after UFS, whose store window keeps the changed pages of the seed
+// when the board enables persistence.
+static void
+start_data_disk(IOService *provider)
+{
+	IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+	const bool seed = map && (map->getProperty("PackedRAMDisk") || map->getProperty("RAMDisk"));
+	OSSafeReleaseNULL(map);
+	if (!seed) {
+		return;
+	}
+	IOService *disk = OSDynamicCast(IOService, OSMetaClass::allocClassWithName("NativeRamBlock"));
+	if (!disk) {
+		panic("SourceStorage: cannot allocate the Data disk");
+	}
+	const char *step = !disk->init() ? "init" : !disk->attach(provider) ? "attach" : !disk->start(provider) ? "start" : nullptr;
+	if (step) {
+		panic("SourceStorage: Data disk %s failed", step);
+	}
+	printf("SourceStorage: Data disk started\n");
+}
+
 /* Used only by the deferred source IOBlockStorageDevice metaclass constructor. */
 extern "C" const OSMetaClass *
 native_source_storage_parent(void)
@@ -127,4 +151,6 @@ native_source_storage_start(void)
 		    native_ufs_root_failure ? native_ufs_root_failure : "no reason recorded");
 	}
 	printf("SourceStorage: UFS started through the public IOStorageFamily interface\n");
+	printf("SourceStorage: step 8 data disk\n");
+	start_data_disk(provider);
 }
