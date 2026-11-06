@@ -2322,6 +2322,34 @@ fc68: b      0xfc54
 gate 的持有者（tid 101）完成。下一步：打印 tid 101 的 PC/LR，或离线找出谁通过函数指针调用
 `0x9023de4`（代码段里没有直接 `bl`），从而判断那段 magazine 工作为什么没被触发。
 
+#### 6.58.4 Image4 的 magazine 需要“storage”：缺的可能是 Preboot 卷（2026-11-06 23:0x）
+
+AppleImage4 的字符串把依赖说清楚了：
+
+```
+magazine[%s]: failed to query storage for nonce magazine: %d
+magazine[%s]: failed to write nonce magazine data: %d
+magazine[%s]: failed to sync storage: %d
+magazine[%s]: failed to query boot manifest hash: %d
+security.mac.image4.nonce.{copy_hash,peek_hash,generate_proposal}
+```
+
+ignition blob 要等 magazine 就绪；magazine 初始化/写入失败 ⇒ gate 不 open ⇒ `cork+0x10` 永不置位。
+
+**根因候选（同一个）**：17 线的根镜像是整块 userdata 的原始备份，里面自带 **Preboot 卷**；
+27 线的 SHNGROOT 是我们自己拼的，只有 `OS` / `SystemOS` 两个窗口，**没有 Preboot**。
+`/System/Cryptexes/OS` 断链、Image4 magazine 没有存储，很可能是同一个缺口。
+
+另一个候选：`AppleEffaceableStorage`（payload 里有这个 kext，但启动日志里没有任何它的消息），
+它需要 DT/ADT 节点，本板合成 ADT 里未必有。
+
+下一步实验（按代价排序）：
+
+1. 离线：在 `dts/muyu.dts` / `make-muyu-adt.py` 里查 effaceable storage / nonce magazine 节点；
+2. 内核里：把 Data 卷先挂到 `/private/preboot`（可写），mkdir `Cryptexes/OS`，再把 SystemOS 挂到
+   `/private/preboot/Cryptexes/OS` —— 一次同时补上 magazine 存储和 cryptex 路径；
+   要先解决“同一 APFS 卷二次 rw 挂载”的限制（或用另一块可写卷）。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
