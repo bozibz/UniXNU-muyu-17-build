@@ -1353,6 +1353,46 @@ vc_clear_screen(0, 0, 0, vinfo.v_rows, 2);   /* whole screen, the console's own 
 DarwinBoot 的 2x 大字被清掉之后，所有后续控制台输出（包括 panic dump 的 `x0..x28`）都从黑屏开始，
 `panic_screen` 关掉即可——不再需要渲染器参与。这条同时解释了为什么之前“渲染器 + 控制台”总是互相覆盖。
 
+### 6.37 里程碑：27 线第一次跑到 AMFI / sandbox / apfs 全部初始化（2026-11-06 19:0x）
+
+控制台清屏补丁生效后（`muyu-console-clear.patch`，见 §6.36 末尾），屏幕第一次**干净可读**，
+而且内核走过了整个 `bsd_init` 的早期段。屏幕上按顺序出现：
+
+```
+vin Image4 Extension Version 7.0.0 … AppleImage4/RELEASE_ARM64E
+calling apn_policy_init for AppleImage4 / AMFI / Sandbox / vnguard
+Security policy loaded: AppleImage4 hooks / Apple Mobile File Integrity / Seatbelt / vnguard
+AMFI: queried model name from device tree: iPad17,3
+AMFI: Booted in a VM                      <- [adt.defaults.u32] vmm-present = 1 生效
+AMFI: Enabling developer mode since protected data is not available
+AppleARMSFRManifest: Starting …（几条 /chosen/secure-boot-hashes 缺失的告警，非致命）
+CoreAnalyticsHub start … started completed
+MFC Framework successfully initialized / mbinit: done (96 MB total pool size)
+dlil_init / ifnet_attach: … have been scheduled at least once. Proceeding.
+rootvnode is not set / Failed to open swap file 2
+com.apple.AppleFSCompressionTypeZlib kext start / loaded succeeded
+apfs_module_start:3381: load: com.apple.filesystems.apfs, v3280.2.1
+AMFI: skipping PMGRM latch due to MVD
+IOServicePM: kIOMessageSystemCapabilityChange: did 0x0f->0x0f
+IOCPUInterruptController: not registry member at registerService()      <- 最后一行
+```
+
+这说明这一天里修掉的四件事全部有效：ADT 的 `intc`（GIC）、`kernel-ctrr-to-be-enabled`（dtrace 断言）、
+跳过 `IORTC` 等待（`IOKitInitializeTime`）、以及控制台清屏（可观测性）。
+
+**当前停点**：最后一行是 `IOCPUInterruptController: not registry member at registerService()`
+（`ArmCpu` 的 `registerCPUInterruptController()` 里的告警，不致命），之后没有输出。
+按 `bsd_init` 的流程，此时应该正要进 `IOFindBSDRoot()` 等根设备——也就是 27 线的存储/根卷那条线
+（`ShengUfs` + `root_match_volume_uuid` 已修成 `2F8E6EED…`）。
+
+**下一步**（明天从这里接）：用探针区分两件事——
+
+1. `--in _bsd_init --fb-probe-after _IOFindBSDRoot`：有字 = 到达等待根设备这一步；
+2. `--in _bsd_init --fb-probe-after _vfs_mountroot`：有字 = 根设备已找到，卡在挂载。
+
+若卡在 1，就是 `ShengUfs` 还没在 27 上发布根媒体（这条线的第一站是 `NativeUfs::start` 的
+`native-ufs-root` 路径）；若卡在 2，就是 APFS 挂载参数/容器问题。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

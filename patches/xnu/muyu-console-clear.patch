@@ -1,0 +1,23 @@
+--- a/osfmk/console/video_console.c	2026-11-06 18:55:23
++++ b/osfmk/console/video_console.c	2026-11-06 18:55:23
+@@ -3065,6 +3065,20 @@
+ vcattach(void)
+ {
+ 	vm_initialized = TRUE;
++
++	/* muyu: DarwinBoot leaves its handoff text on the panel in a 2x font, and XNU's console draws a
++	 * smaller font over the same rows, so every console line (panic dumps included) lands on top of
++	 * large leftover glyphs and reads as garbage. Clear once, using the console's own geometry, so
++	 * the text console starts on black. Gated on the same boot argument the port already uses for
++	 * the text console, so a normal graphics boot is unchanged. */
++	{
++		boolean_t muyu_text_console = FALSE;
++		if (PE_parse_boot_argn("-bravearktextconsole", &muyu_text_console, sizeof(muyu_text_console)) &&
++		    muyu_text_console) {
++			initialize_screen(NULL, kPETextScreen);
++			vc_clear_screen(0, 0, 0, vinfo.v_rows, 2);
++		}
++	}
+ 
+ #if defined(CONFIG_VC_PROGRESS_METER_SUPPORT)
+ 	const boot_args * bootargs  = (typeof(bootargs))PE_state.bootArgs;
