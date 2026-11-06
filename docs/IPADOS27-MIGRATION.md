@@ -1685,6 +1685,52 @@ payload 重打（panic 渲染器 0xaeb 字节、6 个 frame link），`fw/vendor
 **要长期记住的两条**：内置驱动没有 personality 就等于不存在；改 `CONFIG_XNU_NATIVE_*`
 之后必须清 `ios-obj`。
 
+### 6.46 `Couldn't alloc class "NativeUfs"`：类没有注册，缺的是 `native-source-storage=1`（2026-11-06 19:5x）
+
+`u10` 把 personality 修好后，屏幕上出现的是新的一行（重复很多次）：
+
+```
+Couldn't alloc class "NativeUfs"
+```
+
+来自 `IOService.cpp:4072`：`OSMetaClass::allocClassWithName()` 返回 NULL。也就是说
+**personality 找到了，但类没注册** —— `gMetaClass` 符号在（`NativeUfs::gMetaClass` 存在），
+可是没有任何东西把它塞进 `sAllClassesDict`。
+
+用**刷机内核本身**查 `__mod_init_func`（注意内核开了 chained fixups，里面的指针是编码过的
+rebase，要先解码 low 51 位再比 VA）得到决定性对照：
+
+| 类 | 初始化函数 | 在 `__mod_init_func` 里？ |
+| --- | --- | --- |
+| `ArmCpu` | `__GLOBAL__sub_I_ArmCpu.cpp` | **是** |
+| `NativeUfs` | `__GLOBAL__sub_I_NativeUfs.cpp` | 否 |
+| `NativeRamBlock` | `__GLOBAL__sub_I_NativeRamBlock.cpp` | 否 |
+
+`ArmCpu` 有、`NativeUfs` 没有，正好对应"一个能起来、一个起不来"。而"没有"是**故意的**：
+`build-sheng-source-storage.py` 对 `IOBlockStorageDevice.cpp` / `NativeUfs.cpp` /
+`NativeRamBlock.cpp` 三个对象做
+
+```
+objcopy --remove-section=__DATA,__mod_init_func --globalize-symbol=__GLOBAL__sub_I_<file>
+```
+
+—— 把这些初始化函数从 section 里摘掉、只留一个全局符号，交由
+**`SourceStorage.o` 的 `_native_source_storage_start` 显式调用**（`ld` 的报错反过来证明了这一点：
+把 strip 去掉后立刻是 `"__GLOBAL__sub_I_NativeUfs.cpp" referenced from _native_source_storage_start`）。
+所以 27 线缺的不是 link 参数，而是**启动那个子系统的 boot-arg**：
+`native-source-storage=1`。我们的 kernel args 里只有 `native-ufs-root=1` 这些，没有它，
+于是 UFS 类永远不注册。
+
+**顺带两条经验**：
+
+1. 内置驱动（`gIOKernelConfigTables`）**只保证匹配**，不保证类已注册；注册要么来自
+   `__mod_init_func`（ArmCpu 这种），要么来自子系统启动时显式调用（ShengUfs 这种）。
+   看到 `Couldn't alloc class` 直接去查这两条路径，不要再怀疑 personality。
+2. `build-sheng-source-storage.py` 的 strip **不要**去掉：保留 section 会让
+   `_native_source_storage_start` 的引用变成 undefined（符号是 local），链接直接失败。
+
+`u11`（`94a47eba…`，内核 `a3741218…`）加上了 `native-source-storage=1`，其余同 `u10`。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |
