@@ -373,16 +373,28 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   /* Quiesce the ordinary console, then take the whole writable panel: the message
    * starts at row zero, over the old top-of-screen log. */
   quiet_console ();
-  for (row = 0; row < g.h; row++) {
-    for (col = 0; col < g.w; col++) {
-      *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
+  /* Clear and draw only the lower half: the kernel log above it is the only record
+   * of what happened before the panic, and the console has already stopped drawing.
+   * A full clear threw that evidence away on every run up to 2026-11-06. */
+  {
+    u32 first = g.h / 2;
+    for (row = first; row < g.h; row++) {
+      for (col = 0; col < g.w; col++) {
+        *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
+      }
     }
+    g.y = first;
   }
   __asm__ volatile ("dsb sy");
   /* Geometry first, before the message: if anything below faults, the first line
    * still says which frame buffer, stride and panel this renderer was given. */
-  put (&g, 'G');
-  hex (&g, "", g.rb);
+  {
+    u64 mpidr;
+    __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
+    put (&g, 'G');
+    hex (&g, "", mpidr & 0xff);
+  }
+  hex (&g, " rb", g.rb);
   hex (&g, " ", g.w);
   hex (&g, " ", g.h);
   put (&g, '\n');
