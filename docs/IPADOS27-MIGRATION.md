@@ -1493,6 +1493,50 @@ panic_plain("%s at pc 0x%016llx, lr 0x%016llx (saved state: %p%s)\n"
 注意 `%s` 不再是 `<str 0x…>`：本轮换成 uke 的逐字节探测 + 160 字上限，原因字符串会正常展开。
 如果仍然看到 `<str 0x…>`，说明那个指针确实不可读，此时以 `pc/lr/fp` 为准。
 
+### 6.41 渲染器修好后，头两个 panic 都是渲染器自己（2026-11-06 19:1x）
+
+按 §6.39 换掉渲染器后，屏幕第一次**完整、横排、无重叠**，于是拿到了真实的第一现场。两轮都很短，
+但每一轮都把下一层剥开：
+
+**第 1 轮（`fw/vendor_boot_27-u2.img`，`fc1c28b6…`）**：屏幕是
+
+```
+invalid kernel stack pointer (probable overflow), at pc 0xfffffff00aeeb0f0
+  lr 0xfffffff00aeefca8 (saved state: 0xfffffff948047f30)
+```
+
+`pc` 落在 `el1_sp0_synchronous_vector_long+0xf0`（异常向量自己的保存现场代码），`lr` 落在我们渲染器
+内部（`__start+0x820`）。含义很明确：**取异常时 SP 已经在 guard page 里**，连向量保存现场都写不下去，
+`sleh_invalid_stack()` 于是报 "probable overflow"。原因是 uke 的渲染器用 `u8 save[1024]` 缓冲整条消息，
+而这台机器的内核栈很小（4K 系列），panic 又在很深的地方发生——1 KiB 一压就进了 guard page。
+第一现场因此丢失，屏幕上只剩渲染器自己造成的第二个 panic。
+
+**第 2 轮（`u3`，`03afb4c7…`）**：去掉 1 KiB 缓冲，改成**边格式化边画**（`format()` 直接 `put()`），
+顺带腾出空间让 frame link 从 0 涨到 6。这次是
+
+```
+kernel data abort, at pc 0xfffffff00aeef94c, lr 0xfffffff00aeefb60
+  x8: 0xfffffff948048b50  x9: 0x3c  x0: 0xfffffff948048300
+  esr: 0x96000046  (WnR=1, translation fault level 2)
+```
+
+`pc` 就是我们自己 `put()` 里的 `g->log[g->logn] = c` 那条 `strb`，`lr` 是紧接的 `bl put` 返回点。
+`x0`（`&g`，在栈上）与 `x8`（`g->log`）都在同一段内核栈里，相差 0x850——**日志缓冲指针是脏的**。
+但这台板子根本没有 `_boot_progress_panic_text`/`_uke_panic_shadow` 符号，`PANIC_TEXT` 编译成 0，
+本该整段被跳过。既然运行时仍进得去，结论就是：这条路径对本板不该存在。已把整段日志代码
+用 `#if PANIC_TEXT || PANIC_SHADOW` 编译掉（本板两者皆 0），渲染器里剩下的唯一 `strb` 是
+`number()` 里 24 字节的栈上数字缓冲。
+
+**方法沉淀（以后照这个做，不再靠猜照片）**：`payload.img` 是 FAT，`scripts/unpack-data-seed.py` 的
+`Volume`/`candidates()` 可以直接把 `EFI/UniXNU/Payloads/kernel.macho.0` / `.1` 读出来拼回内核
+（拼回的半段 sha256 与 `payload.json` 的 `payload_kernel_sha256` 逐字节相等，已核对）。
+拼回来的内核用 `llvm-nm -n` **自带全部符号**（它是 MH_FILESET，`__start`、`el1_sp0_*_vector_long`、
+panic 渲染器都在），所以一个 `pc` 值可以直接落成 `符号+偏移`；对内核自身搬移过的那部分，
+再用 `pc - 0xac84000 + 0x72c4000` 换到 `kernel.map.json` 的 native 空间。前两次的归因都是这么得到的。
+
+**注意**：`u2`/`u3` 两次刷机没有改动内核，只重打了 payload；`u3` 的 `payload_kernel_sha256` 是
+`cb6ef7cb…`，`u4` 的渲染器是 0x9b8 字节、6 个 frame link。
+
 ## 7. 分阶段计划（每一步都有判定点）
 
 | 阶段 | 动作 | 判定点 |

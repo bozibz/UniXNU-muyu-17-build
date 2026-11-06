@@ -75,7 +75,6 @@ struct ctx {
 #define PANIC_SHADOW_LEN 0UL
 #endif
 #define PANIC_TEXT_BYTES 256
-#define PANIC_SAVE_BYTES 1024
 #ifndef PANIC_TRACE_FRAMES
 #define PANIC_TRACE_FRAMES 0
 #endif
@@ -92,10 +91,18 @@ static void put (struct ctx *g, u8 c)
   const u32 cell = 6 * SCALE, line = 14 * SCALE;
   u32 row, col, dy, dx;
 
+  /* The banner/shadow copy exists for boards that publish such a buffer (uke's
+   * BootProgress). muyu publishes neither symbol, so the whole path is compiled
+   * out: on 2026-11-06 the gate was entered with a stale pointer (0x...b50, a
+   * kernel stack address) and the byte store faulted inside this function, which
+   * repainted the screen with the renderer's own data abort and hid the real
+   * panic. A board without the symbols must not carry the code. */
+#if PANIC_TEXT || PANIC_SHADOW
   if (g->log && g->logcap && g->logn < g->logcap - 1 && c >= 9 && c <= 126) {
     g->log[g->logn++] = c;
     g->log[g->logn] = 0;
   }
+#endif
 
   if (c == '\n') {
     g->x = 0;
@@ -325,9 +332,7 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
 {
   volatile struct vc_info *v = (volatile struct vc_info *)VINFO;
   struct ctx g;
-  u32 row, col, saved, saved_h;
-  u8 save[PANIC_SAVE_BYTES];
-  u8 *banner = 0;
+  u32 row, col;
 
   __asm__ volatile ("msr daifset, #15");
   g.base = (u8 *)v->v_baseaddr;
@@ -339,9 +344,7 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   }
 
   /* Claim before clearing or formatting. This is normal kernel BSS, not a
-   * device framebuffer: exclusive operations on device mappings may fault.
-   * The shadow length has no other writer; nonzero also blocks nested panics.
-   * Publish the real nonzero length only after copying the complete shadow. */
+   * device framebuffer: exclusive operations on device mappings may fault. */
 #if PANIC_SHADOW_LEN
   u32 unclaimed = 0;
   if (!__atomic_compare_exchange_n((u32 *)PANIC_SHADOW_LEN, &unclaimed, 1, 0,
@@ -351,111 +354,53 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   volatile u32 *mark = (volatile u32 *)(g.base + (u64)(g.h - 1) * g.rb);
   if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) park ();
 #endif
-  g.x = 0;
-  g.y = 0;
-  g.log = 0;
-  g.logn = 0;
-  g.logcap = 0;
-  save[0] = 0;
   g.h = usable_height (&g);
   if (g.h == 0) {
     park ();
   }
-  /* The final message starts at row zero. Quiesce the ordinary console before
-   * clearing that same full area, including the old top-of-screen log. */
+  g.x = 0;
+  g.y = 0;
+  /* Stream the message straight onto the panel. This renderer used to format the
+   * whole message into a 1 KiB stack buffer first (as uke does), but this board's
+   * kernel stack is small: a panic taken deep in the boot then put SP into the guard
+   * page and the exception entry itself faulted, so the *first* panic's text was
+   * lost and only "Invalid kernel stack pointer (probable overflow)" was drawn
+   * (2026-11-06). Drawing needs no buffer, so none is taken. */
+#if PANIC_TEXT || PANIC_SHADOW
+  g.log = 0;
+  g.logn = 0;
+  g.logcap = 0;
+#if PANIC_TEXT
+  if (*(volatile u8 *)PANIC_TEXT == 0) {
+    g.log = (u8 *)PANIC_TEXT;
+    g.logcap = PANIC_TEXT_BYTES;
+  }
+#else
+  g.log = (u8 *)PANIC_SHADOW;
+  g.logcap = 1024;
+#endif
+#endif
+  /* Quiesce the ordinary console, then take the whole writable panel: the message
+   * starts at row zero, over the old top-of-screen log. */
   quiet_console ();
   for (row = 0; row < g.h; row++) {
     for (col = 0; col < g.w; col++) {
       *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
     }
   }
-  /* The board's live banner keeps showing this text after the next swap paints over the screen (BootProgress.c,
-   * boot_progress_panic_text). The first panic's text is kept: a buffer that already holds one is left alone. */
-  if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
-    banner = (u8 *)PANIC_TEXT;
-  }
-  g.log = save;
-  g.logn = 0;
-  g.logcap = sizeof(save);
-  /* First pass formats the whole message into the buffer and draws nothing: the stack after the assertion would fill the panel and
-   * anything drawn over it would collide with it. The stack still reaches the pram through the flush below. */
-  saved_h = g.h;
-  g.h = 0;
-  format (&g, fmt, args);
-#if PANIC_TRACE_FRAMES
-  /* Bounded frame links from this CPU. Raw authenticated LR values are kept
-   * for offline symbolization; never follow an unchecked stack pointer. */
-  {
-    const u64 *fp = (const u64 *)__builtin_frame_address(0);
-    for (u32 i = 0; i < PANIC_TRACE_FRAMES; ++i) {
-      if (!readable((const char *)fp, 0) || !readable((const char *)(fp + 1), 0)) break;
-      format(&g, i ? " %p" : "\nBT %p", fp + 1);
-      const u64 next = fp[0], at = (u64)fp;
-      if ((next & 15) || next <= at || next - at > 0x4000) break;
-      fp = (const u64 *)next;
-    }
-  }
-#endif
-  saved = g.logn;
-  g.h = saved_h;
-#if PANIC_TEXT
-  /* The board's boot-page banner buffer, for kernels that have one (the GPU configuration has no BootProgress: PANIC_TEXT is 0 and
-   * this copy is compiled out, which is what keeps the screen inside the kernel's padding). */
-  if (banner) {
-    u32 n = saved < PANIC_TEXT_BYTES - 1 ? saved : PANIC_TEXT_BYTES - 1;
-    u32 i;
-    for (i = 0; i < n; i++) {
-      banner[i] = save[i] < 32 ? ' ' : save[i];
-    }
-    banner[n] = 0;
-  }
-#endif
   __asm__ volatile ("dsb sy");
-  /* Sample the active CPU translation regime, without changing it. This is
-   * panic-time evidence only; it does not establish early mappings or EL0 ABI. */
-  /* The register and memory samples this screen once printed (TCR, SCTLR, pages, free) are gone: the code has to stay inside the
-   * kernel's padding and what a panic on this board is read for is the message's own first lines, which the block below redraws. The
-   * memory counters still reach the log from the probe's UKE MEM rows while the system is alive. */
-  g.log = 0;
-  /* The message, drawn once and alone from its start: the assertion and its first frames are what a photograph of a panic is read
-   * for. Whatever does not fit the panel is still in the pram (the flush below) and in the next boot's log. */
-  if (saved) {
-    u32 i;
-    g.x = 0;
-    g.y = 0;
-    for (i = 0; i < saved; i++) {
-      put (&g, (u8)save[i]);
-    }
-    __asm__ volatile ("dsb sy");
-  }
-  /* The raw argument slots are not dumped: the formatted message above already carries them. */
+  format (&g, fmt, args);
+  __asm__ volatile ("dsb sy");
+  /* First panic wins: a later one (another thread, or a fault inside this function)
+   * finds these two pixels and parks instead of repainting over this message. */
 #if !PANIC_SHADOW_LEN
-  /* Kernels with the atomic BSS claim above already exclude nested panics.
-   * Keep the framebuffer marker only for the older fallback path. */
   mark[0] = 0xC0FFEE11u;
   mark[1] = 0x5CEEDA7Au;
   __asm__ volatile ("dsb sy");
 #endif
-#if PANIC_SHADOW
-  if (saved) {
-    volatile char *shadow = (volatile char *)PANIC_SHADOW;
-    u32 n = saved < 1023 ? saved : 1023, i;
-    for (i = 0; i < n; i++) {
-      shadow[i] = save[i];
-    }
-    shadow[n] = 0;
-    __asm__ volatile("dsb sy" ::: "memory");
 #if PANIC_SHADOW_LEN
-    __atomic_store_n((u32 *)PANIC_SHADOW_LEN, n, __ATOMIC_RELEASE);
-#endif
-  }
-#endif
-  /* Hand the saved text to the boot-log writer's pram staging block. The claim
-   * above is already set, so a fault here parks a nested panic instead of
-   * repainting over this one. */
-#if UKE_PANIC_FLUSH
-  if (saved) {
-    ((void (*)(const char *))UKE_PANIC_FLUSH)((const char *)save);
+  if (g.logn) {
+    __atomic_store_n((u32 *)PANIC_SHADOW_LEN, g.logn, __ATOMIC_RELEASE);
   }
 #endif
   park ();
