@@ -46,3 +46,9 @@ __pycache__/
 *.key
 .env
 local.toml
+
+# The build tag is per-build state: scripts/build-tag.py regenerates it. Committing a stale copy
+# would put yesterday's tag on today's panel, which is the exact failure this file exists to stop.
+# BUILD-TAGS.tsv is the opposite: it is the log, so it stays tracked.
+BUILD-TAG
+drivers/MuyuDebug/build_tag_generated.h
