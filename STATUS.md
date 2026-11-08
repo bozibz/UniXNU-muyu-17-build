@@ -1,116 +1,202 @@
 # Status and how to continue
 
-**Last updated:** 2026-11-02 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635, Adreno 735)
-**OS:** iPadOS 17.7.11 (21H461) on `userdata` · **Format:** 1 (`board.toml`)
+**Last updated:** 2026-11-08 · **Device:** Xiaomi Pad 7 Pro (`muyu`, SM8635 "cliffs", Adreno 735)
+**Lines in flight:** iPadOS 27.0.1 (24A446) — main line · iPadOS 17.7.11 (21H461) — fallback that still reaches the desktop
+**Ledger:** `porting.toml` — 13 areas, every status backed by a citation
 
-This file is the hand-off. If you are picking this port up, read this first, then the
-documents under `docs/`.
+This file is the hand-off. Read it first, then:
 
-## What works
+| Document | Why |
+| --- | --- |
+| `docs/HANDOFF-2026-11-08.md` | the last session: eight rebuilt rounds reconstructed from artefacts, and the restore to stock |
+| `docs/SCREEN-ONLY.md` | where diagnostics are going — the panel is now the only channel |
+| `docs/BUILD-NAMING.md` | how builds are named and tagged from now on |
+| `porting.toml` | per-area state, findings, limits and the next action for each |
+
+## Where the device is right now
+
+Stock `boot` / `vendor_boot` / `recovery` were flashed back at **2026-11-08 16:18** (local) and
+nothing has been flashed since. Why is not recorded — `docs/HANDOFF-2026-11-08.md` §7 marks it
+`unknown`, and it is the one open question in that file.
+
+Nothing has been verified on the tablet after that restore. `userdata` still holds the iPadOS
+root, so stock Android has no valid data partition to mount: treat the device as **parked**, not
+recovered. Continuing means flashing a matched `boot` + `vendor_boot` pair for the same build to
+slot a (see *Build and flash*).
+
+## The two lines
+
+| Line | Reaches | Blocker |
+| --- | --- | --- |
+| **27.0.1 (24A446)** — main | launchd runs boot tasks; `apfs` mounts `SystemCryptex`; the owner cache enumerates `dyld_shared_cache_arm64e` | dyld never requests a slide, so threaded pointers inside cache pages are never rebased |
+| **17.7.11 (21H461)** — fallback | the desktop, CPU-composed at ~1.4 fps; touch works | GPU GX rail; then thermal, which has never been implemented |
+
+The 17 line exists because it is a place to stand: it boots a working userland on the same
+kernel and the same panel, so anything that breaks the 27 line can be bisected against it.
+
+## 27 line: what works
+
+The shared-cache chain took roughly thirty rounds and four real fixes; they are the expensive
+part of this port, so they are listed rather than summarised:
+
+1. **`map_with_linking_np` rejected 16 KiB device pages** — the kernel compared
+   `mwli_page_size != PAGE_SIZE`; the uke port compares `!= 4 * PAGE_SIZE`. (u91)
+2. **dyld pager fixups at 16 KiB** — `vm_dyld_pager.c` carried over from uke: `seg->page_size`,
+   `page_shift`, whole-page assembly, key 0 signed as well. (u92)
+3. **`T0SZ_USER` at 47 bits** — the turn: the pager went 63 → 822 pages, `mwl` calls 1 → 24,
+   and launchd started running boot tasks. (u98)
+4. **Chain traversal verified correct**: `rb` from 21.7 k to 370 k rebases, `slid_error=0`. (u95/u101)
+
+The 14:36 panel readout on u155 (transcribed in `docs/HANDOFF-2026-11-08.md` §5) shows the
+further of the two: `apfs` mounting `SystemCryptex` on pid 1's request, owner cache walking the
+dyld shared-cache file list. The kernel main line has been in userland for a while — the
+diagnostic USB never was a prerequisite for that.
+
+## 27 line: the current blocker
+
+**dyld does not ask for a slide.** Cache pages therefore keep unresolved threaded pointers and
+the first job that touches one dies. The last build (`kernel/kernel.json`, 16:13) also reports
+`loadable=false` with `IOHIDFamily` missing — and u159 was flashed anyway. That decision is
+recorded as a finding in `porting.toml` under `configuration`, because nobody wrote down why.
+
+Two facts that bound the search: `-disable_aslr` is still in the live config (the uke line does
+not use it, and it has not been re-tested without), and `DoNotUseSEP` from the `is-qian` fork is
+still unwired (`[payload.adt] filesystems = false`) — without it an unencrypted Data-role volume
+is refused once `/private/var` has to be mounted for real.
+
+## 17 line: what works, and where it stopped
 
 | Area | State |
 | --- | --- |
 | UEFI (`fastboot boot`), UniXNU menu, payload from `vendor_boot` | works |
 | XNU → BSD init → iPadOS desktop | works |
 | Display | works, CPU-composed (~1.4 fps) |
-| Physical buttons | work |
-| Novatek touch (`muyu-touch-drv=1`) | works (native IOService) |
-| USB debug console | experimental: SS PHY facts pinned, opt-in bring-up written, not yet enumerated |
-| USB3 SS PHY (`ssphy@88e8000`) | DT facts generated into `package/MuyuUsbPhy.h`; read-only survey in the driver; opt-in power-on follows mainline qmp-usb order. Images: `fw/vendor_boot_usb7.img` (survey + 90 s panic), `fw/vendor_boot_usb8.img` (attempt to bring the PHY up) |
+| Physical buttons, Novatek touch (`muyu-touch-drv=1`) | works (native IOService) |
 | GPU: CX power, GPUCC clock tree, GPU SMMU | works (hardware-verified) |
 | GPU: GMU cold start + full HFI startup | **works** (2026-10-30, `cold=0 ph=7 proto=0`) |
-| GPU: GX rail, CP, command submission, Metal | **not implemented** — **paused since 2026-11-02 by the maintainer's decision**; the GX power handshake itself works (`docs/GPU-PROBE-RUNBOOK.md` §13, workspace `HANDOFF-2026-11-01.md` §17–§21) |
-| Thermal sensors (TSENS) | read-only survey written and built (`muyu-thermal=<n>`, `docs/THERMAL-PORT.md`); **not yet run on the device** |
-| Thermal policy, DVFS, watchdog | **not implemented** — this is the current main line |
+| GPU: GX rail, CP, command submission, Metal | **not implemented** — paused 2026-11-02 by the maintainer's decision |
+| Thermal sensors (TSENS) | survey written and built (`muyu-thermal=<n>`); **never run on the device** |
+| Thermal policy, DVFS, watchdog | **not implemented** |
 
-## GPU: where it stands
+The GX rail is the reason the GPU stopped: `gpu_cc_gx_gdsc`'s parent supply is the RPMh ARC
+voter `pm_v6c_s6_gfx_voter_level`, so `CFG_GDSCR.POWER_UP_COMPLETE` (bit 16) never sets. A
+CPU-side RSC sender exists (`package/MuyuRpmhRsc.{h,c}`, probe mode 17, host-tested by
+`scripts/check-muyu-rpmh-host.py`) and was flashed, but **the on-device readout was never
+collected**. Nine register tables and probe modes 1–17 are still in `docs/GPU-PROBE-RUNBOOK.md`;
+nothing needs rediscovering, it needs one flash.
 
-The GMU runs and answers HFI. The seven startup commands are acknowledged by the firmware;
-this repeated on every probe run (`cold=0 ph=7 proto=0 fw=0x00000100 hfi=0x00000001`).
+## Diagnostics: the panel is the only channel
 
-Evidence, in the order it was obtained:
+Decided 2026-11-08 (`docs/SCREEN-ONLY.md`):
 
-1. CX power + GPUCC clocks — `docs/GPU-CLIFFS-MMIO.md` (the register map; this SoC is *not*
-   SM8650-compatible, and the devicetree GDSC node names are leftovers).
-2. GPU SMMU identity (24 SMR / 22 CB) and the GMU's stage-1 context (bank 2, SID 5).
-3. Five GMU memory blocks + the A735 firmware staged with its SHA verified.
-4. GMU cold start + HFI — probe modes 7–11, `docs/GPU-PROBE-RUNBOOK.md` §11.
+- **USB CDC ACM — abandoned.** About 29 rounds (u128–u159). `DEPCFG` is accepted and never
+  starts executing; the UTMI/eUSB2 PHY appears to sit in suspend. Ordered SUSPHY clears after
+  endpoint commands came too late.
+- **Linux init_boot + pstore — built, never flashed, now shelved.** v1's hand-rolled boot header
+  was rejected by ABL at 14:59; v3/v4 use the stock `init_boot` header and read ramoops at
+  `0xa7000000`. v1–v4 appear in no ledger line at all.
+- **Panel — device-verified, and the only channel that has ever produced conclusions.**
 
-Two facts that took hardware iterations and should not be rediscovered:
+Everything the screen needs already exists on the 17 line: a single-source build tag, automatic
+page rotation, previous-panic replay, crash-report painting, a watchdog. It was lost on the 27
+line at the link and config layer — its `kernel.macho` keeps only `_boot_progress_poll`/`_tag`,
+no `STACK64`, and 25 bootargs against the 17 line's 68. `docs/SCREEN-ONLY.md` §4 is a five-step
+re-plant, not a rewrite.
 
-- **GMU firmware chip id is `0x070b0000`.** The catalog-less formula gives `0x4303b000`,
-  which the firmware rejects (`FW_INIT_RESULT=0x901`). The CM3 image contains its own check
-  (`0x10004104` + literal); the generator derives the value from that.
-- The board OPP/BCM policy comes from the device's own downstream devicetree
-  (`qcom,gpu-pwrlevels` / `qcom,gmu-freq-table`), 11 GPU levels 1100→255 MHz.
+## Build and flash
 
-## The current blocker (GX rail)
+**Two board files, and this trips people up.** `unixnu` reads `<device>/board.toml` and nothing
+else:
 
-`ShengGmuColdStart()` succeeds, but the GPU's GX power domain does not come up:
+| File | Schema | Line |
+| --- | --- | --- |
+| `board.toml` | 1 | 21H461 (the historical template) |
+| `board.spike27-live.toml` | 2, 703 lines | 24A446 — byte-identical to the `/tmp/spike27` copy that built today's images |
 
-- `gpu_cc_gx_gdsc` is a `support-cfg-gdscr` GDSC: enable = clear `SW_COLLAPSE`, and the status
-  is `CFG_GDSCR (0x9038) bit16`. That bit never sets (`cfg=0x050e0000`).
-- Its `parent-supply` is the RPMh ARC voter `pm_v6c_s6_gfx_voter_level` (`mxc.lvl`).
-  Linux enables it through the regulator framework; the official component catalog has no
-  RPMh/RSC component, so a CPU-side sender was written here:
-  `package/MuyuRpmhRsc.{h,c}` + `MuyuRpmhRscHostTests.c`, probe mode 17, host-tested by
-  `scripts/check-muyu-rpmh-host.py`. It sends one ACTIVE TCS transfer with both ARC votes
-  (`gfx.lvl` selector from init level 0x10, `mxc.lvl` from 0x30). **Flashing done; the
-  on-device panic readout has not been collected yet.**
-- The GX clock-controller rail (`gx_clkctl_gx_gdsc`, `0x3d68024`) reads back 0 while the
-  parent is off; its devicetree node is `status = "disabled"`, so it is not the missing
-  piece.
-- The OOB `GPU_SET` handshake (non-legacy bits 30/31 and legacy 16/24) gets no ACK, which
-  is consistent with GX being unavailable.
+So a 27-line build starts by putting the live config in place (`cp board.spike27-live.toml
+board.toml`), and `git checkout board.toml` puts the 17 line back.
 
-See `HANDOFF-2026-10-29.md` §20 (workspace) and `docs/GPU-PROBE-RUNBOOK.md` §12 for all
-readings.
+Builds are tagged `<line>-<purpose>-<MMDD><letter>` — `27-scr-1108a`. The tag is generated, not
+typed into `printf`s (that is how a u155 image once read u151):
+
+```bash
+python3 scripts/build-tag.py next --purpose scr --note "what this round is for"
+python3 scripts/build-tag.py show        # the tag this build will carry
+```
+
+Then the three steps, with the 24A446 kernelcache:
+
+```bash
+cd UniXNU-27 && python3 unixnu build kernel -D ../UniXNU-muyu \
+    --kernelcache out/ipsw/24A446/kernelcache.decompressed
+python3 unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
+    --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
+    --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr
+python3 ../UniXNU-muyu/scripts/build-tag.py check out/muyu/kernel/kernel.macho
+```
+
+`vendor_boot` is assembled by `scripts/patch-vendor-boot.py` from `fw/vendor_boot_lite.img`; the
+full sequence, including the `set_active a` and the pair-flashing rule, is in the workspace
+`AGENTS.md`. The 17-line commands (with `--kernelcache out/ipsw/21H461/...`) are unchanged and
+still work.
 
 ## Next steps, in order
 
-The main line is **power and thermal safety**, not GPU: this port still has no thermal zone,
-no DVFS and `wdt=-1`, so the tablet cannot protect itself from sustained load. See
-`docs/THERMAL-PORT.md`.
+1. **Answer `docs/HANDOFF-2026-11-08.md` §7.** One line: why stock images went back at 16:18.
+2. **Re-plant the screen stack** (`docs/SCREEN-ONLY.md` §4). Turn on `CONFIG_XNU_BOOT_PROGRESS`
+   and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY`, wire the four units back into the fileset, set the
+   build tag, remove `muyu_usb_debug.c` from `bsd/conf/files.arm64`, and make the `check-boot-*.py`
+   set a gate before flashing. Until the panel can state its own version and replay the previous
+   panic, every round costs a photograph and a guess.
+3. **One 27-line build under the new instrumentation**, `27-scr-…`, flashed as a pair, and read
+   the panel. The target is not progress — it is confirming the dyld-slide blocker still
+   reproduces when the rig can actually report.
+4. **Then the blocker itself**: why dyld never requests a slide, and which job first touches an
+   unrebased threaded pointer.
+5. **Thermal is still unaddressed on both lines.** No zone, no DVFS, `wdt=-1`: the tablet cannot
+   protect itself from sustained load. One read-only survey flash (`muyu-thermal=2`) settles
+   whether the sensors are readable at all.
 
-1. **Run the read-only thermal survey once.** Flash `fw/vendor_boot_thermal1.img` and read the
-   `THERM` row (`muyu-thermal=2`): `en=111 inv=0` plus a plausible temperature means the sensors
-   are readable. `docs/THERMAL-PORT.md` §5 has the runbook and the judgment tree.
-2. **Sample periodically.** The survey is one-shot at boot; a policy needs a 1 s read and a
-   one-minute peak.
-3. **Throttle.** Cap CPU frequency through EPSS (`package/CpuFreqProbe.cpp` has the layout, and
-   the write is still unvalidated on this board); if that does not stick, inject idle on the
-   compositor path.
-4. **Emergency action and watchdog.** Act below the DT's real trips (95 °C GPU, 110 °C CPU),
-   power off before `reset-mon` (115 °C), and give the policy a watchdog before relying on it.
-
-GPU work resumes only if the maintainer asks for it; the register tables, probe modes and the
-GX power result are all still here (`docs/GPU-PROBE-RUNBOOK.md`, `docs/GPU-GEN7-START-REGLIST.md`).
-
-## Build and flash (short form)
-
-```bash
-cd UniXNU && python3.12 unixnu build kernel -D ../UniXNU-muyu \
-    --kernelcache out/ipsw/21H461/kernelcache.decompressed
-python3.12 unixnu build payload -D ../UniXNU-muyu --kernel out/muyu/kernel/kernel.macho \
-    --unique-chip-id 0000000000000001 --owner-trust-cache /tmp/muyu-static-system.bundle \
-    --data-ramdisk ../fw/data-seed/muyu-data-200g.dbr
-python3.12 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lite.img \
-    --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_muyu.img
-```
-
-The full procedure (boot arguments, data seed, flash script, ledgers) is in the workspace's
-`AGENTS.md` and in `docs/GPU-PROBE-RUNBOOK.md`.
+GPU stays paused unless the maintainer asks; the tables, the probe modes and the GX result are
+all still here.
 
 ## Hard limits to know
 
-- No thermal management and no DVFS on this port; long GPU experiments heat the tablet.
+- No thermal management and no DVFS; long experiments heat the tablet.
+- `memory` is `unknown` in `porting.toml` on purpose — there is no citable evidence yet, so it is
+  not promoted to `implemented`.
 - `ShengGmu.c`'s poll caps a single wait at 10 ms; the A735 firmware finishes well inside it.
 - ACD and IFPC are off (they need AOSS/ACD and power-collapse prerequisites).
 - GPLL0's GPU vote (GCC `0x52000` bit 15/16) does not stick; the GMU uses PLL1, so it only
   matters for hub/axi votes.
 
+## Where things live
+
+| Path | What |
+| --- | --- |
+| `fw/` | 353 images, including `fw/stock/` (the restore set) and the `vendor_boot_27-u1xx.img` series |
+| `logs/flash-ledger.tsv` | 2651 lines: every flash, its sha256, and what was on screen |
+| `logs/*.jpg` | panel photographs — the primary evidence of the whole project |
+| `docs/` | 21 documents; `HANDOFF-2026-11-0{7,8}.md` are the two long ones |
+| `drivers/MuyuDebug/` | the screen/USB sources, rescued out of `.cache/xnu-work` on 2026-11-08 |
+| `patches/xnu/wip/` | `muyu-screen-wip-20261108.patch` — the full diff those sources came from, not yet split |
+| `/tmp/spike27` and `/tmp/spike27-out` | the live build inputs and tree for the 27 line; **volatile**, and the reason `board.spike27-live.toml` was archived |
+
+## Syncing this repository
+
+Two remotes: `muyu` → `yehua123-oos/UniXNU-muyu` (tracked by `main`), `origin` →
+`tattwamashi/UniXNU-braveark` (the upstream this port derives from). Push goes to `muyu`:
+
+```bash
+git -c credential.helper=osxkeychain push muyu main
+```
+
+The credential lives in the macOS login keychain (`github.com`, account `yehua123-oos`). Note
+that the 2026-11-07 handoff (§12.7) records a token being echoed in a session and recommends
+revoking it — if that was done, store a fresh one before pushing.
+
 ## If you want to take over
 
-Open an issue on this repository. Everything needed to reproduce the state is here: the
-register tables, the probe modes, the generator scripts and their checks, and the reasoning
-behind each decision.
+Open an issue on this repository. Everything needed to reproduce the state is here: the register
+tables, the probe modes, the generator scripts and their checks, the flashed-image hashes, the
+photographs, and the reasoning behind each decision — including the ones that turned out wrong.

@@ -83,7 +83,7 @@ procedure = ["(none recorded)"]
 findings = ["No structured record exists for memory bring-up on muyu; the 17-line port boots without documented memory work, which is evidence only that the inherited braveark SM8635 layout works, not a qualification."]
 completion = []
 limits = ["Nothing measured: no owned-memory figure, no bank map check, no jetsam observation on the 27 line."]
-next_action = ["Fill this area from the next instrumented boot once pstore readback works."]
+next_action = ["Fill this area from the next instrumented boot once the screen channel is trustworthy: the painted page carries the build tag and the previous panic, so a single photograph is enough evidence."]
 evidence = []
 
 [[area]]
@@ -121,7 +121,7 @@ findings = ["The framebuffer readout method is established: u143 moved state ont
   "Exec-path printf is dropped by the panel: diagnostics must be printed before panic or baked into panic text (HANDOFF-2026-11-07 §7 note)."]
 completion = ["Boot state is observable end-to-end via panel photographs at 60 Hz vsync, no extra hardware."]
 limits = ["CPU composition only; no DPU direct scanout, no GPU compositor on the 27 line; panel drops exec-path prints."]
-next_action = ["Keep the readout format; add the pstore line-dump as a second channel so panics before video are not lost."]
+next_action = ["Keep the readout format; paint the previous panic as the first boot screen (docs/SCREEN-ONLY.md §4, BravearkLastLog replay) so panics before video are not lost. The pstore line-dump was the other candidate and is abandoned."]
 evidence = [
   { kind = "device", reference = "logs/2026-11-08-14-36-26-878.jpg", result = "full-screen 56-row readout with round tag u155", command = "photograph after flash", revision = "u155" },
 ]
