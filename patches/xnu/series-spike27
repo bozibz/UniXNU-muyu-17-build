@@ -1,86 +1,112 @@
-# muyu 27 line — device-layer XNU series (iPadOS 27.0.1 / 24A446, SM8635 cliffs).
+# muyu 27 line — the XNU patch series actually applied to iPadOS 27.0.1 / 24A446.
 #
-# This file is referenced by board.spike27-live.toml (kernel.patch_series =
-# ["device:patches/xnu/series-spike27"]) and by porting.toml (configuration area).
-# It did not exist until 2026-11-08: the 27 line had been built with whatever the
-# patch loader globbed out of patches/xnu/, so the applied set was an accident of
-# file naming and it changed silently whenever a patch was added. Nothing here is
-# reordered relative to that glob — this is the same set in the same order, now
-# written down.
+# Referenced by board.spike27-live.toml (kernel.patch_series = ["device:patches/xnu/series-spike27"]).
 #
-# Order is alphabetical, and the zzz… prefixes are a hand-rolled sort key from
-# before this file existed (more z = applied later). Do not add new z's; append to
-# the end of this list instead and give the patch a descriptive name.
+# Provenance: this is the 72-entry list the 16:12 build of 2026-11-08 used, recovered from
+# /tmp/spike27/patches/xnu/series-spike27 and cross-checked against the framework's own record of
+# what it applied, /tmp/spike27-out/muyu/ipados-27.0.1-24A446/muyu-27/xnu-patches.list. The order
+# is u159's order. Do not sort it: 67 of the entries are the shared xnu-12377 compatibility layer
+# and their order matters at apply time.
 #
-# Layering: this is the *device* layer only. The arch / soc / os layers come from
-# the framework (UniXNU-27) series, which is why this file does not carry the
-# sheng-baseline patches. A patch that belongs to the shared XNU tree belongs in
-# the framework, not here.
+# Why it had to be rebuilt: the file was declared by the board file and by porting.toml but had
+# never been committed, and the loader does not fall back — patches.py raises
+# "patch series missing" and the build stops. Every u-round was built from /tmp/spike27, whose
+# copy of this file lived only in the temp tree. So the repo could not build its own 27 line.
 #
-# patches/xnu/wip/ is deliberately absent: that directory is an archive of
-# unfinished work (muyu-screen-wip-*.patch), not a build input.
+# The two path forms:
+#   os:../../../patches/xnu-12377/X.patch   resolves through the OS profile root to the framework's
+#                                            own patches/xnu-12377 — the same relative hop the OS
+#                                            profile series itself uses, so it works in both
+#                                            UniXNU and UniXNU-27 checkouts.
+#   X.patch                                  the five device patches, relative to this directory.
+#
+# Caveat, recorded rather than hidden: UniXNU/patches/xnu-12377 and UniXNU-27/patches/xnu-12377
+# are not identical — offline-owner-boot-manifest, offline-owner-systemos-mount and
+# zzz-boot-progress differ, and the UniXNU copies are the newer ones. So "os:" means "whichever
+# framework you build against", and those three files make the two builds non-equivalent.
+# scripts/audit-27-config.py reports the divergence; see porting.toml, configuration area.
+#
+# The five device patches are not grouped: four sit at the end (that is the order they were
+# applied in), and sheng-platform-power.patch sits between the owner patches and zzz-boot-progress
+# because the boot-progress patch depends on it. Leave the positions alone.
+# Not in this series: patches/xnu/backlog/ — 16 patches copied from the 17 line (video console,
+# last-panic replay, watchdog, the launchd traces) that never entered a 27-line build. They are
+# the raw material for the screen re-plant in docs/SCREEN-ONLY.md §4; keep them out until that
+# work starts, and add them here when it does.
+#
+# patches/xnu/wip/ is also absent on purpose: it is an archive of unfinished tree state, not an
+# input to this series.
 
-# --- console -------------------------------------------------------------------
-# Clear DarwinBoot's leftover 2x handoff text once, so the console does not draw
-# over it.
-muyu-console-clear.patch
-
-# 4 KiB-page kernel: stack region alignment is 32 KiB, not derived from the page
-# shift.
+os:../../../patches/xnu-12377/bcm2837-machine-config.patch
+os:../../../patches/xnu-12377/local-availability.patch
+os:../../../patches/xnu-12377/cxx-flag-dependencies.patch
+os:../../../patches/xnu-12377/external-archive-dependencies.patch
+os:../../../patches/xnu-12377/public-entitlements-header.patch
+os:../../../patches/xnu-12377/apple-only-cpu-tunables.patch
+os:../../../patches/xnu-12377/non-apple-cache-monitor.patch
+os:../../../patches/xnu-12377/native-4k-bootstrap-capacity.patch
+os:../../../patches/xnu-12377/native-dt-panic-region.patch
+os:../../../patches/xnu-12377/armvirt-platform-personality.patch
+os:../../../patches/xnu-12377/native-aes-personality.patch
+os:../../../patches/xnu-12377/null-root-media.patch
+os:../../../patches/xnu-12377/zzx-pmap-sync-64bit-pa.patch
+os:../../../patches/xnu-12377/native-quiet-managed-page-report.patch
+os:../../../patches/xnu-12377/native-priv-work-interval.patch
+os:../../../patches/xnu-12377/native-work-interval-instance.patch
+os:../../../patches/xnu-12377/native-work-interval-soft-fail.patch
+os:../../../patches/xnu-12377/kernel-sdk-root.patch
+os:../../../patches/xnu-12377/source-machine-layer.patch
+os:../../../patches/xnu-12377/native-pac-keys.patch
+os:../../../patches/xnu-12377/public-entitlements-v2-header.patch
+os:../../../patches/xnu-12377/no-apple-cpu-counters.patch
+os:../../../patches/xnu-12377/apple-only-core-type.patch
+os:../../../patches/xnu-12377/public-pmap-sart.patch
+os:../../../patches/xnu-12377/public-pmap-without-monitor.patch
+os:../../../patches/xnu-12377/optional-kernel-support-archive.patch
+os:../../../patches/xnu-12377/public-missing-definitions.patch
+os:../../../patches/xnu-12377/source-corecrypto14-bootstrap.patch
+os:../../../patches/xnu-12377/source-pthread-bootstrap.patch
+os:../../../patches/xnu-12377/native-arm-pan.patch
+os:../../../patches/xnu-12377/mockfs-intermediate-lookup.patch
+os:../../../patches/xnu-12377/mockfs-memory-device-width.patch
+os:../../../patches/xnu-12377/mockfs-statfs.patch
+os:../../../patches/xnu-12377/mockfs-test-file.patch
+os:../../../patches/xnu-12377/mockfs-typed-allocation.patch
+os:../../../patches/xnu-12377/native-lookup-trace.patch
+os:../../../patches/xnu-12377/native-union-getattrlistbulk.patch
+os:../../../patches/xnu-12377/native-union-lower-directory.patch
+os:../../../patches/xnu-12377/native-work-interval-trace.patch
+os:../../../patches/xnu-12377/offline-component-load-probes.patch
+os:../../../patches/xnu-12377/offline-legacy-start.patch
+os:../../../patches/xnu-12377/offline-native-gpu-broker.patch
+os:../../../patches/xnu-12377/offline-owner-boot-manifest.patch
+os:../../../patches/xnu-12377/offline-owner-cache-carrier.patch
+os:../../../patches/xnu-12377/offline-owner-root-binding-audit.patch
+os:../../../patches/xnu-12377/offline-owner-root-crypto-probe.patch
+os:../../../patches/xnu-12377/offline-owner-z-air-init.patch
+os:../../../patches/xnu-12377/zzw-native-adreno-sandbox-grant.patch
+os:../../../patches/xnu-12377/zzwb-native-sandbox-grant-set-properties.patch
+os:../../../patches/xnu-12377/zzyc-owner-skip-launch-constraints.patch
+os:../../../patches/xnu-12377/native-4k-user-abi.patch
+os:../../../patches/xnu-12377/native-4k-signature-hash-cache.patch
+os:../../../patches/xnu-12377/native-4k-shared-region-slide.patch
+os:../../../patches/xnu-12377/native-text-fixup.patch
+os:../../../patches/xnu-12377/non-apple-iommu-bootstrap.patch
+os:../../../patches/xnu-12377/offline-owner-systemos-mount.patch
+os:../../../patches/xnu-12377/zzy-native-gpu-addon-mount.patch
+os:../../../patches/xnu-12377/zzy-staged-system-apps.patch
+os:../../../patches/xnu-12377/zzyb-native-cryptex-os-view.patch
+# dropped: -threaded_starts_section needs ld-classic, which Xcode 27 no longer ships
+os:../../../patches/xnu-12377/native-security-init.patch
+os:../../../patches/xnu-12377/trustcache-runtime-layout.patch
+os:../../../patches/xnu-12377/fileset-unmapped-call.patch
+os:../../../patches/xnu-12377/native-4k-block-split.patch
+sheng-platform-power.patch
+os:../../../patches/xnu-12377/zzz-boot-progress.patch
+os:../../../patches/xnu-12377/darwin26-syscalls.patch
+os:../../../patches/xnu-12377/darwin26-kpi.patch
+os:../../../patches/xnu-12377/darwin26-shared-region.patch
 native-stack-shift.patch
-
-# No IORTC service exists on SM8635; stop IOStartIOKit waiting for one.
 offline-no-iortc-wait.patch
-
-# Let the owner-root publication path run in unverified bring-up mode
-# (native-ufs-allow-unverified=1) instead of refusing to publish.
-offline-owner-root-auth-bypass.patch
-
-# Bring up the SystemOS owner cache on the 27 fileset.
-zzzz-offline-owner-systemos-bringup.patch
-
-# DarwinBoot hands over a clean physical GOP base; add the low-bit "physical"
-# marker initialize_screen() looks for, or the console finds no video at all.
-zzzzz-video-console-physical-fb.patch
-
-# `-bravearktextconsole`: switch the console from graphics boot to text mode.
-zzzzzz-video-console-text.patch
-
-# Paint the log tail the previous boot left in pram, at the end of vcattach().
-zzzzzzz-last-panic-print.patch
-
-# CONFIG_XNU_WATCHDOG_POLICY: keep com.apple.watchdogd from resetting a boot that
-# has not checked in yet.
-zzzzzzzz-braveark-watchdog-policy.patch
-
-# `braveark-hold-reboot=1`: park on the panic text instead of rebooting, so the
-# panel can be photographed. Two patches, one per restart path (kern_shutdown and
-# IOPlatformExpert); they are a pair, keep both or neither.
-zzzzzzzzz-braveark-hold-reboot.patch
-zzzzzzzzz-braveark-hold-restart.patch
-
-# Once the render server owns the scanout, stop the kernel drawing into it.
-zzzzzzzzzzzz-muyu-console-quiet.patch
-
-# The thread set changes between stackshot's counting pass and its fill pass;
-# bounds-check the fill instead of overflowing.
-zzzzzzzzzzzzz-stackshot-tolerate-thread-count-drift.patch
-
-# --- dyld / launchd bring-up traces (2026-11-02..03) ---------------------------
-# The current blocker is dyld never asking for a slide; these four exist only to
-# make the failing step visible on the panel. They print, they do not change
-# policy — remove them once the blocker is understood.
-#   shared_region_check_np fails with no map error reported.
-zzzzzzzzzzzzzz-shared-region-map-trace.patch
-#   init's critical-exit reason is printed before the hook that panics.
-zzzzzzzzzzzzzzz-critexit-reason.patch
-#   the argv launchd passes to its boot helpers (mount-phase-1 exits 66).
-zzzzzzzzzzzzzzzz-spawn-mount-argv.patch
-#   why mount -P 1 returns ENOENT.
-zzzzzzzzzzzzzzzzz-mount-syscall-trace.patch
-#   which helper in the exec chain is the one that dies.
-zzzzzzzzzzzzzzzzzz-exec-trace.patch
-
-# Userland helpers report on /dev/console, which the video console never replays;
-# mirror the tail so their messages reach the panel.
-zzzzzzzzzzzzzzzzzzz-console-tail.patch
+muyu-console-clear.patch
+muyu-source-storage-start.patch

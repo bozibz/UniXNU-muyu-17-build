@@ -1,0 +1,21 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -794,6 +794,18 @@
+ 	/* Initialize the file systems. */
+ 	bsd_init_kprintf("calling vfsinit\n");
+ 	vfsinit();
++	/*
++	 * Start the source-storage subsystem before anything asks for the OS or Data
++	 * volume. ShengUfs and NativeRamBlock are built into this kernel, and their class
++	 * registration lives in this call: build-sheng-source-storage.py strips
++	 * __mod_init_func from those objects and exports __GLOBAL__sub_I_* instead, so
++	 * SourceStorage.o's native_source_storage_start() is what constructs the
++	 * OSMetaClass instances. Without it IOKit matches the personality but not the
++	 * class and nothing publishes the volumes.
++	 * Strong reference on purpose: the archive is always linked for this board, and an
++	 * arm64e weak import becomes a chained bind that the payload patch path rejects.
++	 */
++	{ extern void native_source_storage_start(void); native_source_storage_start(); }
+ #if DEVELOPMENT || DEBUG
+ 	native_apfs_load_probe();
+ 	native_mobile_graphics_load_probe();

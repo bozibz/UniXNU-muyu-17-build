@@ -329,9 +329,11 @@ kernel_args = [
   # DEVELOPMENT kernels keep kprintf off unless this is set; this device has no wired UART,
   # so kprintf then falls back to the framebuffer video console. Graphics boot
   # suppresses text until -bravearktextconsole switches the console to text mode.
-  # The flag name is fixed by zzzzzz-video-console-text.patch (still the BraveArk
-  # spelling): passing -muyutextconsole here is silently ignored, which is why the
-  # panel stayed empty while the kernel itself was running fine.
+  # The flag name is fixed by muyu-console-clear.patch (still the BraveArk spelling), which is the
+  # patch that switches vcattach() to kPETextScreen: passing -muyutextconsole here is silently
+  # ignored, which is why the panel stayed empty while the kernel itself was running fine.
+  # (The 17 line's own zzzzzz-video-console-text.patch also parses this name, but it lives in
+  # patches/xnu/backlog/ and is not applied on the 27 line — see series-spike27.)
   # "-enable_kprintf_spam",   # dropped 2026-10-27: console spam buried the panic dump
   "-bravearktextconsole",
   # u124: uke 2026-11-03 fix for the text-console stall, ported as
@@ -386,7 +388,13 @@ kernel_args = [
   "native-ufs-root=1",
   # Bring-up aid: park the CPU after a panic instead of restarting, so the panic
   # text stays on the panel long enough to be read or photographed.
-  "braveark-hold-reboot=1",
+  # NOT WIRED on the 27 line (checked 2026-11-08): the only patches that parse this are
+  # zzzzzzzzz-braveark-hold-reboot.patch and zzzzzzzzz-braveark-hold-restart.patch, and both
+  # live in patches/xnu/backlog/ — they were never listed in series-spike27. It was live on the
+  # 17 line (u88 used it). Consequence here: a 27-line panic reboots and the panel loses the
+  # text, which is the one thing the panel-only channel cannot afford. Wiring these two back in
+  # (as a pair) is the first item of the screen re-plant, docs/SCREEN-ONLY.md §4.
+  # "braveark-hold-reboot=1",
   "kt_fixed_zones=120",
   # "offline-legacy-register=1",   # 2026-11-06: off for this run - the display driver takes the scanout and shears the panic text
   # "offline-legacy-gop=1",   # 2026-11-06: off for this run - the display driver takes the scanout and shears the panic text

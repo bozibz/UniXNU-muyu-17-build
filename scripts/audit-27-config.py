@@ -72,14 +72,15 @@ REMOVED_2026_11_08 = [
     "USB-DEBUG-PORT.md",
 ]
 
-# Boot arguments known to be inert on this line, kept as comments on purpose.
-# If one of these becomes live again, delete the entry - the audit must not
-# whitelist a name that somebody re-wired.
-KNOWN_INERT = {
-    "muyu-ignition-trace": "u44 sysctl hook was never committed (IPADOS27-MIGRATION §6.58.2)",
-    "bravearkdeferredconsole": "uke names it -ukedeferredconsole (uke-deferred-video-kprintf.patch)",
-    "native-source-storage": "uke-side name; this repo gates on muyu-source-storage",
-}
+# Boot arguments known to be inert on this line. Empty on purpose: the three that
+# were here (native-source-storage, -bravearkdeferredconsole, muyu-ignition-trace)
+# were converted to comments on 2026-11-08, so they no longer reach the check. If
+# one comes back, this must FAIL — do not re-add an entry to make it pass.
+# Boot arguments known to be inert on this line. Empty on purpose: the three that
+# were here (native-source-storage, -bravearkdeferredconsole, muyu-ignition-trace)
+# became comments on 2026-11-08, so they no longer reach this check. If one comes
+# back, the check must FAIL — do not re-add an entry just to make it pass.
+KNOWN_INERT: dict[str, str] = {}
 
 results: list[tuple[str, str, str]] = []  # (status, item, detail)
 
@@ -97,10 +98,20 @@ def fail(item: str, detail: str = "") -> None:
 
 
 def source_texts() -> dict[Path, str]:
+    """Source that actually reaches the kernel.
+
+    Deliberately excludes patches/xnu/backlog/ and patches/xnu/wip/: nothing there
+    is applied, so a parser found only in one of those files would be a false
+    positive — the option is still inert. This is the difference between "a patch
+    in the tree parses it" and "the kernel parses it".
+    """
     out: dict[Path, str] = {}
     for pat in ("package/*", "drivers/**/*", "patches/**/*"):
         for p in ROOT.glob(pat):
             if not p.is_file() or p.suffix not in {".c", ".h", ".cpp", ".mm", ".patch", ".py"}:
+                continue
+            parts = p.relative_to(ROOT).parts
+            if "backlog" in parts or "wip" in parts:
                 continue
             try:
                 out[p] = p.read_text(encoding="utf-8", errors="ignore")
@@ -146,6 +157,12 @@ def check_defconfig(cfg: str) -> None:
 
 
 def check_series(board: dict) -> None:
+    """The series is the only source of truth for what gets applied.
+
+    patches.py does not glob and does not fall back: a declared series that is
+    missing raises "patch series missing" and the build stops. So this check is
+    about existence and resolution, not about ordering taste.
+    """
     series_refs = board.get("kernel", {}).get("patch_series", [])
     if not series_refs:
         fail("kernel.patch_series", "empty")
@@ -159,31 +176,92 @@ def check_series(board: dict) -> None:
             external(f"patch_series {ref}", "arch/soc/os layer lives in the framework")
             continue
         if not path.exists():
-            fail(f"patch_series {ref}", "declared but the file does not exist")
+            fail(f"patch_series {ref}", f"declared but missing; the build would stop at {rel}")
             continue
         ok(f"patch_series {ref}")
-        listed = [
+
+        entries = [
             ln.strip()
             for ln in path.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.lstrip().startswith("#")
         ]
         base = path.parent
-        missing = [x for x in listed if not (base / x).exists()]
-        if missing:
-            fail(f"series entries in {rel}", "missing files: " + ", ".join(missing))
-        else:
-            ok(f"series entries in {rel}", f"{len(listed)} patches, all present")
+        local: list[str] = []
+        framework: list[str] = []
+        unresolved: list[str] = []
+        for entry in entries:
+            if entry.startswith("os:"):
+                # Relative hop through the OS profile root, the same form the
+                # framework's own profile series uses. Valid in either checkout.
+                roots = framework_roots()
+                if not roots:
+                    external(f"series entry {entry}", "no framework checkout to resolve against")
+                    framework.append(entry)
+                    continue
+                hit = next(
+                    (r for r in roots
+                     if (r / "profiles/os" / board["board"]["os_profile"] / entry[3:]).resolve().is_file()),
+                    None,
+                )
+                if hit is None:
+                    unresolved.append(entry)
+                else:
+                    framework.append(entry)
+                continue
+            local.append(entry)
 
-        # Every patch on disk must be listed, or a patch added later silently does
-        # not get applied while still looking like part of the tree.
-        on_disk = sorted(p.name for p in base.glob("*.patch"))
-        unlisted = [x for x in on_disk if x not in listed]
-        if unlisted:
-            fail(f"unlisted patches in {rel}", ", ".join(unlisted))
-        elif on_disk == listed:
-            ok(f"series order in {rel}", "identical to the alphabetical glob (no behaviour change)")
+        missing_local = [x for x in local if not (base / x).exists()]
+        if missing_local:
+            fail(f"series entries in {rel}", "missing device patches: " + ", ".join(missing_local))
+        elif unresolved:
+            fail(f"series entries in {rel}", f"{len(unresolved)} os: entries do not resolve, e.g. {unresolved[0]}")
         else:
-            ok(f"series order in {rel}", "explicit order differs from the glob (intentional?)")
+            ok(f"series entries in {rel}", f"{len(local)} device + {len(framework)} framework, all resolve")
+
+        # A device patch sitting next to the series but not listed is the silent
+        # failure this directory exists to stop: present, looks live, never applied.
+        on_disk = sorted(p.name for p in base.glob("*.patch"))
+        unlisted = [x for x in on_disk if x not in local]
+        if unlisted:
+            fail(
+                f"unlisted device patches in {rel}",
+                ", ".join(unlisted) + " — present but never applied (move to backlog/ or list it)",
+            )
+        else:
+            ok(f"unlisted device patches in {rel}", f"{len(on_disk)} on disk, all listed")
+
+    backlog = ROOT / "patches/xnu/backlog"
+    if backlog.is_dir():
+        n = len(list(backlog.glob("*.patch")))
+        ok("backlog", f"{n} patches parked, none applied (README.md explains each)")
+
+
+def check_framework_divergence(board: dict) -> None:
+    """Two framework checkouts, one series: if their copies differ, so do the builds."""
+    roots = framework_roots()
+    if len(roots) < 2:
+        external("framework divergence", "only one framework checkout available")
+        return
+    target = "patches/xnu-12377"
+    base = roots[0] / target
+    if not base.is_dir():
+        external("framework divergence", f"{roots[0].name} has no {target}")
+        return
+    diffs = []
+    for f in sorted(base.glob("*.patch")):
+        for other in roots[1:]:
+            peer = other / target / f.name
+            if not peer.exists():
+                diffs.append(f"{f.name} missing in {other.name}")
+            elif peer.read_bytes() != f.read_bytes():
+                diffs.append(f"{f.name} ({roots[0].name} vs {other.name})")
+    if diffs:
+        external(
+            "framework divergence",
+            f"{len(diffs)} differ: " + "; ".join(diffs[:4]) + (" …" if len(diffs) > 4 else ""),
+        )
+    else:
+        ok("framework divergence", f"{roots[0].name} and {roots[1].name} agree on {target}")
 
 
 def check_kernel_args(args: list[str], texts: dict[Path, str]) -> None:
@@ -319,6 +397,7 @@ def main() -> int:
     check_board(board)
     check_defconfig(board.get("kernel", {}).get("defconfig", ""))
     check_series(board)
+    check_framework_divergence(board)
     args = board.get("payload", {}).get("kernel_args", [])
     check_kernel_args(args, texts)
     check_tool_paths(board)

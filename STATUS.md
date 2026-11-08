@@ -166,20 +166,46 @@ What it enforces, and why each one earns its place:
 
 | Check | The fault it catches |
 | --- | --- |
-| `patch_series` files exist, every `.patch` on disk is listed | the applied patch set being an accident of globbing |
-| series order vs the alphabetical glob | a reordering nobody wrote down |
+| `patch_series` resolves, and every device `.patch` is either listed or in `backlog/` | a series that does not exist (the build stops) and patches that look live but are never applied |
+| `os:` entries resolve through the framework | a relative hop that only works in one checkout |
 | `kernel.defconfig` exists in `configs/` | a build silently falling back to another config |
 | every `kernel_args` entry has a parser (this repo, the framework, or a justified XNU-native list) | the inert-option class of bug |
-| `device:` / `scripts/` / `kits/` references resolve, here or in `UniXNU-27` | paths to files deleted three hand-overs ago |
+| `device:` / `scripts/` / `kits/` references resolve, here or in a framework checkout | paths to files deleted three hand-overs ago |
 | no live mention of the 2026-11-08 removals | dangling references to the removed USB/Linux channels |
 | wip patch copies == `drivers/MuyuDebug/` | two copies of one driver drifting apart |
+| the two framework checkouts agree on `patches/xnu-12377` | the same series producing two different kernels |
 
-State at 2026-11-08 21:20: **11 ok, 5 external, 0 fail, 34 kernel_args.** Four hand-over faults were
-found and fixed to get there — `patches/xnu/series-spike27` now exists (19 patches, same order as
-the previous implicit glob, so no behaviour change), the `configs/muyu-27_defconfig` reference
-points at the `muyu-userland_defconfig` the board actually names, and three inert arguments
-(`native-source-storage`, `-bravearkdeferredconsole`, `muyu-ignition-trace`) became comments with
-the reason and the real name attached.
+State at 2026-11-08 21:40: **12 ok, 6 external, 0 fail, 33 kernel_args.**
+
+The first fault was the big one: **this repo could not build its own 27 line.** `patches.py` does
+not glob and does not fall back — a declared series that is missing raises `patch series missing`
+and stops — and `patches/xnu/series-spike27` had never been committed. Every u-round was built
+from `/tmp/spike27`. That copy still exists, so the series was rebuilt from it and cross-checked
+against the framework's own record of what it applied (`xnu-patches.list`, 16:12): **72 entries =
+67 from the framework's `xnu-12377` layer + 5 device patches**, in u159's order. The 67 use the
+same `os:../../../patches/xnu-12377/` relative hop the OS profile series uses, so they resolve in
+either framework checkout.
+
+The second was quieter and matters more for the next round: the repo carried **19** device patches
+while the build applied **5**. The other 16 are the 17 line's patches (video console, last-panic
+replay, watchdog, the launchd traces) — copied in, never listed, never applied. That is the same
+fact as §3's `STACK64`-missing finding, seen from the file side. They are now in
+`patches/xnu/backlog/` with a README, ready for the screen re-plant.
+
+The rest: the `configs/muyu-27_defconfig` reference now points at the `muyu-userland_defconfig`
+the board actually names, and four inert arguments (`native-source-storage`,
+`-bravearkdeferredconsole`, `muyu-ignition-trace`, `braveark-hold-reboot`) became comments with the
+reason and the real name attached.
+
+**`braveark-hold-reboot` is the one to notice.** It was live on the 17 line (u88 parked on its
+panic screen), and on the 27 line it does nothing: its two patches are in `backlog/`. So a 27-line
+panic reboots and the panel loses the text — the single thing a panel-only channel cannot afford.
+Wiring those two patches back in (they are a pair) is the first item of the screen re-plant.
+
+One deviation is recorded, not fixed, because it is framework work: the two framework checkouts
+disagree on three of the 67 (`offline-owner-boot-manifest`, `offline-owner-systemos-mount`,
+`zzz-boot-progress`, core-repo copies newer), so the same series builds differently under
+`UniXNU` and `UniXNU-27`. The audit reports it.
 
 ## Next steps, in order
 
