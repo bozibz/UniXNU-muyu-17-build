@@ -334,24 +334,9 @@ kernel_args = [
   # console ring instead and a thread_call drains it. Panic output stays
   # synchronous. Name is fixed by this round's patch to pe_kprintf.c.
   "-bravearkdeferredconsole",
-  # USB bring-up: adopt the DWC3 the ABL leaves behind and re-attach it. See
-  # UniXNU-muyu/docs/USB-DEBUG-PORT.md. Inert unless the driver is built.
-  # u128: the driver is now built (bsd/dev/arm/muyu_usb_debug.c, ported from
-  # ios-vermeer-lab). It exposes a CDC ACM port (1209:0001, "MUYUDBG001") that
-  # streams the console mirror over USB, so the host reads the log instead of
-  # photographing the panel. It runs after the root is mounted.
-  # u158: OFF. This file is the copy the build actually reads, and it kept the USB bring-up
-  # enabled from the u128..u156 rounds - so every image built from it, including u157, ran the
-  # DWC3 code the 29 experiments were about. The userspace route deliberately does not touch
-  # USB: the panel and the heartbeat are the channel now. Both switches must stay off together,
-  # because muyu_usb_panic panics on stage<13 and stage is -1 ("boot-arg not seen") when the
-  # driver is disabled. The checked-in UniXNU-muyu/board.toml already had them off; the two
-  # copies disagreeing is what made this easy to miss.
-  # "muyu_usb=1",
-  # u129: turn the driver's progress number into a panic, so the panel stops on it. The panel
-  # only shows the last ~28 lines and the boot scrolls far past bsd_init, which is why "no
-  # MUYU USB line on screen" could not distinguish "not started" from "printed and scrolled".
-  # "muyu_usb_panic=1",
+  # u128..u159 ran a USB CDC ACM bring-up here (muyu_usb=1 / muyu_usb_panic=1), 29 rounds without a
+  # working enumeration. The driver, its build hook and these arguments were all removed on
+  # 2026-11-08; the panel and the heartbeat are the channel. See docs/ABANDONED-CHANNELS.md.
   # Boot log into the board ramoops record; Android pstore reads it back as
   # /sys/fs/pstore/console-ramoops-0 after the reboot (no root needed).
   # ShengUfs adopts the controller the firmware left running and, for probe 9,
@@ -434,16 +419,12 @@ kernel_args = [
   # physical power/vol-down/vol-up as HID Consumer (package/ButtonProbeMuyu.cpp); first boot: PON only,
   # vol-up skipped until PPID known.
   "muyu-buttons=1",
-  # 2026-10-28: CDC ACM debug console over USB (package/MuyuUsbDebug.c). Off by default: it does not
-  # enumerate yet (DWC3 reset never self-clears, see HANDOFF-2026-10-28 §14) and it writes GCC's USB
-  # power/branch registers, which should not happen on every normal boot until that is understood.
-  # Enable together with muyu-usb-panic-at=<s> when working on it.
-  # "muyu_usb=1",
-  # 2026-10-28: diagnostic readout for the USB work only. Panics this many seconds after the driver
-  # starts so the survey can be photographed; always leave this off for normal boots.
-  # "muyu-usb-panic-at=60",
+  # The USB CDC ACM console arguments used to sit here (duplicated from board.toml). Removed
+  # 2026-11-08 with the rest of that channel: docs/ABANDONED-CHANNELS.md.
   "sheng-log=1",
-  # 2026-10-28: official persistent-log WRITER (bsd/dev/muyu_pstore.c, already patched into XNU).
+  # 2026-10-28: persistent-log WRITER. The "bsd/dev/muyu_pstore.c" named here originally was a
+  # separate writer that never worked (magic=0, bytes=0) and was deleted with the debug patch on
+  # 2026-11-08; what implements sheng-log today is package/BootLog.c + package/BravearkLastLog.c.
   # The console text goes into the device tree's ramoops_region @0xa7000000; after a warm reset the
   # stock Android recovery kernel validates that record and exposes it as
   # /sys/fs/pstore/console-ramoops-0, which stock recovery's unauthenticated adbd can pull. That is

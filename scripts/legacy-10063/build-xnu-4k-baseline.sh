@@ -785,17 +785,11 @@ PY_BINDINGS
       KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $LAST_LOG_ARCHIVE"
     fi
   fi
-  # muyu USB CDC ACM debug console (package/MuyuUsbDebug.c). Only linked when the archive exists: the
-  # bootstrap pass links before the archive builders run, exactly like the pram writer above. Inert
-  # unless the muyu_usb=1 boot argument is present.
-  USB_DEBUG_ARCHIVE=$ROOT/build/muyu-usb-debug/libMuyuUsbDebug.a
-  if [ -f "$USB_DEBUG_ARCHIVE" ]; then
-    KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$USB_DEBUG_ARCHIVE"
-    KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $USB_DEBUG_ARCHIVE"
-  fi
-  # muyu thermal survey (package/MuyuThermalProbe.c, muyu-thermal=<n>). Same rule as the USB console:
-  # link only when the archive exists, because the bootstrap pass runs before the archive builders.
-  # Read-only, and inert unless the boot argument is present.
+  # The USB CDC ACM debug console used to be linked here. Removed 2026-11-08 with the rest of that
+  # channel (see docs/ABANDONED-CHANNELS.md): the driver is gone, so there is no archive to link.
+  # muyu thermal survey (package/MuyuThermalProbe.c, muyu-thermal=<n>). Same rule as the pram writer
+  # above: link only when the archive exists, because the bootstrap pass runs before the archive
+  # builders. Read-only, and inert unless the boot argument is present.
   THERMAL_ARCHIVE=$ROOT/build/muyu-thermal/libMuyuThermal.a
   if [ -f "$THERMAL_ARCHIVE" ]; then
     KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$THERMAL_ARCHIVE"
@@ -835,9 +829,8 @@ if not stamp.exists() or stamp.read_text() != identity:
 PY
 EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"
 EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_WATCHDOG_POLICY=$WATCHDOG_POLICY"
-# muyu: DWC3 re-attach probe and (later) the CDC ACM debug console. The code only acts on
-# its boot argument, so the define is unconditional.
-EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_MUYU_USB=1"
+# -DXNU_MUYU_USB=1 used to be set here for the DWC3 re-attach probe / CDC ACM console. Removed
+# 2026-11-08: no source consumes it any more (docs/ABANDONED-CHANNELS.md).
 make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iphoneos}" ARCH_CONFIGS=ARM64 \
   MACHINE_CONFIGS=BCM2837 KERNEL_CONFIGS=DEVELOPMENT \
   ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG=arm64 LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY \

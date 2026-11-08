@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the muyu thermal survey against this source kernel's actual ABI.
 
-Mirrors build-muyu-usb-debug.py: the probe includes <sys/param.h>/<sys/systm.h> and
+Same shape as the (now removed) build-muyu-usb-debug.py: the probe includes <sys/param.h>/<sys/systm.h> and
 <pexpert/pexpert.h>, so it has to compile with the BSD-side record (kern_exec.o) rather than the
 osfmk one - the two type universes collide otherwise.
 

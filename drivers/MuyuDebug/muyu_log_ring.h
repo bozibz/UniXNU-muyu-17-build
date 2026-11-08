@@ -1,5 +1,5 @@
 /*
- * muyu: lock-free-ish console ring shared by the console paths and the USB debug port.
+ * muyu: lock-free-ish console ring shared by the console paths and the panel readout.
  * Ported from ios-vermeer-lab/xnu/vermeer/vermeer_log_ring.h (u128).
  *
  * The caller supplies a non-blocking acquisition; nothing here allocates, waits or touches

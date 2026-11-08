@@ -61,6 +61,8 @@ OfflineMetalAddon.h
 **探针是常驻的**，不删；出问题时换参数重跑，不用重编内核。
 
 对比我们：探针写在 `muyu_usb_debug.c` 里，和内核一起编，改一行就要重刷 100 MB vendor_boot。
+（该驱动已于 2026-11-08 随 USB 调试通道一起删除，见 `ABANDONED-CHANNELS.md`；这条对比仍然成立，
+只是现状从「探针太重」变成了「没有常驻探针」。）
 
 ### 2.3 结构化证据链：`porting.toml`
 

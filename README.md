@@ -32,7 +32,7 @@ above.
 | Display | works, CPU-composed framebuffer (~1.4 fps on the 17 line) |
 | Input | physical buttons and the Novatek touch controller as native IOServices |
 | GPU | **Adreno 735 GMU cold-starts and completes the full HFI startup** (2026-10-30); no CP/Metal yet — paused 2026-11-02 |
-| Diagnostics | **panel only** since 2026-11-08: the USB debug console and the Linux/pstore reader are both out (see `docs/SCREEN-ONLY.md`) |
+| Diagnostics | **panel only** since 2026-11-08: the USB debug console and the Linux/pstore reader are both out — and their code was deleted the same day (`docs/ABANDONED-CHANNELS.md`) |
 | Thermal / DVFS | not implemented on either line; one read-only TSENS survey is written and has never been run |
 
 Two things are tracked outside this table because they change every session: the flashed state of
@@ -130,10 +130,11 @@ stock ROM for recovery. The iPadOS root image is **not** part of this repository
 | `docs/HANDOFF-2026-11-08.md` | the last session, reconstructed from artefacts when the narrative was missing |
 | `docs/HANDOFF-2026-11-07.md` | ~4700 lines: 60 rounds of panel readouts and the reasoning between them |
 | `docs/SCREEN-ONLY.md` | why USB and pstore are out, and the five-step re-plant of the 17-line screen stack |
+| `docs/ABANDONED-CHANNELS.md` | the two removed log channels: what was measured, what was deleted, how to get it back |
 | `docs/BUILD-NAMING.md` | the build tag scheme |
 | `docs/GPU-PROBE-RUNBOOK.md` | probe modes 1–17, expected values, judgement trees |
 | `docs/GPU-CLIFFS-MMIO.md` | the cliffs register map — this SoC is **not** register-compatible with SM8550/SM8650 |
-| `docs/THERMAL-PORT.md`, `docs/TOUCH-PORT.md`, `docs/USB-DEBUG-PORT.md` | the peripheral ports, including the one that was abandoned |
+| `docs/THERMAL-PORT.md`, `docs/TOUCH-PORT.md` | the peripheral ports that are still live |
 | `docs/UKE-CODE-AUDIT.md`, `docs/UKE-FULL-WALKTHROUGH.md` | what the sibling SM7675 port (`UniXNU-uke`) has that this one lacks, and vice versa |
 
 ## Hardware data

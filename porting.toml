@@ -12,7 +12,7 @@ schema_version = 1
 name = "muyu"
 soc = "SM8635"
 os_profile = "ipados-27.0.1-24A446"
-summary = "Muyu 27-spike: payload reaches APFS SystemCryptex mount and owner-cache enumeration (panel photo 2026-11-08 14:36); USB CDC ACM observability still blocked at DEPCFG (16 probes accepted, 0 executed); pstore/init_boot-reader channel built but never flashed; device restored to stock 2026-11-08 16:18 with no recorded reason. 17-line desktop (CPU-composed ~1.4 fps) predates this ledger. GMU cold start + full HFI device-verified 2026-10-30; GX rail blocked; GPU paused since 2026-11-02. See docs/HANDOFF-2026-11-08.md and STATUS.md."
+summary = "Muyu 27-spike: payload reaches APFS SystemCryptex mount and owner-cache enumeration (panel photo 2026-11-08 14:36); the panel is the only log channel — USB CDC ACM (blocked at DEPCFG, 16 probes accepted / 0 executed) and the Linux pstore/init_boot-reader were abandoned 2026-11-08 and their code removed the same day (docs/ABANDONED-CHANNELS.md); device restored to stock 2026-11-08 16:18 with no recorded reason. 17-line desktop (CPU-composed ~1.4 fps) predates this ledger. GMU cold start + full HFI device-verified 2026-10-30; GX rail blocked; GPU paused since 2026-11-02. See docs/HANDOFF-2026-11-08.md and STATUS.md."
 
 [[area]]
 id = "configuration"
@@ -90,7 +90,7 @@ evidence = []
 id = "storage"
 status = "device-verified"
 components = ["ShengUfs", "NativeUfs", "apfs", "SoftwareAES"]
-paths = ["package/linux-log/", "docs/IPADOS27-MIGRATION.md"]
+paths = ["docs/IPADOS27-MIGRATION.md", "docs/ABANDONED-CHANNELS.md §3 (the Linux reader these observations came from was removed 2026-11-08)"]
 inputs = ["SHNGROOT container on userdata: windows OS + SystemOS (sparse images fw/userdata-root-preboot*.sparse, 8.74-15.2 GiB variants, five flashes 2026-11-03..11-06 per ledger).",
   "Persistent Data: packed_data_ramdisk/persistent_data/sheng-data-persist=2; data-seed.img (DBRDISK1, 1.04 MiB) is only the first-boot seed.",
   "24A446 trust cache bundle fw/trust-24A446/24A446-original-trust.bundle."]
@@ -112,8 +112,8 @@ evidence = [
 id = "display"
 status = "device-verified"
 components = ["GopFramebuffer"]
-paths = ["scripts/build-muyu-log-reader.py", "docs/DISPLAY-RESOLUTION.md"]
-inputs = ["UEFI GOP framebuffer; the panel is the primary readout channel (no UART, no working USB console)."]
+paths = ["docs/DISPLAY-RESOLUTION.md", "docs/ABANDONED-CHANNELS.md (the reader image once used for this readout was removed 2026-11-08)"]
+inputs = ["UEFI GOP framebuffer; the panel is the primary readout channel (no UART, and the USB console was removed 2026-11-08)."]
 configuration = ["sheng-vsync=60; framebuffer log pages (u143-u148 line: 28-row and later 56-row full-screen pages, version+command-engine state pinned into the last line)."]
 procedure = ["Boot a u15x image; photograph the panel; images carry the round tag in their banner line (MUYU USB(uNNN) / MUYU uNNN TABLE)."]
 findings = ["The framebuffer readout method is established: u143 moved state onto the panel, u148 made the whole screen a 56-row log page so one photo captures full context; u155 photo shows the full boot state including APFS and owner-cache lines.",
@@ -218,30 +218,30 @@ id = "packaging"
 status = "implemented"
 components = ["XnuPrelink", "patch-vendor-boot.py"]
 paths = ["scripts/patch-vendor-boot.py", "logs/flash-ledger.tsv"]
-inputs = ["Payload FAT volume with kernel.macho + ADT + trust cache + optional data seed; stock vendor_boot template; stock init_boot header (for the reader images)."]
+inputs = ["Payload FAT volume with kernel.macho + ADT + trust cache + optional data seed; stock vendor_boot template; stock init_boot header (used only by the reader images, since removed — docs/ABANDONED-CHANNELS.md)."]
 configuration = ["Manual pipeline replaces uke's release/pack/verify: build kernel -> build payload -> patch-vendor-boot.py -> tools/muyu-flash-mode.sh; every flash/boot/restore is ledgered with sha256 (2651 rows)."]
 procedure = ["See docs/HANDOFF-2026-11-08.md §2 for the exact per-round commands and ledger rows."]
 findings = ["The ledger discipline is real and complete back to 2026-10; sha256 per image makes any round's bytes recoverable.",
   "No manifest verification step; the final u159 build was flashed while the pipeline reported loadable=false (see configuration area).",
-  "log-reader-muyu.img (39 MB, self-made boot header) failed before any own code ran and the ABL fell back to recovery — measured 2026-11-08 14:59; the fix (init_boot-reader v4) reuses the stock init_boot header verbatim."]
+  "[abandoned 2026-11-08] log-reader-muyu.img (39 MB, self-made boot header) failed before any own code ran and the ABL fell back to recovery — measured 2026-11-08 14:59; the fix (init_boot-reader v4) reused the stock init_boot header verbatim, and then the whole channel was dropped without ever being flashed. Packing lesson kept: docs/ABANDONED-CHANNELS.md §3."]
 completion = ["Round-trip build->flash->ledger works and is auditable after the fact from artifacts alone."]
 limits = ["No hash verification of packed output; two pipelines (boot=UEFI fd, vendor_boot=payload) with the firmware one stale since 11-05."]
 next_action = ["Add a post-pack sha256 manifest (uke's release verify equivalent) and wire boot.img regeneration into the same flow."]
 evidence = [
   { kind = "host", reference = "logs/flash-ledger.tsv", result = "restore rows at 2026-11-08T08:18:44-49Z with stock shas bf68c1be.../69f1e38c.../c40dcb96...", command = "grep restore logs/flash-ledger.tsv", revision = "ledger head 2651 rows" },
-  { kind = "host", reference = "package/linux-log/build-initboot-reader.py docstring", result = "14:59 ABL-recovery fallback measured for the self-made header; stock init_boot header adopted in v4", command = "python3 build-initboot-reader.py --template fw/stock/init_boot.img ...", revision = "v4 2026-11-08 15:26" },
+  { kind = "host", reference = "docs/ABANDONED-CHANNELS.md §3", result = "14:59 ABL-recovery fallback measured for the self-made header; stock init_boot header adopted in v4 (reader since removed)", command = "python3 build-initboot-reader.py --template fw/stock/init_boot.img ...", revision = "v4 2026-11-08 15:26; removed 2026-11-08 21:xx" },
 ]
 
 [[area]]
 id = "diagnostics"
 status = "device-verified"
-components = ["video_console screen engine (muyu_vc_*)", "drivers/MuyuDebug (console ring)", "package/linux-log (abandoned)", "tools/muyu-usb-log.py (abandoned)"]
-paths = ["package/linux-log/", "tools/muyu-usb-log.py", "docs/USB-DEBUG-PORT.md", "HANDOFF-2026-11-07.md §47-§60"]
+components = ["video_console screen engine (muyu_vc_*)", "drivers/MuyuDebug (console ring)", "USB CDC ACM + Linux/pstore readers — removed 2026-11-08"]
+paths = ["docs/SCREEN-ONLY.md", "docs/ABANDONED-CHANNELS.md", "drivers/MuyuDebug/", "patches/xnu/wip/muyu-screen-wip-20261108.patch", "HANDOFF-2026-11-07.md §47-§60"]
 inputs = ["Stock kernel facts (measured 2026-11-08): CONFIG_DEVTMPFS off, CONFIG_VT off (panel unusable from Linux), CONFIG_DEVMEM off, CONFIG_PSTORE_CONSOLE on -> ramoops at 0xa7000000 readable by the XNU payload.",
   "DWC3 facts (u136-u150): GEVNTADRHI accepts the 37 GB ring (awidth=64 real); DEPSTARTCFG completes; DEPCFG accepted but never starts; DCTL.CSFTRST never self-clears (u141 3000, u147 20000 tries); reading GCC GDSCR stalls the bus (u134) and GDSCR is an absolute address, not base+offset (u135).",
   "ABL concatenates init_boot ramdisk after the custom one; boot.img ramdisk is ignored (ramdisk_size=0)."]
-configuration = ["u150-u157: muyu_usb=1 muyu_usb_panic=1; u158/u159: both removed. Panel readout needs exec-path prints to be pre-panic."]
-procedure = ["USB: tools/muyu-usb-log.py + the CDC ACM driver (muyu_usb=1). Linux: build init-boot reader v4, flash init_boot, let the 60 s watchdog rb-reboot to bootloader, read ramoops 0xa7000000 from the XNU payload."]
+configuration = ["u150-u157: muyu_usb=1 muyu_usb_panic=1; u158/u159: both removed, and the arguments themselves were deleted 2026-11-08. Panel readout needs exec-path prints to be pre-panic."]
+procedure = ["Panel only: boot, photograph the page, read the tag and the previous-panic replay. The USB reader (tools/muyu-usb-log.py) and the Linux init-boot reader no longer exist; their measured constants are archived in docs/ABANDONED-CHANNELS.md §2-§3."]
 findings = ["DECISION 2026-11-08 17:30: USB CDC ACM and the Linux-side log path (init_boot-reader v1-v4, pstore/ramoops) are ABANDONED; the panel is the only output channel. Rationale: USB produced no conclusion in ~29 rounds, the Linux path was never even flashed, while the panel produced a conclusion every round since u143. See docs/SCREEN-ONLY.md.",
   "[abandoned] USB CDC ACM: ~29 rounds (u128-u159) without a working enumeration; final failure is DEPCFG queued-never-started with the UTMI/eUSB2 PHY apparently suspended (ConnectSpeed reads Full-Speed while dcfg DevSpeed=0/High-Speed); the SUSPHY clears were ordered after endpoint commands, too late for DEPCFG (§60.3).",
   "[abandoned] Twelve of the u136-u147 rounds measured a core that our own reset path had wedged — invalid readouts; the two effective turns were u143 (state onto the framebuffer) and u148 (56-row log page): after the observation method was fixed, three rounds reached 'only DEPCFG left'.",
@@ -252,7 +252,7 @@ findings = ["DECISION 2026-11-08 17:30: USB CDC ACM and the Linux-side log path 
   "Honest caveat: the flashed 17-line builds also ran the BootProgress layer as weak stubs (LegacyDisplayStubs.c: 'the first-console configuration disables the BootProgress layer'; every muyu defconfig has CONFIG_XNU_BOOT_PROGRESS unset; the one config that sets it, muyu-full-plus_defconfig, self-declares 'does not build from a clean tree yet'). The 17-line panel showed console text + STACK64 + MUYU probe rows, not the 48-row page. Porting = enabling the layer, not writing it."]
 completion = ["Framebuffer log pages give full boot context from a single photograph; that is the accepted, only channel."]
 limits = ["No real-time channel; information is capped by panel area (~230x40 chars per page) and requires a person to photograph; nothing is machine-readable; event ordering relies on tick numbers printed on the page; a dark panel loses everything, so the pram panic page is the lifeline."]
-next_action = ["Per docs/SCREEN-ONLY.md §4, port back instead of designing new: set CONFIG_XNU_BOOT_PROGRESS=y + CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y on the 27 defconfig, relink BootProgress/BootUiTraceProbe/BravearkLastLog/MuyuCrashLog from kits/muyu via the existing build-native-legacy-display.py and build-boot-log.py, put sheng-build-tag on the vendor_boot cmdline, remove bsd/dev/arm/muyu_usb_debug.c from bsd/conf/files.arm64, then run the check-boot-*.py suite as the flash gate."]
+next_action = ["Per docs/SCREEN-ONLY.md §4, port back instead of designing new: set CONFIG_XNU_BOOT_PROGRESS=y + CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y on the 27 defconfig, relink BootProgress/BootUiTraceProbe/BravearkLastLog/MuyuCrashLog from kits/muyu via the existing build-native-legacy-display.py and build-boot-log.py, put sheng-build-tag on the vendor_boot cmdline, then run the check-boot-*.py suite as the flash gate. (The files.arm64 USB registration was already dropped with the driver on 2026-11-08 — the wip screen patch now registers only muyu_debug.c.)"]
 evidence = [
   { kind = "device", reference = "HANDOFF-2026-11-07.md §60 + logs/2026-11-08-14-36-26-878.jpg", result = "DEPCFG 16 probes accepted 0 executed (panel table); DCTL.CSFTRST never self-clears; framebuffer readout works", command = "flash u155, photograph panel", revision = "u150-u155" },
   { kind = "host", reference = "docs/SCREEN-ONLY.md §2", result = "screen API surface enumerated (block/glyph/bigchar/status/logdump/textdump/pram_bigpage/bar/protected/bounded lock) at video_console.c:1314-1769", command = "grep -nE '^muyu_vc_[a-z_]+\\(' osfmk/console/video_console.c", revision = "ac9718f + working tree 2026-11-08 15:59" },

@@ -60,10 +60,16 @@
 BUILD-TAG                     ← 一行，唯一来源
   └─ scripts/build-tag.py
        ├─ drivers/MuyuDebug/build_tag_generated.h   #define MUYU_BUILD_TAG "27-scr-1108a"
-       └─ <tree>/.cache/xnu-work/bsd/dev/arm/build_tag*.h（--tree 时安装）
-            └─ muyu_usb_debug.c: #include "build_tag.h"
-                 printf("MUYU USB" MUYU_TAG ": ...")   → MUYU USB(27-scr-1108a): ...
+        └─ <tree>/.cache/xnu-work/bsd/dev/arm/build_tag*.h（--tree 时安装）
+             └─ 内核侧消费方：控制台/面板打印点（原先是 muyu_usb_debug.c，该驱动已删）
+                  printf(MUYU_TAG ": ...")   → (27-scr-1108a): ...
 ```
+
+**注意（2026-11-08 拆除后）**：`build_tag.h` 目前**没有源文件 include 它**——唯一的消费者
+`muyu_usb_debug.c` 已随 USB 通道删除。`build-tag.py next/set/show/cflag` 与 `BUILD-TAG` 文件、
+生成头都还在，`check` 仍会校验生成头与 `BUILD-TAG` 一致；标签要等面板回植时重新接上
+（`SCREEN-ONLY.md` §4 第 3 步，页头走 `sheng-build-tag` 或 `-DMUYU_BUILD_TAG`）。
+在那之前，`27-scr-…` 这类标签只是构建侧记账，不会出现在任何内核输出里。
 
 `build_tag.h` 的兜底顺序：生成头 → `-DMUYU_BUILD_TAG` → `"untagged"`。
 出现 `untagged` 说明构建没拿标签，`build-tag.py check` 会直接失败。

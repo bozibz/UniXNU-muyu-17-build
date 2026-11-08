@@ -84,7 +84,9 @@ archives = [
   # prints "PREVIOUS XNU LOG") and the launchd policy that disables com.apple.watchdogd,
   # so a missing boot-task check-in no longer resets the board.
   "build-boot-log.py",
-  "build-muyu-usb-debug.py",
+  # "build-muyu-usb-debug.py" was removed from this list on 2026-11-08 along with the driver
+  # (docs/ABANDONED-CHANNELS.md); leaving a manifest entry for a missing script would have made
+  # the build fail at the first driver that cannot be produced.
   # muyu-thermal=<n>: read-only TSENS survey (package/MuyuThermalProbe.c). Its decode and the
   # panel row are host-tested by scripts/check-muyu-thermal-host.py, which also re-derives the
   # controller bases and the sensor map from fw/muyu_dt.txt so the header cannot drift.
@@ -279,8 +281,8 @@ kernel_args = [
   # panel stayed empty while the kernel itself was running fine.
   # "-enable_kprintf_spam",   # dropped 2026-10-27: console spam buried the panic dump
   "-bravearktextconsole",
-  # USB bring-up: adopt the DWC3 the ABL leaves behind and re-attach it. See
-  # UniXNU-muyu/docs/USB-DEBUG-PORT.md. Inert unless the driver is built.
+  # The DWC3 re-attach / CDC ACM console that used to be described here was removed on
+  # 2026-11-08 (docs/ABANDONED-CHANNELS.md).
   # Boot log into the board ramoops record; Android pstore reads it back as
   # /sys/fs/pstore/console-ramoops-0 after the reboot (no root needed).
   # ShengUfs adopts the controller the firmware left running and, for probe 9,
@@ -348,16 +350,14 @@ kernel_args = [
   # physical power/vol-down/vol-up as HID Consumer (package/ButtonProbeMuyu.cpp); first boot: PON only,
   # vol-up skipped until PPID known.
   "muyu-buttons=1",
-  # 2026-10-28: CDC ACM debug console over USB (package/MuyuUsbDebug.c). Off by default: it does not
-  # enumerate yet (DWC3 reset never self-clears, see HANDOFF-2026-10-28 §14) and it writes GCC's USB
-  # power/branch registers, which should not happen on every normal boot until that is understood.
-  # Enable together with muyu-usb-panic-at=<s> when working on it.
-  # "muyu_usb=1",
-  # 2026-10-28: diagnostic readout for the USB work only. Panics this many seconds after the driver
-  # starts so the survey can be photographed; always leave this off for normal boots.
-  # "muyu-usb-panic-at=60",
+  # The USB CDC ACM console (muyu_usb=1 / muyu_usb_panic=1 / muyu-usb-panic-at=<s>) used to be
+  # declared here. The whole channel was removed on 2026-11-08 - driver, build hook and arguments.
+  # History: docs/ABANDONED-CHANNELS.md.
   "sheng-log=1",
-  # 2026-10-28: official persistent-log WRITER (bsd/dev/muyu_pstore.c, already patched into XNU).
+  # 2026-10-28: persistent-log WRITER. The "bsd/dev/muyu_pstore.c" named here originally was a
+  # separate writer that never worked (magic=0, bytes=0) and was deleted with the debug patch on
+  # 2026-11-08; what actually implements sheng-log today is package/BootLog.c +
+  # package/BravearkLastLog.c (the 17-line stack).
   # The console text goes into the device tree's ramoops_region @0xa7000000; after a warm reset the
   # stock Android recovery kernel validates that record and exposes it as
   # /sys/fs/pstore/console-ramoops-0, which stock recovery's unauthenticated adbd can pull. That is

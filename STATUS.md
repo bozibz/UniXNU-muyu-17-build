@@ -97,6 +97,17 @@ Decided 2026-11-08 (`docs/SCREEN-ONLY.md`):
   `0xa7000000`. v1–v4 appear in no ledger line at all.
 - **Panel — device-verified, and the only channel that has ever produced conclusions.**
 
+**Both dead channels were then removed, not just declared dead** (2026-11-08, `docs/ABANDONED-CHANNELS.md`):
+the CDC ACM driver and its protocol header, the 17-line `MuyuUsbDebug.c` copy, the whole
+`package/linux-log/` reader, both packer scripts, the `zzzzzzzzzzz-muyu-debug.patch` that registered
+`muyu_usb.c`/`muyu_pstore.c`, the `libMuyuUsbDebug.a` force-load hook and the `-DXNU_MUYU_USB=1`
+define in the legacy build, the three `muyu_usb*` boot arguments in both board files, and the last
+copy of `muyu_usb_debug.c` inside the wip screen patch (its `files.arm64` registration went with it).
+What deliberately survives: `muyu_debug.c`/`muyu_log_ring.h` (the console ring the panel uses), the
+guarded `weak` hooks in `muyu_vc_status_paint()`, and the dated handoff narratives. Note that
+`"sheng-log=1"` is **not** part of this removal — it is implemented by `package/BootLog.c` +
+`package/BravearkLastLog.c`, not by the deleted `muyu_pstore.c`.
+
 Everything the screen needs already exists on the 17 line: a single-source build tag, automatic
 page rotation, previous-panic replay, crash-report painting, a watchdog. It was lost on the 27
 line at the link and config layer — its `kernel.macho` keeps only `_boot_progress_poll`/`_tag`,
@@ -145,9 +156,10 @@ still work.
 1. **Answer `docs/HANDOFF-2026-11-08.md` §7.** One line: why stock images went back at 16:18.
 2. **Re-plant the screen stack** (`docs/SCREEN-ONLY.md` §4). Turn on `CONFIG_XNU_BOOT_PROGRESS`
    and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY`, wire the four units back into the fileset, set the
-   build tag, remove `muyu_usb_debug.c` from `bsd/conf/files.arm64`, and make the `check-boot-*.py`
-   set a gate before flashing. Until the panel can state its own version and replay the previous
-   panic, every round costs a photograph and a guess.
+   build tag, and make the `check-boot-*.py`
+   set a gate before flashing. (The `muyu_usb_debug.c` registration in `bsd/conf/files.arm64` is
+   already gone — removed with the driver on 2026-11-08.) Until the panel can state its own version
+   and replay the previous panic, every round costs a photograph and a guess.
 3. **One 27-line build under the new instrumentation**, `27-scr-…`, flashed as a pair, and read
    the panel. The target is not progress — it is confirming the dyld-slide blocker still
    reproduces when the rig can actually report.

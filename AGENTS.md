@@ -56,7 +56,7 @@
 
 | 本工作区的实现 | 官方已有 |
 | --- | --- |
-| 屏幕 dump 通道（panic → 冻屏 → 拍照）| `package/BootLog.c` + `BootReset.c` + `package/linux-log/` + `scripts/read-sheng-log.py`（全自动，网站 `/porting/log-capture`）|
+| 屏幕 dump 通道（panic → 冻屏 → 拍照）| `package/BootLog.c` + `BootReset.c` + `scripts/read-sheng-log.py`（Linux 侧取日志组件已于 2026-11-08 删除，见 `docs/ABANDONED-CHANNELS.md`）|
 | CPU 逐帧扫描拷贝（~1.4 fps）| 显示 `GopFramebuffer`；加速 `Adreno740` + `AdrenoMetal`（网站 `/porting/gpu`）|
 | 自研 AppleKeyStore（`NativeKeyStoreEvents`）| `AppleKeyStoreState` |
 | 自己写的 SoC 参数 | 共用 SoC 支持 `UniXNU-sm8550-common` |
@@ -162,10 +162,10 @@ fastboot flash vendor_boot fw/stock/vendor_boot.img   # 换回安卓的 vendor_b
    （会遍历所有 APID 读 obsrvr，可能同步外部中止 panic）。电源键偶发两下同理核对去抖。
 6. **格式 2 迁移**：`schema_version = 2` + 共用 SoC/OS profile + 规范组件，分支上做，
    `fw/vendor_boot_btn2.img` 当保底。
-7. **日志通道（暂停）**：10-28 晚把三条路都试到底了（HANDOFF-2026-10-28 §14–§18）：
+7. **日志通道（已结案）**：10-28 晚把三条路都试到底了（HANDOFF-2026-10-28 §14–§18）：
    XNU 内 USB 控制台卡在 USB3 PHY；DDR ramoops 过 bootloader 就丢；
    官方 UFS writer 已移植进内核、但**没有 reader**（stock recovery 的 adbd 无 root，
-   TWRP/OrangeFox 是 ramdisk-only 镜像起不来）。要继续需要 **muyu 的 mainline Linux 内核**
-   来跑官方 Linux reader；组件（`package/linux-log/init` + `scripts/build-muyu-log-reader.py` +
-   静态 busybox）都已就绪。
+   TWRP/OrangeFox 是 ramdisk-only 镜像起不来）。**2026-11-08 决定放弃并不再保留代码**：
+   USB CDC 与 Linux/pstore 两条取日志路线的源码、脚本、补丁、启动参数全部移除，
+   唯一通道是面板。若要重启，先读 `docs/ABANDONED-CHANNELS.md`（测量值都在里面）。
 

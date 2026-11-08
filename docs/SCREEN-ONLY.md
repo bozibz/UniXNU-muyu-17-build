@@ -9,7 +9,8 @@ panic 首屏」列为待设计缺口——**这是错的**。这三件（以及�
 弄丢了**。本文已按回植框架重写（§3–§4）。
 
 USB 与 Linux 两条线的历史结论保留在 `HANDOFF-2026-11-07.md` §47–§60 与
-`HANDOFF-2026-11-08.md` §4，作为「已放弃」记录，不再迭代。
+`HANDOFF-2026-11-08.md` §4，作为「已放弃」记录，不再迭代。**2026-11-08 晚已按本文把两条线的
+代码、脚本、补丁与启动参数全部拆除**，可继承的测量值与删除清单见 `ABANDONED-CHANNELS.md`。
 
 ---
 
@@ -98,10 +99,13 @@ clean tree yet"。所以 17 线面板上实际是 **XNU 控制台 + STACK64 段 
 3. **标签**：vendor_boot cmdline 加 `sheng-build-tag=s<mmddHHMM>`；页头由
    `build_tag[]` 单点生成。**废除在源码 printf 里写 `u1xx` 的做法**（今天已经因此
    错判过一次，见 `HANDOFF-2026-11-08.md` §3.5）。
-4. **摘 USB**：`bsd/conf/files.arm64` 删 `muyu_usb_debug.c` 行；`pe_init.c` 的
-   `muyu_usb_debug_start()` 改调屏幕入口；`muyu_debug.c` 环形镜像保留。
-   `muyu_prev_*`/pram 摘要保留（它是 BravearkLastLog 的 27 线对应物，等第 2 步
-   接上后由后者接管）。
+4. **摘 USB**（✅ 2026-11-08 已完成）：`bsd/conf/files.arm64` 删 `muyu_usb_debug.c` 行；驱动源文件、
+   协议头、打包脚本、`zzzzzzzzzzz-muyu-debug.patch`、`-DXNU_MUYU_USB=1` 与三组 `muyu_usb*` 启动
+   参数一并删除（清单见 `ABANDONED-CHANNELS.md` §4）。`muyu_debug.c` 环形镜像保留。
+   `muyu_prev_*`/pram 摘要保留（它是 BravearkLastLog 的 27 线对应物，等第 2 步接上后由后者接管）。
+   **遗留一处待办**：`muyu_vc_status_paint()` 里还有 `muyu_usb_stage_value/last_id/ring_code`
+   三个弱引用，驱动删除后 resolve 到 0、该行整条不画；下次真刷面板时把这三格换成内核自己的
+   boot stage 数字（改绘制布局 `6*gw + 11*gap` 必须与照片一起验证，不能盲改）。
 5. **跑校验器**：第 2 步链接完成后，先在主机跑全套 `check-boot-*.py`
    （17 线的发布门槛），再刷机。
 

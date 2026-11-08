@@ -1,5 +1,6 @@
 /*
- * muyu: console mirror for the USB debug port (u128).
+ * muyu: console mirror for the panel readout (u128; the USB debug port it was written for was
+ * removed 2026-11-08 - docs/ABANDONED-CHANNELS.md).
  * Ported from ios-vermeer-lab/xnu/vermeer/vermeer_debug.c with the GUI sampler removed.
  *
  * Every console consumer (BSD printf via _cnputs, PE kprintf via serial_putc_crlf, and the
