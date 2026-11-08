@@ -74,10 +74,6 @@ REMOVED_2026_11_08 = [
 
 # Boot arguments known to be inert on this line. Empty on purpose: the three that
 # were here (native-source-storage, -bravearkdeferredconsole, muyu-ignition-trace)
-# were converted to comments on 2026-11-08, so they no longer reach the check. If
-# one comes back, this must FAIL — do not re-add an entry to make it pass.
-# Boot arguments known to be inert on this line. Empty on purpose: the three that
-# were here (native-source-storage, -bravearkdeferredconsole, muyu-ignition-trace)
 # became comments on 2026-11-08, so they no longer reach this check. If one comes
 # back, the check must FAIL — do not re-add an entry just to make it pass.
 KNOWN_INERT: dict[str, str] = {}
@@ -100,10 +96,11 @@ def fail(item: str, detail: str = "") -> None:
 def source_texts() -> dict[Path, str]:
     """Source that actually reaches the kernel.
 
-    Deliberately excludes patches/xnu/backlog/ and patches/xnu/wip/: nothing there
-    is applied, so a parser found only in one of those files would be a false
-    positive — the option is still inert. This is the difference between "a patch
-    in the tree parses it" and "the kernel parses it".
+    Deliberately excludes patches/xnu/wip/ (an archive of unfinished tree state, never
+    applied) and patches/xnu/ (the 17 line's directory: listed in this line's series?
+    no). A parser found only in one of those would be a false positive — the option is
+    still inert. This is the difference between "a patch in the tree parses it" and
+    "the kernel parses it".
     """
     out: dict[Path, str] = {}
     for pat in ("package/*", "drivers/**/*", "patches/**/*"):
@@ -111,7 +108,9 @@ def source_texts() -> dict[Path, str]:
             if not p.is_file() or p.suffix not in {".c", ".h", ".cpp", ".mm", ".patch", ".py"}:
                 continue
             parts = p.relative_to(ROOT).parts
-            if "backlog" in parts or "wip" in parts:
+            # patches/xnu/ belongs to the 17 line and patches/xnu/wip/ is an archive; neither
+            # is applied here, so neither may satisfy this line's argument check.
+            if parts[:2] == ("patches", "xnu"):
                 continue
             try:
                 out[p] = p.read_text(encoding="utf-8", errors="ignore")
@@ -156,84 +155,132 @@ def check_defconfig(cfg: str) -> None:
         fail("kernel.defconfig", f"{cfg!r} not found in configs/ (have: {', '.join(have)})")
 
 
+def _series_entries(path: Path) -> list[str]:
+    return [
+        ln.strip()
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def _resolve_layer(entry: str, board: dict) -> tuple[Path | None, str]:
+    """Resolve one "layer:relative" series reference to a file.
+
+    Deliberately re-implemented from the framework's rules rather than imported: this
+    must keep working from a device checkout that has no framework on sys.path.
+    """
+    layer, sep, rel = entry.partition(":")
+    if not sep:
+        return None, "no layer prefix"
+    if layer == "device":
+        return ROOT / rel, ""
+    if layer == "arch":
+        arch = "arm64e"
+        for fw in framework_roots():
+            prof = fw / "profiles/os" / board["board"]["os_profile"] / "profile.toml"
+            if prof.is_file():
+                arch = tomllib.loads(prof.read_text(encoding="utf-8")).get("os", {}).get("arch", arch)
+                break
+        hits = [fw / "profiles/arch" / arch / rel for fw in framework_roots()
+                if (fw / "profiles/arch" / arch / rel).is_file()]
+        # More than one hit is normal: both framework checkouts carry the layer, and
+        # check_framework_divergence() reports where they disagree.
+        return (hits[0], "") if hits else (None, f"no {arch} arch series in the framework checkouts")
+    if layer == "os":
+        hits = [fw / "profiles/os" / board["board"]["os_profile"] / rel for fw in framework_roots()
+                if (fw / "profiles/os" / board["board"]["os_profile"] / rel).is_file()]
+        return (hits[0], "") if hits else (None, "no os series in the framework checkouts")
+    if layer == "soc":
+        hits = [p / rel for p in sorted(ROOT.parent.glob("UniXNU-*-common")) if (p / rel).is_file()]
+        return (hits[0], "") if len(hits) == 1 else (None, f"soc layer not found in {len(hits)} repos")
+    return None, f"unknown layer {layer!r}"
+
+
 def check_series(board: dict) -> None:
     """The series is the only source of truth for what gets applied.
 
-    patches.py does not glob and does not fall back: a declared series that is
-    missing raises "patch series missing" and the build stops. So this check is
-    about existence and resolution, not about ordering taste.
+    Structure being enforced (identical to the 17 line, and to UniXNU-uke): each layer owns
+    a directory, the device layer's series is nothing but the listing of patches/xnu-27/, and
+    the order is the filename order. patches.py does not glob and does not fall back — a
+    declared series that is missing stops the build — so existence and resolution matter
+    more than any opinion about ordering.
     """
     series_refs = board.get("kernel", {}).get("patch_series", [])
     if not series_refs:
         fail("kernel.patch_series", "empty")
         return
+
+    total: list[Path] = []
     for ref in series_refs:
-        layer, _, rel = ref.partition(":")
-        if not rel:  # no "layer:" prefix -> plain repo path
-            layer, rel = "device", ref
-        path = ROOT / rel
-        if layer != "device":
-            external(f"patch_series {ref}", "arch/soc/os layer lives in the framework")
+        path, why = _resolve_layer(ref, board)
+        if path is None or not path.is_file():
+            fail(f"patch_series {ref}", why or f"declared but missing: {ref}")
             continue
-        if not path.exists():
-            fail(f"patch_series {ref}", f"declared but missing; the build would stop at {rel}")
-            continue
-        ok(f"patch_series {ref}")
-
-        entries = [
-            ln.strip()
-            for ln in path.read_text(encoding="utf-8").splitlines()
-            if ln.strip() and not ln.lstrip().startswith("#")
-        ]
-        base = path.parent
-        local: list[str] = []
-        framework: list[str] = []
-        unresolved: list[str] = []
+        entries = _series_entries(path)
+        resolved: list[Path] = []
         for entry in entries:
-            if entry.startswith("os:"):
-                # Relative hop through the OS profile root, the same form the
-                # framework's own profile series uses. Valid in either checkout.
-                roots = framework_roots()
-                if not roots:
-                    external(f"series entry {entry}", "no framework checkout to resolve against")
-                    framework.append(entry)
-                    continue
-                hit = next(
-                    (r for r in roots
-                     if (r / "profiles/os" / board["board"]["os_profile"] / entry[3:]).resolve().is_file()),
-                    None,
-                )
-                if hit is None:
-                    unresolved.append(entry)
-                else:
-                    framework.append(entry)
+            sub, sub_why = _resolve_layer(entry, board) if ":" in entry else (path.parent / entry, "")
+            if sub is None or not sub.is_file():
+                fail(f"series entry {entry}", sub_why or f"missing under {path.parent}")
                 continue
-            local.append(entry)
-
-        missing_local = [x for x in local if not (base / x).exists()]
-        if missing_local:
-            fail(f"series entries in {rel}", "missing device patches: " + ", ".join(missing_local))
-        elif unresolved:
-            fail(f"series entries in {rel}", f"{len(unresolved)} os: entries do not resolve, e.g. {unresolved[0]}")
+            resolved.append(sub.resolve())
+        if path.parent == ROOT / "patches/xnu-27":
+            ok(f"patch_series {ref}", f"{len(resolved)} device patches, all present")
         else:
-            ok(f"series entries in {rel}", f"{len(local)} device + {len(framework)} framework, all resolve")
+            external(f"patch_series {ref}", f"{len(resolved)} patches from {path.parent.relative_to(ROOT.parent)}")
+        total += resolved
 
-        # A device patch sitting next to the series but not listed is the silent
-        # failure this directory exists to stop: present, looks live, never applied.
-        on_disk = sorted(p.name for p in base.glob("*.patch"))
-        unlisted = [x for x in on_disk if x not in local]
-        if unlisted:
-            fail(
-                f"unlisted device patches in {rel}",
-                ", ".join(unlisted) + " — present but never applied (move to backlog/ or list it)",
-            )
-        else:
-            ok(f"unlisted device patches in {rel}", f"{len(on_disk)} on disk, all listed")
+    dupes = sorted({p.name for p in total if total.count(p) > 1})
+    if dupes:
+        fail("duplicate series entries", ", ".join(dupes) + " (patches.py raises on this)")
+    else:
+        ok("applied patch set", f"{len(total)} patches, no duplicates")
 
-    backlog = ROOT / "patches/xnu/backlog"
-    if backlog.is_dir():
-        n = len(list(backlog.glob("*.patch")))
-        ok("backlog", f"{n} patches parked, none applied (README.md explains each)")
+    # The device layer: series == directory, in filename order. Anything sitting next to the
+    # series but unlisted is the silent failure this check exists to stop — present, looks
+    # live, never applied.
+    dev = ROOT / "patches/xnu-27"
+    if not dev.is_dir():
+        fail("patches/xnu-27/", "missing: the 27 line's device patch directory")
+        return
+    listed = [ln for ln in _series_entries(dev / "series") if ":" not in ln] if (dev / "series").is_file() else []
+    on_disk = sorted(p.name for p in dev.glob("*.patch"))
+    if not (dev / "series").is_file():
+        fail("patches/xnu-27/series", "missing")
+    elif listed != on_disk:
+        extra = [x for x in on_disk if x not in listed]
+        gone = [x for x in listed if x not in on_disk]
+        detail = []
+        if extra:
+            detail.append("on disk but not listed: " + ", ".join(extra))
+        if gone:
+            detail.append("listed but absent: " + ", ".join(gone))
+        if not detail:
+            detail.append("same set, different order (the 17 line applies in filename order)")
+        fail("patches/xnu-27/series vs directory", "; ".join(detail))
+    else:
+        ok("patches/xnu-27/series vs directory", f"{len(on_disk)} patches, name order")
+
+
+def check_line_separation() -> None:
+    """Two lines, two directories — and the 17-line directory is applied by a glob.
+
+    A schema_version 1 board (the 17 line's board.toml) does not name a series: the build
+    globs patches/xnu/*.patch and applies every one of them. So a 27-line patch parked in
+    there is applied to a 17-line kernel, and moving a 17-line patch out of it silently
+    drops it from that kernel. Neither shows up as a build error.
+    """
+    a = ROOT / "patches/xnu"
+    b = ROOT / "patches/xnu-27"
+    if not b.is_dir():
+        return
+    shared = sorted({p.name for p in a.glob("*.patch")} & {p.name for p in b.glob("*.patch")})
+    if shared:
+        fail("patch directories overlap", ", ".join(shared) + " exists in both lines' directories")
+    else:
+        ok("line separation", f"{len(list(a.glob('*.patch')))} patches for the 17 line (globbed), "
+                               f"{len(list(b.glob('*.patch')))} for the 27 line (listed)")
+
 
 
 def check_framework_divergence(board: dict) -> None:
@@ -317,7 +364,7 @@ def check_tool_paths(board: dict) -> None:
 
 def check_dangling(board: dict, texts: dict[Path, str]) -> None:
     haystacks = {"board.spike27-live.toml": BOARD.read_text(encoding="utf-8")}
-    ser = ROOT / "patches/xnu/series-spike27"
+    ser = ROOT / "patches/xnu-27/series"
     if ser.exists():
         haystacks[str(ser.relative_to(ROOT))] = ser.read_text(encoding="utf-8")
     for name, text in haystacks.items():
@@ -397,6 +444,7 @@ def main() -> int:
     check_board(board)
     check_defconfig(board.get("kernel", {}).get("defconfig", ""))
     check_series(board)
+    check_line_separation()
     check_framework_divergence(board)
     args = board.get("payload", {}).get("kernel_args", [])
     check_kernel_args(args, texts)

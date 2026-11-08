@@ -96,6 +96,14 @@ cp board.spike27-live.toml board.toml   # 27 line
 git checkout board.toml                 # back to the 17 line
 ```
 
+**One patch directory per line.** `patches/xnu/` belongs to the 17 line: a schema-1 board never
+names a series, so the build globs that directory and applies every `.patch` in filename order.
+`patches/xnu-27/` belongs to the 27 line and carries its own `series`, which is nothing but the
+listing of that directory — a schema-2 board has to write the list down. The framework layers
+(arch, soc, os) are referenced by prefix, never copied in. Keep them apart in both directions: a
+27-line patch in `patches/xnu/` is applied to a 17-line kernel, and a 17-line patch moved out of
+it disappears from that kernel, both silently.
+
 **Every build carries a generated tag** (`27-scr-1108a`), not a hand-typed `u` number — the tags
 are written into 23 separate `printf`s historically, which is why a u155 image once reported
 u151. See `docs/BUILD-NAMING.md`:
@@ -119,9 +127,10 @@ python3 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lit
 Before trusting a 27-line build, run the hygiene gate. It exists because this line was carried by
 many agents in sequence and the damage is quiet: a series file that was never committed (the build
 then refuses to start — this repo could not build its own 27 line until 2026-11-08), a defconfig
-that does not exist (the build falls back), a patch that sits in `patches/xnu/` looking live but is
-not in the series (it never gets applied), a boot argument nothing parses (the option does
-nothing). `STATUS.md` lists what each check catches:
+that does not exist (the build falls back), a device patch that sits next to its series but is not
+listed in it (it never gets applied), a patch of the other line sitting in this line's directory
+(the 17 line globs `patches/xnu/*.patch`, so it applies whatever is in there), a boot argument
+nothing parses (the option does nothing). `STATUS.md` lists what each check catches:
 
 ```bash
 python3 scripts/audit-27-config.py          # exit 1 on a disconnect

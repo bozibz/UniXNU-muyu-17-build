@@ -279,7 +279,7 @@ load IOStorageFamily → 校验 IOBlockStorageDevice getClassSize()
 | --- | --- | --- |
 | deps | `feeds.toml` + `[ipsw]` | 手工准备，`fw/trust-24A446/` 等目录 |
 | preflight | `uke_ipados27_defconfig` + 两层 fragment | 同名机制，但配置在 `/tmp/spike27/board.toml`（**不在仓库**） |
-| patches | 四层 series，`patches.plan()` 排序 | 只用 `device:patches/xnu/series-spike27` 一层 |
+| patches | 四层 series，`patches.plan()` 排序 | 同样四层（arch/soc/os/device），设备层 `patches/xnu-27/series`；2026-11-08 之前只有手写的一层（`series-spike27`） |
 | build kernel | ✅ | ✅ |
 | build package | ✅ | ⚠️ EDK2/UEFI 产物是 2026-11-05 编好后一直复用的（`UniXNU/out/muyu/boot/boot.img`，2.1 MB），此后每轮没重编 |
 | build firmware | Mu-Silicium + `check-uke.py` 预检 | `preflight = []`，同上，直接吃那个预编译 `boot.img` |

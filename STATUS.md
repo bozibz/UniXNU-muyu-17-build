@@ -166,8 +166,10 @@ What it enforces, and why each one earns its place:
 
 | Check | The fault it catches |
 | --- | --- |
-| `patch_series` resolves, and every device `.patch` is either listed or in `backlog/` | a series that does not exist (the build stops) and patches that look live but are never applied |
-| `os:` entries resolve through the framework | a relative hop that only works in one checkout |
+| all four `patch_series` layers resolve | a series that does not exist (the build stops dead) and a layer pointing at nothing |
+| `patches/xnu-27/series` == its directory, in filename order | a device patch present but never applied, or a series entry whose file is gone |
+| `patches/xnu/` and `patches/xnu-27/` do not overlap | one line's patch being applied to the other — the 17 line globs its directory, so it takes whatever is in there |
+| the applied set has no duplicates | the same patch reached through two layers (`patches.py` raises) |
 | `kernel.defconfig` exists in `configs/` | a build silently falling back to another config |
 | every `kernel_args` entry has a parser (this repo, the framework, or a justified XNU-native list) | the inert-option class of bug |
 | `device:` / `scripts/` / `kits/` references resolve, here or in a framework checkout | paths to files deleted three hand-overs ago |
@@ -175,37 +177,55 @@ What it enforces, and why each one earns its place:
 | wip patch copies == `drivers/MuyuDebug/` | two copies of one driver drifting apart |
 | the two framework checkouts agree on `patches/xnu-12377` | the same series producing two different kernels |
 
-State at 2026-11-08 21:40: **12 ok, 6 external, 0 fail, 33 kernel_args.**
+State at 2026-11-08 22:05: **12 ok, 9 external, 0 fail, 33 kernel_args, 73 patches.**
 
-The first fault was the big one: **this repo could not build its own 27 line.** `patches.py` does
-not glob and does not fall back — a declared series that is missing raises `patch series missing`
-and stops — and `patches/xnu/series-spike27` had never been committed. Every u-round was built
-from `/tmp/spike27`. That copy still exists, so the series was rebuilt from it and cross-checked
-against the framework's own record of what it applied (`xnu-patches.list`, 16:12): **72 entries =
-67 from the framework's `xnu-12377` layer + 5 device patches**, in u159's order. The 67 use the
-same `os:../../../patches/xnu-12377/` relative hop the OS profile series uses, so they resolve in
-either framework checkout.
+### The patch structure is the 17 line's, not a list somebody maintained
 
-The second was quieter and matters more for the next round: the repo carried **19** device patches
-while the build applied **5**. The other 16 are the 17 line's patches (video console, last-panic
-replay, watchdog, the launchd traces) — copied in, never listed, never applied. That is the same
-fact as §3's `STACK64`-missing finding, seen from the file side. They are now in
-`patches/xnu/backlog/` with a README, ready for the screen re-plant.
+A `schema_version 1` board (the 17 line's `board.toml`) never names a series: the build script
+globs `patches/xnu/*.patch` and `kits/XnuPrelink/patches/*.patch` and applies them in filename
+order. **The directory is the series.** A `schema_version 2` board has to write the list down, so
+the 27 line keeps the same rule in a form the framework can read:
 
-The rest: the `configs/muyu-27_defconfig` reference now points at the `muyu-userland_defconfig`
-the board actually names, and four inert arguments (`native-source-storage`,
-`-bravearkdeferredconsole`, `muyu-ignition-trace`, `braveark-hold-reboot`) became comments with the
-reason and the real name attached.
+```
+board.spike27-live.toml
+  arch:patches/xnu/series        64   UniXNU/profiles/arch/arm64e/…
+  soc:patches/xnu-12377/series    1   UniXNU-sm8635-common/…  (sheng-platform-power)
+  os:patches/xnu/series           4   UniXNU/profiles/os/ipados-27.0.1-24A446/…
+  device:patches/xnu-27/series    4   this repository
+                                  ──
+                                  73
+```
+
+`patches/xnu-27/series` is nothing but the listing of `patches/xnu-27/`, in filename order — the
+same shape as `UniXNU-uke`, and the audit fails if the two ever disagree. Nothing from another
+layer is copied in: an earlier version of this file pasted 67 framework patches in as absolute
+paths, which is exactly how it drifted out of step with the framework without anyone noticing.
+
+**Two directories, because two lines.** `patches/xnu/` is the 17 line's (16 patches: video
+console, last-panic replay, watchdog policy, hold-reboot, the launchd traces) and is still applied
+by the glob. `patches/xnu-27/` is this line's (4). They must not mix in either direction — a
+27-line patch parked in `patches/xnu/` is applied to a 17-line kernel, and a 17-line patch moved
+out of it silently disappears from that kernel. Both had happened.
+
+**Against u159: 73 patches instead of 72, one patch different.** The addition is
+`arm64e-threaded-starts.patch`, which the arch layer has carried since and the pasted list missed.
+Everything else is the same set, in the framework's own order rather than u159's.
+
+The rest of the cleanup: the `configs/muyu-27_defconfig` reference now points at the
+`muyu-userland_defconfig` the board actually names, and four inert arguments
+(`native-source-storage`, `-bravearkdeferredconsole`, `muyu-ignition-trace`,
+`braveark-hold-reboot`) became comments with the reason and the real name attached.
 
 **`braveark-hold-reboot` is the one to notice.** It was live on the 17 line (u88 parked on its
-panic screen), and on the 27 line it does nothing: its two patches are in `backlog/`. So a 27-line
-panic reboots and the panel loses the text — the single thing a panel-only channel cannot afford.
-Wiring those two patches back in (they are a pair) is the first item of the screen re-plant.
+panic screen), and on the 27 line it does nothing: its two patches live in `patches/xnu/`, which
+this line does not read. So a 27-line panic reboots and the panel loses the text — the single
+thing a panel-only channel cannot afford. Wiring those two patches in (they are a pair) is the
+first item of the screen re-plant.
 
 One deviation is recorded, not fixed, because it is framework work: the two framework checkouts
-disagree on three of the 67 (`offline-owner-boot-manifest`, `offline-owner-systemos-mount`,
-`zzz-boot-progress`, core-repo copies newer), so the same series builds differently under
-`UniXNU` and `UniXNU-27`. The audit reports it.
+disagree on three of the compatibility patches (`offline-owner-boot-manifest`,
+`offline-owner-systemos-mount`, `zzz-boot-progress`, core-repo copies newer), so the same series
+builds differently under `UniXNU` and `UniXNU-27`. The audit reports it.
 
 ## Next steps, in order
 

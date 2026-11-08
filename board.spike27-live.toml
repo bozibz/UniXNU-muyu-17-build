@@ -55,7 +55,23 @@ owner-boot-manifest-domain = "4d7579754272696e6775702e4f776e6572426f6f745365742e
 "kernel-ctrr-to-be-enabled" = 0
 
 [kernel]
-patch_series = ["device:patches/xnu/series-spike27"]
+# Four layers, in this order, each resolved into its own checkout — the same shape UniXNU-uke
+# uses and the shape the 17 line gets for free (a schema_version 1 board globs patches/xnu/*.patch
+# and never names a series at all). This line is schema_version 2, so the device layer has to be
+# written down: patches/xnu-27/series is simply the listing of that directory.
+#   arch  64 patches  UniXNU/profiles/arch/arm64e/patches/xnu/series
+#   soc    1 patch    UniXNU-sm8635-common/patches/xnu-12377/series  (sheng-platform-power)
+#   os     4 patches  UniXNU/profiles/os/ipados-27.0.1-24A446/patches/xnu/series
+#   device 4 patches  patches/xnu-27/series                           (this repository)
+# 73 total. The previous version of this list pasted the framework patches in as absolute paths
+# (72 entries, 67 of them copied out of the framework), which is how it silently fell out of step:
+# it was missing arm64e-threaded-starts.patch, which the arch layer has carried since.
+patch_series = [
+  "arch:patches/xnu/series",
+  "soc:patches/xnu-12377/series",
+  "os:patches/xnu/series",
+  "device:patches/xnu-27/series",
+]
 # Userland stage: the full kernel plus the owner cache/Data mounts, the RAM block
 # provider (the Data seed) and the launchd watchdog policy. Under muyu-full_defconfig
 # launchd has no writable /private/var (swap reports EROFS 30) and nothing holds the
@@ -316,8 +332,8 @@ kernel_args = [
   # "muyu-ignition-trace". The u44 two-liner lived in /tmp/spike27's bsd/kern/kern_newsysctl.c
   # and was never committed as a patch, so the observation that produced IPADOS27-MIGRATION
   # §6.58.2 ("muyu ignition: enter oldlen=132 newlen=0", never returns) cannot be reproduced
-  # from this repo today. To re-run it, port the hook back into patches/xnu/ and list the patch
-  # in series-spike27 first; the argument alone is inert.
+  # from this repo today. To re-run it, port the hook back into patches/xnu-27/ and list it in
+  # that directory's series first; the argument alone is inert.
   # "muyu-ignition-trace=1",
   # 2026-11-06 u47: let the ignition handler take over the gate its holder never releases.
   # u50: union composition with ignition off; forcing the gate only produced the cork poll loop.
@@ -333,7 +349,7 @@ kernel_args = [
   # patch that switches vcattach() to kPETextScreen: passing -muyutextconsole here is silently
   # ignored, which is why the panel stayed empty while the kernel itself was running fine.
   # (The 17 line's own zzzzzz-video-console-text.patch also parses this name, but it lives in
-  # patches/xnu/backlog/ and is not applied on the 27 line — see series-spike27.)
+  # patches/xnu/ — the 17 line's directory, not this line's — so it is not applied here.)
   # "-enable_kprintf_spam",   # dropped 2026-10-27: console spam buried the panic dump
   "-bravearktextconsole",
   # u124: uke 2026-11-03 fix for the text-console stall, ported as
@@ -344,7 +360,7 @@ kernel_args = [
   # NOT WIRED on this line (checked 2026-11-08): the argument name below is not parsed anywhere
   # in this repo, and uke's implementation reads "-ukedeferredconsole"
   # (uke patches/xnu-12377/uke-deferred-video-kprintf.patch), which is a different name and is
-  # not in patches/xnu/series-spike27. The 17 line keeps the braveark- spelling because its tree
+  # not in patches/xnu-27/series. The 17 line keeps the braveark- spelling because its tree
   # carries the matching patch; this line does not, so passing it here was a no-op.
   # "-bravearkdeferredconsole",
   # u128..u159 ran a USB CDC ACM bring-up here (muyu_usb=1 / muyu_usb_panic=1), 29 rounds without a
@@ -390,7 +406,8 @@ kernel_args = [
   # text stays on the panel long enough to be read or photographed.
   # NOT WIRED on the 27 line (checked 2026-11-08): the only patches that parse this are
   # zzzzzzzzz-braveark-hold-reboot.patch and zzzzzzzzz-braveark-hold-restart.patch, and both
-  # live in patches/xnu/backlog/ — they were never listed in series-spike27. It was live on the
+  # live in patches/xnu/ (the 17 line's directory, not this one) — they were never listed in
+  # patches/xnu-27/series. It was live on the
   # 17 line (u88 used it). Consequence here: a 27-line panic reboots and the panel loses the
   # text, which is the one thing the panel-only channel cannot afford. Wiring these two back in
   # (as a pair) is the first item of the screen re-plant, docs/SCREEN-ONLY.md §4.

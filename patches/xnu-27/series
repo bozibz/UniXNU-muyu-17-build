@@ -1,0 +1,23 @@
+# muyu, iPadOS 27 line (24A446) — the device layer of the XNU patch series.
+#
+# Same shape as the 17 line: one directory holds this line's patches, and the order is the
+# filename order, so the list below is the directory listing and nothing else. What differs is
+# only how the framework reads it — a schema_version 1 board (the 17 line) globs
+# patches/xnu/*.patch, a schema_version 2 board (this line) needs the list written out.
+# scripts/audit-27-config.py enforces that this file and `ls *.patch` agree.
+#
+# The arch, soc and os layers are NOT copied in here. board.spike27-live.toml references them by
+# prefix (arch:patches/xnu/series, soc:patches/xnu-12377/series, os:patches/xnu/series) and the
+# framework resolves each into its own checkout, exactly as UniXNU-uke does. An earlier version of
+# this file pasted all 67 framework patches in as absolute paths; that is why it drifted from the
+# framework without anyone noticing.
+#
+# Archived under patches/xnu/ instead: the 16 patches that make up the 17 line's screen stack
+# (video console, last-panic replay, watchdog policy, hold-reboot). They are not inputs to a
+# 27-line kernel — the 27 line has no STACK64 and no muyu_vc_* (docs/SCREEN-ONLY.md §3) — and they
+# must stay in patches/xnu/ because that glob is how a 17-line build finds them.
+
+muyu-console-clear.patch
+muyu-source-storage-start.patch
+native-stack-shift.patch
+offline-no-iortc-wait.patch

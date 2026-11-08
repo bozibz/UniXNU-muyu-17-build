@@ -1298,8 +1298,8 @@ IOService::waitForService (IOService::resourceMatching("IORTC"), &t);   // t = 3
 匹配不到，匹配机制在里面踩坏指针；而且它会先睡满 30 秒——所以判断“有没有字”必须等一分钟以上，
 我第一次就是因为等得不够久误判成“没有”。
 
-修法：设备补丁 `patches/xnu/offline-no-iortc-wait.patch` 跳过这个等待（保留 `clock_initialize_calendar()`
-调用），补丁加在 `series-spike27` 末尾。下一步要回答的是：`clock_initialize_calendar()` 里的
+修法：设备补丁 `patches/xnu-27/offline-no-iortc-wait.patch` 跳过这个等待（保留 `clock_initialize_calendar()`
+调用），补丁写进 `patches/xnu-27/series`（顺序即文件名）。下一步要回答的是：`clock_initialize_calendar()` 里的
 `PEGetUTCTimeOfDay()` 在没有 RTC 时是否也会崩——探针已经留在那里，重编内核后一轮就能知道。
 
 **重编时踩的坑（记一笔，避免再犯）**：`<out>/…/.config` 是手工维护的（改 `configs/*_defconfig` 不会重跑

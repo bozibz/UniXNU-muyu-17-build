@@ -89,9 +89,10 @@ clean tree yet"。所以 17 线面板上实际是 **XNU 控制台 + STACK64 段 
 不做新设计；把 17 线的层接回 27 线的链接。按依赖序：
 
 0. **先接 panic 停留**（2026-11-08 审计新发现）：`braveark-hold-reboot=1` 在 27 线是死参数——
-   解析它的两个补丁 `zzzzzzzzz-braveark-hold-{reboot,restart}.patch` 停在 `patches/xnu/backlog/`，
-   从未进过 series。后果是 27 线 panic 后自动重启、屏上文本丢失，而读屏唯一怕的就是这个。
-   这两个补丁是一对，接的时候一起进 series 并按需验证 apply。审计脚本会因此报 0 fail。
+   解析它的两个补丁 `zzzzzzzzz-braveark-hold-{reboot,restart}.patch` 在 `patches/xnu/`，
+   那是 17 线的目录，27 线不读。后果是 27 线 panic 后自动重启、屏上文本丢失，而读屏唯一
+   怕的就是这个。这两个补丁是一对：**复制/移动到 `patches/xnu-27/` 并写进该目录的
+   `series`**（顺序即文件名），再按需验证 apply。审计脚本会检查 series 与目录是否一致。
 
 1. **配置**：27 线 defconfig 增加 `CONFIG_XNU_BOOT_PROGRESS=y` +
    `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y`（uku 基座已有这两个开关，17 线的
