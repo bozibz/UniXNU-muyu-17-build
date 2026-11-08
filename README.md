@@ -116,6 +116,15 @@ python3 ../UniXNU-muyu/scripts/patch-vendor-boot.py --base ../fw/vendor_boot_lit
     --payload out/muyu/payload/payload.img --output ../fw/vendor_boot_muyu.img
 ```
 
+Before trusting a 27-line build, run the hygiene gate. It exists because this line was carried by
+many agents in sequence, and the damage is always silent — a series file that was never committed,
+a defconfig that does not exist, a boot argument nothing parses (all of them build, none of them
+work). `STATUS.md` lists what each check catches:
+
+```bash
+python3 scripts/audit-27-config.py          # exit 1 on a disconnect
+```
+
 For the 17 line the same three steps run with `--kernelcache out/ipsw/21H461/kernelcache.decompressed`.
 
 Requirements: unlocked bootloader, a wall charger for the experiments, and a full

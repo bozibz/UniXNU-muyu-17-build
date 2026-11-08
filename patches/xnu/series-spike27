@@ -1,0 +1,86 @@
+# muyu 27 line — device-layer XNU series (iPadOS 27.0.1 / 24A446, SM8635 cliffs).
+#
+# This file is referenced by board.spike27-live.toml (kernel.patch_series =
+# ["device:patches/xnu/series-spike27"]) and by porting.toml (configuration area).
+# It did not exist until 2026-11-08: the 27 line had been built with whatever the
+# patch loader globbed out of patches/xnu/, so the applied set was an accident of
+# file naming and it changed silently whenever a patch was added. Nothing here is
+# reordered relative to that glob — this is the same set in the same order, now
+# written down.
+#
+# Order is alphabetical, and the zzz… prefixes are a hand-rolled sort key from
+# before this file existed (more z = applied later). Do not add new z's; append to
+# the end of this list instead and give the patch a descriptive name.
+#
+# Layering: this is the *device* layer only. The arch / soc / os layers come from
+# the framework (UniXNU-27) series, which is why this file does not carry the
+# sheng-baseline patches. A patch that belongs to the shared XNU tree belongs in
+# the framework, not here.
+#
+# patches/xnu/wip/ is deliberately absent: that directory is an archive of
+# unfinished work (muyu-screen-wip-*.patch), not a build input.
+
+# --- console -------------------------------------------------------------------
+# Clear DarwinBoot's leftover 2x handoff text once, so the console does not draw
+# over it.
+muyu-console-clear.patch
+
+# 4 KiB-page kernel: stack region alignment is 32 KiB, not derived from the page
+# shift.
+native-stack-shift.patch
+
+# No IORTC service exists on SM8635; stop IOStartIOKit waiting for one.
+offline-no-iortc-wait.patch
+
+# Let the owner-root publication path run in unverified bring-up mode
+# (native-ufs-allow-unverified=1) instead of refusing to publish.
+offline-owner-root-auth-bypass.patch
+
+# Bring up the SystemOS owner cache on the 27 fileset.
+zzzz-offline-owner-systemos-bringup.patch
+
+# DarwinBoot hands over a clean physical GOP base; add the low-bit "physical"
+# marker initialize_screen() looks for, or the console finds no video at all.
+zzzzz-video-console-physical-fb.patch
+
+# `-bravearktextconsole`: switch the console from graphics boot to text mode.
+zzzzzz-video-console-text.patch
+
+# Paint the log tail the previous boot left in pram, at the end of vcattach().
+zzzzzzz-last-panic-print.patch
+
+# CONFIG_XNU_WATCHDOG_POLICY: keep com.apple.watchdogd from resetting a boot that
+# has not checked in yet.
+zzzzzzzz-braveark-watchdog-policy.patch
+
+# `braveark-hold-reboot=1`: park on the panic text instead of rebooting, so the
+# panel can be photographed. Two patches, one per restart path (kern_shutdown and
+# IOPlatformExpert); they are a pair, keep both or neither.
+zzzzzzzzz-braveark-hold-reboot.patch
+zzzzzzzzz-braveark-hold-restart.patch
+
+# Once the render server owns the scanout, stop the kernel drawing into it.
+zzzzzzzzzzzz-muyu-console-quiet.patch
+
+# The thread set changes between stackshot's counting pass and its fill pass;
+# bounds-check the fill instead of overflowing.
+zzzzzzzzzzzzz-stackshot-tolerate-thread-count-drift.patch
+
+# --- dyld / launchd bring-up traces (2026-11-02..03) ---------------------------
+# The current blocker is dyld never asking for a slide; these four exist only to
+# make the failing step visible on the panel. They print, they do not change
+# policy — remove them once the blocker is understood.
+#   shared_region_check_np fails with no map error reported.
+zzzzzzzzzzzzzz-shared-region-map-trace.patch
+#   init's critical-exit reason is printed before the hook that panics.
+zzzzzzzzzzzzzzz-critexit-reason.patch
+#   the argv launchd passes to its boot helpers (mount-phase-1 exits 66).
+zzzzzzzzzzzzzzzz-spawn-mount-argv.patch
+#   why mount -P 1 returns ENOENT.
+zzzzzzzzzzzzzzzzz-mount-syscall-trace.patch
+#   which helper in the exec chain is the one that dies.
+zzzzzzzzzzzzzzzzzz-exec-trace.patch
+
+# Userland helpers report on /dev/console, which the video console never replays;
+# mirror the tail so their messages reach the panel.
+zzzzzzzzzzzzzzzzzzz-console-tail.patch

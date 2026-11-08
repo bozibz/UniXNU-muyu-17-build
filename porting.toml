@@ -18,7 +18,7 @@ summary = "Muyu 27-spike: payload reaches APFS SystemCryptex mount and owner-cac
 id = "configuration"
 status = "host-verified"
 components = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink"]
-paths = ["board.spike27-live.toml", "configs/muyu-27_defconfig", "patches/xnu/series-spike27"]
+paths = ["board.spike27-live.toml", "configs/muyu-userland_defconfig", "patches/xnu/series-spike27"]
 inputs = ["Schema-2 board (soc_source = sm7675, os_profile = ipados-27.0.1-24A446); archived into the repo as board.spike27-live.toml on 2026-11-08 16:05, byte-identical to /tmp/spike27/board.toml.",
   "24A446 kernelcache sha256 38e6d9fa5f789b82... — the same OS-profile member the uke line prelinks against (kernel.json inputs.kernelcache_sha256).",
   "Framework UniXNU-27 + /tmp/spike27-out build tree; build env: UNIXNU_DEVICE=/tmp/spike27 UNIXNU_OUT=/tmp/spike27-out."]
@@ -28,7 +28,8 @@ procedure = ["export UNIXNU_DEVICE=/tmp/spike27 UNIXNU_OUT=/tmp/spike27-out; cd 
   "python3 UniXNU-muyu/scripts/patch-vendor-boot.py --base /tmp/vendor_boot_base_96m.img --payload <out>/payload/payload.img --output fw/vendor_boot_27-uNNN.img"]
 findings = ["The repo's own board.toml is still the 21H461 iPad7,1 template; the live 27-line config lived only in /tmp/spike27 until archived 2026-11-08 16:05. /tmp deletion changes behaviour (UKE-FULL-WALKTHROUGH finding, still true for board.toml itself).",
   "u152-u159 kernel version strings all read '(u151)': the device source was not bumped after u151; multi-MB image diffs between rounds are consistent with LTO/layout churn plus payload repack, and the u157->u158 delta is exactly 989 bytes (FAT timestamps, random-seed, boot-args region).",
-  "Last build (16:13) reports mapping_complete=false, runtime_qualified=false, loadable=false, allow_missing=true, missing AppleARMWatchdogTimer + IOHIDFamily, 26 stub sites, Image4 personality dropped; it was flashed anyway (u159) with no recorded decision."]
+  "Last build (16:13) reports mapping_complete=false, runtime_qualified=false, loadable=false, allow_missing=true, missing AppleARMWatchdogTimer + IOHIDFamily, 26 stub sites, Image4 personality dropped; it was flashed anyway (u159) with no recorded decision.",
+  "CLEANUP 2026-11-08 21:20 (maintainer: 'the 27 line is many AIs handing over, keep it clean'). Four hand-over faults, all now fixed and gate-checked by scripts/audit-27-config.py: (1) patches/xnu/series-spike27 was declared here and in the board file but had never been committed — the applied patch set was whatever the loader globbed, so it could change silently; it now exists and lists exactly the 19 patches in the same order (verified equal to the glob). (2) configs/muyu-27_defconfig does not exist; the 27 line builds configs/muyu-userland_defconfig. (3) native-source-storage=1 sat in the boot args although the adjacent comment already said it is uke's name and inert here. (4) -bravearkdeferredconsole and muyu-ignition-trace=1 had no parser anywhere: uke's names are -ukedeferredconsole / uke-ignition-trace, and u44's sysctl two-liner lived only in /tmp/spike27 and was never committed, so IPADOS27-MIGRATION §6.58.2 cannot be reproduced from this repo."]
 completion = ["defconfig/kernel/payload build completes and the prelinked MH_FILESET kernel.macho is produced; boot config embedded in the payload is machine-readable from the images."]
 limits = ["No manifest/hash verification of the packed image (uke's release/verify step is not used). The unqualified-final-build policy is undocumented."]
 next_action = ["Record why the 16:13 unqualified build was flashed; decide a policy for loadable=false candidates; keep board.spike27-live.toml as the single source and reconcile repo board.toml."]
@@ -94,7 +95,7 @@ paths = ["docs/IPADOS27-MIGRATION.md", "docs/ABANDONED-CHANNELS.md §3 (the Linu
 inputs = ["SHNGROOT container on userdata: windows OS + SystemOS (sparse images fw/userdata-root-preboot*.sparse, 8.74-15.2 GiB variants, five flashes 2026-11-03..11-06 per ledger).",
   "Persistent Data: packed_data_ramdisk/persistent_data/sheng-data-persist=2; data-seed.img (DBRDISK1, 1.04 MiB) is only the first-boot seed.",
   "24A446 trust cache bundle fw/trust-24A446/24A446-original-trust.bundle."]
-configuration = ["native-ufs-allow-unverified=1 native-ufs-diagnostics=1 native-ufs-smmu-takeover=1 muyu-source-storage=1 native-source-storage=1 native-ufs-root=1 (all rounds u150-u159)."]
+configuration = ["native-ufs-allow-unverified=1 native-ufs-diagnostics=1 native-ufs-smmu-takeover=1 muyu-source-storage=1 native-ufs-root=1 (all rounds u150-u159). Note: native-source-storage=1 sat in this list by mistake and was dropped 2026-11-08 — that is uke's name, this repo's SourceStorage.cpp gates on muyu-source-storage. See docs/IPADOS27-MIGRATION.md §6.47."]
 procedure = ["Flash userdata-root sparse + vendor_boot; boot; read panel log; for persistence, reboot with sheng-data-persist=2 and compare page counts."]
 findings = ["Panel 2026-11-08 14:36 (u155): NativeUfs OS volume ready; apfs mounts Rave24A446...SystemCryptex requested by init (pid 1), vol-uuid F7914C52..., 4096x1465320 unencrypted; stable checkpoint indices desc 6 data 14 — the cryptex mount path works on hardware.",
   "Owner-cache enumeration reaches the dyld_shared_cache_arm64e file list under /System/Library/Caches and /System/Cryptexes/OS (probe/composed 0/0 — files listed, contents not yet composed).",

@@ -312,7 +312,13 @@ kernel_args = [
   # u90: map the shared cache unslid so a raw (un-rebased) chained pointer still names a valid address.
   "-disable_aslr",
   # 2026-11-06 u44: observe AppleImage4's ignition_blob handler, which libignition waits on.
-  "muyu-ignition-trace=1",
+  # NOT WIRED (checked 2026-11-08 across muyu, uke, UniXNU-27, sm8635-common): nothing parses
+  # "muyu-ignition-trace". The u44 two-liner lived in /tmp/spike27's bsd/kern/kern_newsysctl.c
+  # and was never committed as a patch, so the observation that produced IPADOS27-MIGRATION
+  # §6.58.2 ("muyu ignition: enter oldlen=132 newlen=0", never returns) cannot be reproduced
+  # from this repo today. To re-run it, port the hook back into patches/xnu/ and list the patch
+  # in series-spike27 first; the argument alone is inert.
+  # "muyu-ignition-trace=1",
   # 2026-11-06 u47: let the ignition handler take over the gate its holder never releases.
   # u50: union composition with ignition off; forcing the gate only produced the cork poll loop.
   # "muyu-ignition-force=1",
@@ -332,8 +338,13 @@ kernel_args = [
   # UniXNU-muyu style. kprintf no longer draws to the framebuffer with IRQs
   # masked (single-core + ticket lock = silent deadlock); it enqueues to the
   # console ring instead and a thread_call drains it. Panic output stays
-  # synchronous. Name is fixed by this round's patch to pe_kprintf.c.
-  "-bravearkdeferredconsole",
+  # synchronous.
+  # NOT WIRED on this line (checked 2026-11-08): the argument name below is not parsed anywhere
+  # in this repo, and uke's implementation reads "-ukedeferredconsole"
+  # (uke patches/xnu-12377/uke-deferred-video-kprintf.patch), which is a different name and is
+  # not in patches/xnu/series-spike27. The 17 line keeps the braveark- spelling because its tree
+  # carries the matching patch; this line does not, so passing it here was a no-op.
+  # "-bravearkdeferredconsole",
   # u128..u159 ran a USB CDC ACM bring-up here (muyu_usb=1 / muyu_usb_panic=1), 29 rounds without a
   # working enumeration. The driver, its build hook and these arguments were all removed on
   # 2026-11-08; the panel and the heartbeat are the channel. See docs/ABANDONED-CHANNELS.md.
@@ -367,10 +378,11 @@ kernel_args = [
   # "Couldn't alloc class \"NativeUfs\"" for every match and nothing publishes the volumes.
   # 2026-11-06: the gate SourceStorage.cpp actually reads is "muyu-source-storage" (the device
   # prefix keeps a 17-line boot out of this code); native-source-storage is a different, uke-side
-  # name. With the right one, native_source_storage_start() registers the built-in classes and then
+  # name — it is parsed by UniXNU-uke/package/SourceStorage.cpp, not by this repo's copy. Passing
+  # it here did nothing; removed 2026-11-08. With the right one,
+  # native_source_storage_start() registers the built-in classes and then
   # creates/attaches/starts the UFS service against IOPlatformExpertDevice itself.
   "muyu-source-storage=1",
-  "native-source-storage=1",
   "native-ufs-root=1",
   # Bring-up aid: park the CPU after a panic instead of restarting, so the panic
   # text stays on the panel long enough to be read or photographed.

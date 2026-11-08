@@ -151,6 +151,36 @@ full sequence, including the `set_active a` and the pair-flashing rule, is in th
 `AGENTS.md`. The 17-line commands (with `--kernelcache out/ipsw/21H461/...`) are unchanged and
 still work.
 
+## Keeping the 27 line clean
+
+This line was carried by many agents in sequence, so the failure mode is never a build error — it
+is a silent disconnect: a series file that was declared but never committed, a defconfig that does
+not exist, a boot argument whose parser was renamed or never committed. All of it builds fine and
+all of it does nothing. `scripts/audit-27-config.py` checks for exactly those:
+
+```bash
+python3 scripts/audit-27-config.py          # exit 1 on any disconnect
+```
+
+What it enforces, and why each one earns its place:
+
+| Check | The fault it catches |
+| --- | --- |
+| `patch_series` files exist, every `.patch` on disk is listed | the applied patch set being an accident of globbing |
+| series order vs the alphabetical glob | a reordering nobody wrote down |
+| `kernel.defconfig` exists in `configs/` | a build silently falling back to another config |
+| every `kernel_args` entry has a parser (this repo, the framework, or a justified XNU-native list) | the inert-option class of bug |
+| `device:` / `scripts/` / `kits/` references resolve, here or in `UniXNU-27` | paths to files deleted three hand-overs ago |
+| no live mention of the 2026-11-08 removals | dangling references to the removed USB/Linux channels |
+| wip patch copies == `drivers/MuyuDebug/` | two copies of one driver drifting apart |
+
+State at 2026-11-08 21:20: **11 ok, 5 external, 0 fail, 34 kernel_args.** Four hand-over faults were
+found and fixed to get there — `patches/xnu/series-spike27` now exists (19 patches, same order as
+the previous implicit glob, so no behaviour change), the `configs/muyu-27_defconfig` reference
+points at the `muyu-userland_defconfig` the board actually names, and three inert arguments
+(`native-source-storage`, `-bravearkdeferredconsole`, `muyu-ignition-trace`) became comments with
+the reason and the real name attached.
+
 ## Next steps, in order
 
 1. **Answer `docs/HANDOFF-2026-11-08.md` §7.** One line: why stock images went back at 16:18.
