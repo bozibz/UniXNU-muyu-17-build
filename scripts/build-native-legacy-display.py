@@ -349,7 +349,6 @@ except subprocess.CalledProcessError as e:
     keyevents_inputs=[]
     HAVE_KEYSTORE=False
 if HAVE_KEYSTORE:
-if HAVE_KEYSTORE:
     run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
          '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp',
          keyevents/'AppleKeyStoreState.o',keyevents_late])
