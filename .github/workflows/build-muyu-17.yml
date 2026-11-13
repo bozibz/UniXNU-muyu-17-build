@@ -41,6 +41,50 @@ jobs:
           path: UniXNU
           submodules: recursive
 
+      # The uke build script re-applies all patches on every invocation and
+      # reverse-checks them; the muyu 17-line patch series has hunks whose text was
+      # rewritten by a later patch, which breaks the reverse check on the already-patched
+      # tree (required for the second pass). Apply the series exactly once per build and
+      # let the second invocation skip re-patching (the tree persists).
+      - name: Make the uke patch loop apply-once
+        run: |
+          python3 - <<'PY'
+          import sys
+          path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
+          source = open(path, encoding='utf-8').read()
+          old = '''for LATE_PATCH in "$ROOT/patches/xnu/zzz-boot-progress.patch" "$ROOT/patches/xnu/zzy-native-gpu-addon-mount.patch"; do
+            if git -C .cache/xnu-work apply --reverse --check "$LATE_PATCH" >/dev/null 2>&1; then
+              git -C .cache/xnu-work apply --reverse "$LATE_PATCH"
+            fi
+          done
+          for PATCH in "$ROOT"/patches/xnu/*.patch "$ROOT"/kits/NativePrelink/patches/*.patch; do
+            if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+              git -C .cache/xnu-work apply --check "$PATCH"
+              git -C .cache/xnu-work apply "$PATCH"
+            fi
+          done'''
+          new = '''if [ -f .cache/xnu-work/.unixnu-patches-applied ]; then
+            echo 'xnu-work is already patched; skipping the patch loop (second pass)'
+          else
+            for LATE_PATCH in "$ROOT/patches/xnu/zzz-boot-progress.patch" "$ROOT/patches/xnu/zzy-native-gpu-addon-mount.patch"; do
+              if git -C .cache/xnu-work apply --reverse --check "$LATE_PATCH" >/dev/null 2>&1; then
+                git -C .cache/xnu-work apply --reverse "$LATE_PATCH"
+              fi
+            done
+            for PATCH in "$ROOT"/patches/xnu/*.patch "$ROOT"/kits/NativePrelink/patches/*.patch; do
+              if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+                git -C .cache/xnu-work apply --check "$PATCH"
+                git -C .cache/xnu-work apply "$PATCH"
+              fi
+            done
+            touch .cache/xnu-work/.unixnu-patches-applied
+          fi'''
+          if old not in source:
+              sys.exit('patch loop block not found; uke script changed?')
+          open(path, 'w', encoding='utf-8', newline='\n').write(source.replace(old, new))
+          print('patched', path)
+          PY
+
       - name: Record the UniXNU revision
         id: base
         working-directory: UniXNU
