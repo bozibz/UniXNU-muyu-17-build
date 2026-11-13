@@ -58,9 +58,10 @@ jobs:
       # let the second invocation skip re-patching (the tree persists).
       # board.toml uses the upstream main module names; the uke branch still carries
       # XnuPrelink as NativePrelink, SoftwareAES as NativeAES and RamBlock as
-      # NativeRamBlock. Pin each to the commit upstream main references, so the
-      # build tree resolves drivers/SoftwareAES/NativeAES.cpp and the XnuPrelink
-      # python package. Mirrors the 17 line used by the community board.
+      # NativeRamBlock, and a much older ArmSmmu4K whose ABI the muyu kit does not
+      # match. Pin each to the commit upstream main references, like
+      # UniXNU-muyu-isqian does, since the 17-line kit sources were written against
+      # the main-line kit ABI.
       - name: Check out the kits and drivers the uke branch predates
         run: |
           git clone -q https://github.com/UniXNU/XnuPrelink.git UniXNU/kits/XnuPrelink
@@ -71,6 +72,12 @@ jobs:
           git -C UniXNU/drivers/RamBlock checkout -q 4be2d7eb05ef5a98126c91e0302c149140c0e3e1
           git clone -q https://github.com/UniXNU/QcomGeniSpi.git UniXNU/drivers/QcomGeniSpi
           git -C UniXNU/drivers/QcomGeniSpi checkout -q eac47baefe6a5d2368a70351e6ad1b6361bedbe2
+          # ArmSmmu4K: uke pins 4d0d6598b1a36aeec3de01091893fa6660e49388; the muyu
+          # kit uses the main-line fork instead.
+          git -C UniXNU config submodule.kits/ArmSmmu4K.update none
+          rm -rf UniXNU/kits/ArmSmmu4K
+          git clone -q https://github.com/UniXNU/ArmSmmu4K.git UniXNU/kits/ArmSmmu4K
+          git -C UniXNU/kits/ArmSmmu4K checkout -q 83969cd874503e65997ff7639f7dcf3d0a92cd17
 
       - name: Use the pre-seeded Apple public headers
         # prepare-xnu-source.py restores Apple's omitted headers over the GitHub
