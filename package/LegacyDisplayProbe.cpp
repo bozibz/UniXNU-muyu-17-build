@@ -433,7 +433,8 @@ extern void native_novatek_touch_start(void) __attribute__((weak_import));
 // sees under /private/var (keybags, migration/Setup prefs) - the overlay is invisible from the host.
 extern void muyu_data_probe_start(void) __attribute__((weak_import));
 extern void muyu_dump_start_late(void) __attribute__((weak_import));
-extern void muyu_usb_debug_start(void) __attribute__((weak_import));
+// The USB debug channel was removed 2026-11-08 (docs/ABANDONED-CHANNELS.md); no
+// driver implements muyu_usb_debug_start() anymore, so the call is gone too.
 extern void boot_log_tick(unsigned) __attribute__((weak_import));
 extern void native_touch_muyu_start(void) __attribute__((weak_import));
 extern void sheng_cpufreq_probe(void);
@@ -465,9 +466,9 @@ void native_legacy_display_late_probe(void) {
     if (&muyu_dump_start_late) muyu_dump_start_late();
     native_hid_input_probe();
     muyu_buttons_probe();
-    /* USB debug console: after the HID service exists (it registers the button sink) and before the
-     * graphics client starts, so a serial capture sees the whole user-space boot. */
-    if (&muyu_usb_debug_start) muyu_usb_debug_start();
+    /* USB debug console: the whole USB debug channel was removed 2026-11-08
+     * (docs/ABANDONED-CHANNELS.md); the driver is gone, so there is nothing
+     * to start here either. */
     /* UFS diagnostic log (kits/muyu/BootLog.c, sheng-log=1): the writer waits for NativeUfs to publish the root
      * layout, so starting it here only arms it. This is the official log path: the window is readable afterwards
      * from stock recovery with dd + scripts/read-sheng-log.py --decode. */
