@@ -37,6 +37,12 @@ jobs:
         with:
           path: UniXNU-muyu
 
+      # The build's GMU generators read the harvested Adreno data from
+      # <workspace>/fw; the device repository carries it since this line had it
+      # under fw/ from the start.
+      - name: Materialize the fw/ harvest inputs at the workspace root
+        run: cp -r UniXNU-muyu/fw ./fw
+
       - name: Check out UniXNU
         uses: actions/checkout@v4
         with:
