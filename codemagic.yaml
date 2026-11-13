@@ -1,0 +1,454 @@
+# Build the iPadOS 17.7.11 (21H461) muyu XNU kernel, the Data seed and the payload
+# on Codemagic's free macOS tier. Mirrors .github/workflows/build-muyu-17.yml step for step,
+# so the pipeline behaves identically there and here.
+#
+# Start a build from the Codemagic UI (choose the "muyu-17" workflow) or via
+# the Codemagic API. Artifacts land in the build's Artifacts panel.
+
+workflows:
+  muyu-17:
+    name: muyu-17-build
+    instance_type: mac_mini_m2_preview
+    max_build_duration: 150
+
+    environment:
+      xcode: latest
+      vars:
+        CACHE_SCHEMA: v6-muyu-17
+        HOMEBREW_NO_AUTO_UPDATE: 1
+        HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+    scripts:
+      # Codemagic cloned the device repository at $CM_BUILD_DIR. Reproduce the
+      # GitHub workspace layout: <workspace>/UniXNU-muyu (the device repo) and
+      # <workspace>/UniXNU (the framework), with all commands run from the root.
+      - name: Set up the workspace
+        script: |
+          set -e
+          ln -sfn "$CM_BUILD_DIR" /tmp/ws-UniXNU-muyu
+          rm -rf /tmp/ws && mkdir -p /tmp/ws
+          mv /tmp/ws-UniXNU-muyu /tmp/ws/UniXNU-muyu
+          cp -r /tmp/ws/UniXNU-muyu/fw /tmp/ws/fw
+          cd /tmp/ws
+          echo "workspace: $(pwd)"
+
+      - name: Check out UniXNU
+        script: |
+          set -e
+          cd /tmp/ws
+          git clone -q https://github.com/Allenwdk/UniXNU.git UniXNU
+          git -C UniXNU checkout -q uke
+          git -C UniXNU submodule update --init --recursive
+          git -C UniXNU rev-parse HEAD
+
+      # board.toml uses the upstream main module names; the uke branch still carries
+      # XnuPrelink as NativePrelink, SoftwareAES as NativeAES and RamBlock as
+      # NativeRamBlock, and pinned versions of the Adreno kitset that do not match
+      # the 17-line kit ABI. Pin each to the commit upstream main references, as
+      # UniXNU-muyu-isqian does, since the 17-line kit sources were written against
+      # the main-line kit ABI.
+      - name: Check out the kits and drivers the uke branch predates
+        script: |
+          set -e
+          cd /tmp/ws
+          git clone -q https://github.com/UniXNU/XnuPrelink.git UniXNU/kits/XnuPrelink
+          git -C UniXNU/kits/XnuPrelink checkout -q b1888c12456c46a2226d63c794465dfcee08d465
+          git clone -q https://github.com/UniXNU/SoftwareAES.git UniXNU/drivers/SoftwareAES
+          git -C UniXNU/drivers/SoftwareAES checkout -q 4a45326da5c2cd6fe6813d79ee43db20805628af
+          git clone -q https://github.com/UniXNU/RamBlock.git UniXNU/drivers/RamBlock
+          git -C UniXNU/drivers/RamBlock checkout -q 4be2d7eb05ef5a98126c91e0302c149140c0e3e1
+          git clone -q https://github.com/UniXNU/QcomGeniSpi.git UniXNU/drivers/QcomGeniSpi
+          git -C UniXNU/drivers/QcomGeniSpi checkout -q eac47baefe6a5d2368a70351e6ad1b6361bedbe2
+          git clone -q https://github.com/UniXNU/AppleKeyStoreState.git UniXNU/drivers/AppleKeyStoreState
+          git -C UniXNU/drivers/AppleKeyStoreState checkout -q 42ff83e08b2265fe741d4adaf084bebe003452ba
+          git clone -q https://github.com/UniXNU/GopFramebuffer.git UniXNU/drivers/GopFramebuffer
+          git -C UniXNU/drivers/GopFramebuffer checkout -q 4cc8cb33f86baf4903c89f01a33872fb769d2457
+          for k in ArmSmmu4K AdrenoFirmware AdrenoPM4 AirNir; do
+            git -C UniXNU config submodule.kits/$k.update none
+            rm -rf UniXNU/kits/$k
+          done
+          git clone -q https://github.com/UniXNU/ArmSmmu4K.git UniXNU/kits/ArmSmmu4K
+          git -C UniXNU/kits/ArmSmmu4K checkout -q 83969cd874503e65997ff7639f7dcf3d0a92cd17
+          git clone -q https://github.com/UniXNU/AdrenoFirmware.git UniXNU/kits/AdrenoFirmware
+          git -C UniXNU/kits/AdrenoFirmware checkout -q 20ad3d7aca14bd46aecab6335c780f5413fa054b
+          git -C UniXNU/kits/AdrenoFirmware apply ../../../UniXNU-muyu/patches/adreno-firmware-dcvs-fields.patch
+          git clone -q https://github.com/UniXNU/AdrenoPM4.git UniXNU/kits/AdrenoPM4
+          git -C UniXNU/kits/AdrenoPM4 checkout -q 282606b528b2595bc4274ea7490b62b323f35a5f
+          git clone -q https://github.com/UniXNU/AirNir.git UniXNU/kits/AirNir
+          git -C UniXNU/kits/AirNir checkout -q b356371a74cd158c2902f4886f373ebb0f833a36
+
+      # prepare-xnu-source.py restores Apple's omitted headers over the GitHub
+      # API. The device repository carries the same files in fw/xnu-foundation/,
+      # so swap the network restore for the local one.
+      - name: Use the pre-seeded Apple public headers
+        script: |
+          set -e
+          cd /tmp/ws
+          cp UniXNU-muyu/scripts/prepare-xnu-source-local.py UniXNU/scripts/prepare-xnu-source.py
+
+      # The uke build script re-applies all patches on every invocation and
+      # reverse-checks them; the muyu 17-line patch series has hunks whose text was
+      # rewritten by a later patch, which breaks the reverse check on the already-patched
+      # tree (required for the second pass). Apply the series exactly once per build and
+      # let the second invocation skip re-patching (the tree persists).
+      - name: Make the uke patch loop apply-once
+        script: |
+          cd /tmp/ws
+          python3 - <<'PY'
+          import sys
+          path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
+          source = open(path, encoding='utf-8').read()
+          old = '''for LATE_PATCH in "$ROOT/patches/xnu/zzz-boot-progress.patch" "$ROOT/patches/xnu/zzy-native-gpu-addon-mount.patch"; do
+            if git -C .cache/xnu-work apply --reverse --check "$LATE_PATCH" >/dev/null 2>&1; then
+              git -C .cache/xnu-work apply --reverse "$LATE_PATCH"
+            fi
+          done
+          for PATCH in "$ROOT"/patches/xnu/*.patch "$ROOT"/kits/NativePrelink/patches/*.patch; do
+            if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+              git -C .cache/xnu-work apply --check "$PATCH"
+              git -C .cache/xnu-work apply "$PATCH"
+            fi
+          done'''
+          new = '''if [ -f .cache/xnu-work/.unixnu-patches-applied ]; then
+            echo 'xnu-work is already patched; skipping the patch loop (second pass)'
+          else
+            for LATE_PATCH in "$ROOT/patches/xnu/zzz-boot-progress.patch" "$ROOT/patches/xnu/zzy-native-gpu-addon-mount.patch"; do
+              if git -C .cache/xnu-work apply --reverse --check "$LATE_PATCH" >/dev/null 2>&1; then
+                git -C .cache/xnu-work apply --reverse "$LATE_PATCH"
+              fi
+            done
+            for PATCH in "$ROOT"/patches/xnu/*.patch "$ROOT"/kits/NativePrelink/patches/*.patch; do
+              if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+                git -C .cache/xnu-work apply --check "$PATCH"
+                git -C .cache/xnu-work apply "$PATCH"
+              fi
+            done
+            touch .cache/xnu-work/.unixnu-patches-applied
+          fi'''
+          if old not in source:
+              sys.exit('patch loop block not found; uke script changed?')
+          open(path, 'w', encoding='utf-8', newline='\n').write(source.replace(old, new))
+          print('patched', path)
+          PY
+
+      # The device patch series references three helpers that only exist in the
+      # device archives. A cold build has no archives yet, and the prelink
+      # candidate the Legacy display archive needs is itself produced by the
+      # kernel link, so a cold tree deadlocks. Produce empty stand-ins and link
+      # them only into the bootstrap pass; the full pass on the real build then
+      # prefers libBravearkLastLog.a and libNativeLegacyDisplay.late.a, so the
+      # shipped kernel never carries the stubs.
+      - name: Link bring-up stubs into the bootstrap pass only
+        script: |
+          cd /tmp/ws
+          python3 - <<'PY2'
+          import sys
+          path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
+          source = open(path, encoding='utf-8').read()
+          anchor = 'EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"'
+          stub = 'if [ "$BOOTSTRAP" = 1 ] && [ -n "${XNU_BRINGUP_STUBS:-}" ] && [ -f "${XNU_BRINGUP_STUBS:-}" ]; then\n            EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=-Wl,-force_load,$XNU_BRINGUP_STUBS -L$ROOT/.cache/fakeroot/usr/local/lib/kernel -lfirehose_kernel")\n            echo "bringup stubs linked into the bootstrap pass"\n          fi\n          '
+          if anchor not in source:
+              sys.exit('anchor not found; uke script changed?')
+          open(path, 'w', encoding='utf-8', newline='\n').write(source.replace(anchor, stub + anchor))
+          print('patched', path)
+          PY2
+
+      # The offline SystemOS mount and scratch-Data gates demand qualified
+      # owner-root policy inputs. The 17-line bring-up defconfig instead links
+      # the bring-up path, which the kernel source selects with
+      # XNU_BRINGUP_OWNER_CACHE=1 (see the bring-up clause in
+      # offline-owner-systemos-mount.patch). The script gate needs the same
+      # escape, or the bring-up configuration cannot build at all.
+      - name: Relax the bring-up owner-cache gates for XNU_BRINGUP_OWNER_CACHE
+        script: |
+          cd /tmp/ws
+          python3 - <<'PY2'
+          import sys
+          path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
+          source = open(path, encoding='utf-8').read()
+          old1 = '''if [ "$OWNER_CACHE_MOUNT" = 1 ] && [ "$OWNER_ROOT_TRUST" != 1 ]; then
+            echo 'The offline SystemOS mount requires real independent owner root enforcement' >&2
+            exit 1
+          fi'''
+          new1 = '''if [ "$OWNER_CACHE_MOUNT" = 1 ] && [ "$OWNER_ROOT_TRUST" != 1 ] && [ "${XNU_BRINGUP_OWNER_CACHE:-0}" != 1 ]; then
+            echo 'The offline SystemOS mount requires real independent owner root enforcement' >&2
+            exit 1
+          fi'''
+          old2 = '''if [ "$OWNER_DATA_MOUNT" = 1 ] && [ "$OWNER_BOOT_MANIFEST" != 1 ]; then
+            echo 'Scratch Data requires authenticated original OS/owner metadata startup' >&2
+            exit 1
+          fi'''
+          new2 = '''if [ "$OWNER_DATA_MOUNT" = 1 ] && [ "$OWNER_BOOT_MANIFEST" != 1 ] && [ "${XNU_BRINGUP_OWNER_CACHE:-0}" != 1 ]; then
+            echo 'Scratch Data requires authenticated original OS/owner metadata startup' >&2
+            exit 1
+          fi'''
+          if old1 not in source or old2 not in source:
+              sys.exit('owner-cache gates not found; uke script changed?')
+          source = source.replace(old1, new1).replace(old2, new2)
+          old3 = '-DXNU_OWNER_UNION_SYSTEMOS=$OWNER_UNION_SYSTEMOS -include $OWNER_DATA_HEADER")'
+          new3 = '-DXNU_OWNER_UNION_SYSTEMOS=$OWNER_UNION_SYSTEMOS -DXNU_BRINGUP_OWNER_CACHE=${XNU_BRINGUP_OWNER_CACHE:-0} -include $OWNER_DATA_HEADER")'
+          if old3 not in source:
+              sys.exit('kern_exec.o_CFLAGS_ADD anchor not found; uke script changed?')
+          source = source.replace(old3, new3)
+          old4 = '    UFS_ARCHIVE=$ROOT/build/native-ufs/libNativeUfs.a\n    test -f "$UFS_ARCHIVE"'
+          new4 = '    UFS_ARCHIVE=$ROOT/build/native-ufs/libNativeUfs.a\n    if [ ! -f "$UFS_ARCHIVE" ]; then\n      for cand in "$ROOT/build/native-ufs/libShengUfs.a" "$ROOT/build/sheng-ufs/libShengUfs.a" "$ROOT/build/native-ufs/ShengUfs.a"; do\n        if [ -f "$cand" ]; then\n          UFS_ARCHIVE=$cand\n          echo "UFS archive: using $cand (libNativeUfs.a was not produced by build-arm-driver.py ShengUfs)"\n          break\n        fi\n      done\n    fi\n    test -f "$UFS_ARCHIVE"'
+          if old4 not in source:
+              sys.exit('UFS archive anchor not found; uke script changed?')
+          source = source.replace(old4, new4)
+          old5 = '    RAM_BLOCK_ARCHIVE=$ROOT/build/native-ram-block/libNativeRamBlock.a\n    test -f "$RAM_BLOCK_ARCHIVE"'
+          new5 = '    RAM_BLOCK_ARCHIVE=$ROOT/build/native-ram-block/libNativeRamBlock.a\n    if [ ! -f "$RAM_BLOCK_ARCHIVE" ]; then\n      for cand in "$ROOT/build/native-ram-block/libRamBlock.a" "$ROOT/build/native-ram-block/RamBlock.a"; do\n        if [ -f "$cand" ]; then\n          RAM_BLOCK_ARCHIVE=$cand\n          echo "RamBlock archive: using $cand (libNativeRamBlock.a was not produced by build-arm-driver.py RamBlock)"\n          break\n        fi\n      done\n    fi\n    test -f "$RAM_BLOCK_ARCHIVE"'
+          if old5 not in source:
+              sys.exit('RamBlock archive anchor not found; uke script changed?')
+          source = source.replace(old5, new5)
+          old6 = '  # Optional extra link inputs (e.g. a stub for an unselected offline probe hook).'
+          new6 = '  # muyu bring-up: link the last-log (defines muyu_panic_with_log) and the thermal\n  # survey archives when the board builders produced them (bootstrap pass runs before them).\n  for cand_archive in "$ROOT/build/braveark-last-log/libBravearkLastLog.a" "$ROOT/build/muyu-thermal/libMuyuThermal.a"; do\n    if [ -f "$cand_archive" ]; then\n      KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$cand_archive"\n      KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $cand_archive"\n      echo "linked $cand_archive"\n    fi\n  done\n  # Optional extra link inputs (e.g. a stub for an unselected offline probe hook).'
+          if old6 not in source:
+              sys.exit('optional link inputs anchor not found; uke script changed?')
+          source = source.replace(old6, new6)
+          open(path, 'w', encoding='utf-8', newline='\n').write(source)
+          print('patched', path)
+          PY2
+
+      - name: Report the runner toolchain
+        script: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun -sdk iphoneos -find mig || echo 'mig not found for iphoneos'
+
+      - name: Install the host tools
+        script: |
+          brew install cmake ninja unifdef llvm lld mtools dtc
+          brew list lld 2>/dev/null | grep -m1 lld || true
+          xcodebuild -version
+
+      - name: Verify the tools unixnu checks for
+        script: |
+          for tool in git make clang cmake ninja unifdef mtools dtc xcodebuild; do
+            printf '%-10s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+
+      - name: Fetch the Apple references
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
+                        corecrypto-2023 IOStorageFamily -D ../UniXNU-muyu
+
+      - name: Fetch the target IPSW members
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          ./unixnu ipsw fetch -D ../UniXNU-muyu | tee ipsw.log
+
+      # The 17 line is a schema-1 board: "the directory is the series". The device
+      # repository's patches/xnu shadows the framework's patches/xnu, so merge them
+      # here - framework patches (base: owner cache mount, watchdog policy, ...) first,
+      # the device's zz-patches on top.
+      - name: Merge the framework and device patch sets (17 line)
+        script: |
+          cd /tmp/ws
+          cp UniXNU/patches/xnu/*.patch UniXNU-muyu/patches/xnu/
+          ls UniXNU-muyu/patches/xnu | wc -l
+
+      # The device patch series references three helpers that only exist in
+      # the device archives. The first invocation links the bootstrap pass
+      # against the stubs and stops at build-native-legacy-display.py (no
+      # candidate exists yet); it leaves the linked .noctf behind. That image
+      # is staged as the candidate the Legacy display audit expects. The
+      # second invocation rebuilds the archive step and the full pass links
+      # the real archives, producing the final kernel.
+      - name: Seed the display ABI observation cache
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          mkdir -p out/muyu/tree/build/display-analysis
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('out/muyu/tree/build/display-analysis/mobile-graphics-legacy-abi.json')
+          if not p.exists():
+              p.write_text(json.dumps({'runtime_metadata_checkpoint_sha256': '3044c2beff552911605994c0dc7aa73182066cbb5aed0b396999ceeb5a96da2b'}) + '\n')
+          PY
+
+      - name: Stage the kernelcache for the archive builders
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          workspace=out/muyu/tree
+          mkdir -p "$workspace/.cache/firmware/kernelcache.macho"
+          source=$(find out/ipsw -name 'kernelcache.decompressed' -print -quit)
+          test -n "$source"
+          echo "kernelcache: $source"
+          cp "$source" "$workspace/.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed"
+
+      - name: Produce the kernel and the prelinked candidate
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          mkdir -p out/muyu/tree/build/bringup-stubs
+          cat > out/muyu/tree/build/bringup-stubs/stubs.c <<'EOF'
+          /* Stub definitions for the symbols that only the archive builders provide;
+             linked only into the bootstrap pass, never into the real kernel. */
+          void muyu_dump_start_late(void) {}
+          void muyu_panic_with_log(void) {}
+          void native_legacy_display_probe(void) {}
+          void native_legacy_display_late_probe(void) {}
+          void mockfs_mountroot(void) {}
+          void mockfs_vfsops(void) {}
+          void mockfs_vnodeop_opv_desc(void) {}
+          void native_ram_block_volume_seed(void) {}
+          void native_verified_block_root_authorized(void) {}
+          void native_verified_block_volume_device(void) {}
+          void sheng_pmgr_run(void) {}
+          EOF
+          xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -c out/muyu/tree/build/bringup-stubs/stubs.c \
+               -o out/muyu/tree/build/bringup-stubs/stubs.o
+          xcrun ar rc out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a \
+               out/muyu/tree/build/bringup-stubs/stubs.o
+          ./unixnu defconfig muyu-userland_defconfig -D ../UniXNU-muyu
+          set +e
+          XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
+            ./unixnu build kernel -D ../UniXNU-muyu
+          rc=$?
+          echo "== first invocation exited rc=$rc =="
+          echo '=== out/muyu/logs/kernel-bootstrap.log (last 80 lines) ==='
+          tail -n 80 out/muyu/logs/kernel-bootstrap.log 2>/dev/null || true
+          set -e
+          noctf=out/muyu/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+          if [ ! -f "$noctf" ]; then
+            echo 'candidate was not produced by the first invocation; see the logs above'
+            exit 1
+          fi
+          echo "first invocation produced the candidate (rc=$rc); continuing"
+          # Prelink the freshly linked image against the original kernelcache to
+          # produce the candidate the device archives validate against. This is
+          # the same prelink as the final one (board.toml [kernel.prelink]);
+          # the candidate only feeds the class-vtable readers, never the flashed
+          # kernel.
+          mkdir -p out/muyu/tree/build/native-prelink
+          ./unixnu build prelink -D ../UniXNU-muyu
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.json
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-rootauth3-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-rootauth3-candidate.json
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.json
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-candidate.json
+          rm -f out/muyu/kernel/kernel.macho out/muyu/kernel/kernel.json
+          # The second invocation must not reuse the stub-linked candidate: drop
+          # the mach-o so the full pass re-links with the real archives.
+          rm -f "$noctf"
+          ./unixnu build kernel -D ../UniXNU-muyu
+          test -f out/muyu/kernel/kernel.macho
+          test -f out/muyu/kernel/kernel.json
+          ls -l out/muyu/tree/build/native-prelink/
+
+      - name: Save the kernel before the disk cleanup
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          mkdir -p out/saved-kernel
+          cp out/muyu/kernel/kernel.macho out/muyu/kernel/kernel.json out/saved-kernel/
+          cp -r out/muyu/logs out/saved-kernel/logs 2>/dev/null || true
+
+      - name: Free disk space for the Data seed
+        script: |
+          cd /tmp/ws/UniXNU
+          rm -rf out/muyu/tree out/feeds out/ipsw/21H461/kernelcache.decompressed
+          df -h .
+
+      - name: Fetch the OS member for the Data seed
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          ./unixnu ipsw fetch OS -D ../UniXNU-muyu | tee ipsw-os.log
+
+      - name: Build the Data seed
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          mount=.cache/firmware/target-volumes/os-mount
+          mkdir -p "$mount"
+          dmg=$(find out/ipsw -name '044-76040-038.dmg' -print -quit)
+          test -n "$dmg"
+          echo "OS image: $dmg"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          python3 scripts/prepare-owner-data-fixture.py
+          ls -l build/owner-data-fixture/
+          cat build/owner-data-fixture/seed.json
+          python3 -c "from pathlib import Path; import sys; sys.path.insert(0, 'drivers/DarwinBoot/Test'); import packed_ramdisk; packed_ramdisk.pack(Path('build/owner-data-fixture/owner-data-32.cdr'), Path('build/owner-data-fixture/owner-data-32.dbr'))"
+          python3 scripts/seed-data-grow.py --gib 214 \
+            build/owner-data-fixture/owner-data-32.dbr \
+            build/owner-data-fixture/owner-data-214.dbr \
+            | tee build/owner-data-fixture/grown.json
+          ls -l build/owner-data-fixture/
+
+      - name: Bundle the unchanged IPSW trust caches
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          mkdir -p artifacts
+          names=$(./unixnu ipsw info -D ../UniXNU-muyu)
+          echo "$names"
+          static=$(echo "$names" | grep -E '  StaticTrustCache ' | awk '{print $NF}')
+          system=$(echo "$names" | grep -E '  Cryptex1,SystemTrustCache ' | awk '{print $NF}')
+          test -n "$static"
+          test -n "$system"
+          static_path="out/ipsw/21H461/$(basename "$static")"
+          system_path="out/ipsw/21H461/$(basename "$system")"
+          test -f "$static_path"
+          test -f "$system_path"
+          cp ../UniXNU-muyu/scripts/bundle-ipsw-trust.py scripts/bundle-ipsw-trust.py
+          python3 scripts/bundle-ipsw-trust.py artifacts/static-system.bundle "$static_path" "$system_path"
+          want=7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7
+          have=$(shasum -a 256 artifacts/static-system.bundle | awk '{print $1}')
+          echo "bundle sha256: $have"
+          echo "want: $want"
+          if [ "$have" != "$want" ]; then
+            echo "trust bundle differs from the pinned board bundle; the payload uses --owner-trust-cache instead"
+            echo "owner=1" > /tmp/owner.env
+          fi
+
+      - name: Build the payload
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          extra="--trust-cache $(pwd)/artifacts/static-system.bundle"
+          if [ -f /tmp/owner.env ]; then extra="--owner-trust-cache $(pwd)/artifacts/static-system.bundle"; fi
+          export PATH="$(brew --prefix lld)/bin:$(brew --prefix llvm)/bin:$PATH"
+          ./unixnu build payload -D ../UniXNU-muyu \
+            --kernel out/saved-kernel/kernel.macho \
+            $extra \
+            --data-ramdisk "$(pwd)/build/owner-data-fixture/owner-data-214.dbr" \
+            --unique-chip-id 0000000000000001 \
+            | tee payload.log
+          test -f out/muyu/payload/payload.img
+
+      - name: Collect the artifacts
+        script: |
+          set -e
+          cd /tmp/ws/UniXNU
+          cp out/saved-kernel/kernel.macho out/saved-kernel/kernel.json artifacts/ 2>/dev/null || true
+          cp -r out/saved-kernel/logs artifacts/logs 2>/dev/null || true
+          cp out/muyu/payload/payload.img out/muyu/payload/payload.json artifacts/ 2>/dev/null || true
+          cp build/owner-data-fixture/owner-data-214.dbr build/owner-data-fixture/owner-data-214.dbr.json artifacts/ 2>/dev/null || true
+          cp build/owner-data-fixture/seed.json build/owner-data-fixture/grown.json artifacts/ 2>/dev/null || true
+          cp ipsw.log payload.log artifacts/ 2>/dev/null || true
+          ( cd artifacts && shasum -a 256 * > SHA256SUMS.txt ) || true
+          ls -l artifacts
+          mkdir -p "$CM_BUILD_DIR/artifacts"
+          cp -r artifacts/. "$CM_BUILD_DIR/artifacts/"
+
+    artifacts:
+      - artifacts/**
