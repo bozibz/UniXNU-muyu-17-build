@@ -110,6 +110,41 @@ jobs:
           print('patched', path)
           PY2
 
+      # The offline SystemOS mount and scratch-Data gates demand qualified
+      # owner-root policy inputs. The 17-line bring-up defconfig instead links
+      # the bring-up path, which the kernel source selects with
+      # XNU_BRINGUP_OWNER_CACHE=1 (see the bring-up clause in
+      # offline-owner-systemos-mount.patch). The script gate needs the same
+      # escape, or the bring-up configuration cannot build at all.
+      - name: Relax the bring-up owner-cache gates for XNU_BRINGUP_OWNER_CACHE
+        run: |
+          python3 - <<'PY2'
+          import sys
+          path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
+          source = open(path, encoding='utf-8').read()
+          old1 = '''if [ "$OWNER_CACHE_MOUNT" = 1 ] && [ "$OWNER_ROOT_TRUST" != 1 ]; then
+            echo 'The offline SystemOS mount requires real independent owner root enforcement' >&2
+            exit 1
+          fi'''
+          new1 = '''if [ "$OWNER_CACHE_MOUNT" = 1 ] && [ "$OWNER_ROOT_TRUST" != 1 ] && [ "${XNU_BRINGUP_OWNER_CACHE:-0}" != 1 ]; then
+            echo 'The offline SystemOS mount requires real independent owner root enforcement' >&2
+            exit 1
+          fi'''
+          old2 = '''if [ "$OWNER_DATA_MOUNT" = 1 ] && [ "$OWNER_BOOT_MANIFEST" != 1 ]; then
+            echo 'Scratch Data requires authenticated original OS/owner metadata startup' >&2
+            exit 1
+          fi'''
+          new2 = '''if [ "$OWNER_DATA_MOUNT" = 1 ] && [ "$OWNER_BOOT_MANIFEST" != 1 ] && [ "${XNU_BRINGUP_OWNER_CACHE:-0}" != 1 ]; then
+            echo 'Scratch Data requires authenticated original OS/owner metadata startup' >&2
+            exit 1
+          fi'''
+          if old1 not in source or old2 not in source:
+              sys.exit('owner-cache gates not found; uke script changed?')
+          source = source.replace(old1, new1).replace(old2, new2)
+          open(path, 'w', encoding='utf-8', newline='\n').write(source)
+          print('patched', path)
+          PY2
+
       - name: Record the UniXNU revision
         id: base
         working-directory: UniXNU
