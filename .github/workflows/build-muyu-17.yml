@@ -195,6 +195,22 @@ jobs:
           if old3 not in source:
               sys.exit('kern_exec.o_CFLAGS_ADD anchor not found; uke script changed?')
           source = source.replace(old3, new3)
+          old4 = '''    UFS_ARCHIVE=$ROOT/build/native-ufs/libNativeUfs.a
+    test -f "$UFS_ARCHIVE"'''
+          new4 = '''    UFS_ARCHIVE=$ROOT/build/native-ufs/libNativeUfs.a
+    if [ ! -f "$UFS_ARCHIVE" ]; then
+      for cand in "$ROOT/build/native-ufs/libShengUfs.a" "$ROOT/build/sheng-ufs/libShengUfs.a" "$ROOT/build/native-ufs/ShengUfs.a"; do
+        if [ -f "$cand" ]; then
+          UFS_ARCHIVE=$cand
+          echo "UFS archive: using $cand (libNativeUfs.a not produced by build-arm-driver.py ShengUfs)"
+          break
+        fi
+      done
+    fi
+    test -f "$UFS_ARCHIVE"'''
+          if old4 not in source:
+              sys.exit('UFS archive anchor not found; uke script changed?')
+          source = source.replace(old4, new4)
           open(path, 'w', encoding='utf-8', newline='\n').write(source)
           print('patched', path)
           PY2
