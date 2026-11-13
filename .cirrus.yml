@@ -382,3 +382,5 @@ task:
 
   artifacts:
     path: artifacts/*
+
+# trigger rebuild
