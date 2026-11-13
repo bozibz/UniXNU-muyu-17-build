@@ -250,10 +250,26 @@ jobs:
           xcrun ar rc out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a \
                out/muyu/tree/build/bringup-stubs/stubs.o
           ./unixnu defconfig muyu-userland_defconfig -D ../UniXNU-muyu
+          set +e
           XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
-            ./unixnu build kernel -D ../UniXNU-muyu || true
+            ./unixnu build kernel -D ../UniXNU-muyu
+          rc=$?
+          echo "== first invocation exited rc=$rc =="
+          echo '=== out/muyu/logs/kernel-bootstrap.log (tail) ==='
+          tail -n 160 out/muyu/logs/kernel-bootstrap.log 2>/dev/null || true
+          echo '=== out/muyu/logs/kernel.log (tail) ==='
+          tail -n 160 out/muyu/logs/kernel.log 2>/dev/null || true
+          for f in out/muyu/logs/archive-*.log; do
+            echo "=== $f (tail) ==="
+            tail -n 80 "$f"
+          done
+          set -e
           noctf=out/muyu/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
-          test -f "$noctf"
+          if [ ! -f "$noctf" ]; then
+            echo 'candidate was not produced by the first invocation; see the logs above'
+            exit 1
+          fi
+          echo "first invocation produced the candidate (rc=$rc); continuing"
           mkdir -p out/muyu/tree/build/native-prelink
           cp "$noctf" out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.macho
           cp "$noctf" out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho
