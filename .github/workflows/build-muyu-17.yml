@@ -50,6 +50,20 @@ jobs:
       # rewritten by a later patch, which breaks the reverse check on the already-patched
       # tree (required for the second pass). Apply the series exactly once per build and
       # let the second invocation skip re-patching (the tree persists).
+      # board.toml uses the upstream main module names; the uke branch still carries
+      # XnuPrelink as NativePrelink, SoftwareAES as NativeAES and RamBlock as
+      # NativeRamBlock. Pin each to the commit upstream main references, so the
+      # build tree resolves drivers/SoftwareAES/NativeAES.cpp and the XnuPrelink
+      # python package. Mirrors the 17 line used by the community board.
+      - name: Check out the kits and drivers the uke branch predates
+        run: |
+          git clone -q https://github.com/UniXNU/XnuPrelink.git UniXNU/kits/XnuPrelink
+          git -C UniXNU/kits/XnuPrelink checkout -q b1888c12456c46a2226d63c794465dfcee08d465
+          git clone -q https://github.com/UniXNU/SoftwareAES.git UniXNU/drivers/SoftwareAES
+          git -C UniXNU/drivers/SoftwareAES checkout -q 4a45326da5c2cd6fe6813d79ee43db20805628af
+          git clone -q https://github.com/UniXNU/RamBlock.git UniXNU/drivers/RamBlock
+          git -C UniXNU/drivers/RamBlock checkout -q 4be2d7eb05ef5a98126c91e0302c149140c0e3e1
+
       - name: Make the uke patch loop apply-once
         run: |
           python3 - <<'PY'
