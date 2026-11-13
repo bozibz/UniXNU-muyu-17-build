@@ -244,9 +244,13 @@ jobs:
 
       - name: Install the host tools
         run: |
-          brew install cmake ninja unifdef llvm mtools dtc
+          brew install cmake ninja unifdef llvm lld mtools dtc
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+          for tool in ld.lld llvm-nm; do
+            printf '%-10s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
 
       - name: Verify the tools unixnu checks for
         run: |
