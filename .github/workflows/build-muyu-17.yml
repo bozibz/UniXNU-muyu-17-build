@@ -306,8 +306,11 @@ jobs:
           cp "$noctf" out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.macho
           cp "$noctf" out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho
           # The second invocation must not reuse the stub-linked candidate: drop
-          # the mach-o so the full pass re-links with the real archives.
-          rm -f "$noctf" out/muyu/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/KernelConfigTables.cpo
+          # the mach-o so the full pass re-links with the real archives. The
+          # KernelConfigTables.cpo itself stays: the archive symbol audit (nm on
+          # link.filelist) reads it, and the framework's link-input stamp makes
+          # sure the mach-o re-links against the real archives anyway.
+          rm -f "$noctf"
           ./unixnu build kernel -D ../UniXNU-muyu
           test -f out/muyu/kernel/kernel.macho
           test -f out/muyu/kernel/kernel.json
