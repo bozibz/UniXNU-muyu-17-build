@@ -273,6 +273,12 @@ trust_cache_sha256 = ["7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235
 kernel_args = [
   # "-v",   # dropped 2026-10-27: console spam buried the panic dump
   "debug=0x14e",
+  # u90: map the shared cache unslid so a raw (un-rebased) chained pointer still names a valid address.
+  "-disable_aslr",
+  # arm_vm_init maps _start.._end with the contiguous-entries hint; with the 27 fileset layout
+  # _end reaches into pages the bootstrap already mapped without the hint, and the assert at
+  # arm_vm_init.c:1107 refuses to change the hint bit on an active mapping. Off for bring-up.
+  "use_contiguous_hint=0",
   # DEVELOPMENT kernels keep kprintf off unless this is set; this device has no wired UART,
   # so kprintf then falls back to the framebuffer video console. Graphics boot
   # suppresses text until -bravearktextconsole switches the console to text mode.
@@ -298,6 +304,10 @@ kernel_args = [
   # root publication refuses to run unless this says so ("signed window identities
   # rejected" otherwise).
   "native-ufs-allow-unverified=1",
+  # 2026-11-06: the version-2 manifest now parses (2 windows + OS.vroot/SystemOS.vroot data
+  # objects) and publication gets to "root window preparation failed"; this makes the failure
+  # path panic with stage=<exact step> result= verify=<vr_open status> instead of one sentence.
+  "native-ufs-diagnostics=1",
   # The firmware UFS driver leaves the SMMU stream mapping in place; repoint it
   # instead of panicking (NativeUFS.cpp "conflicting UFS stream mapping").
   "native-ufs-smmu-takeover=1",
