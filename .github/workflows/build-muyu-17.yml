@@ -251,7 +251,9 @@ jobs:
                out/muyu/tree/build/bringup-stubs/stubs.o
           ./unixnu defconfig muyu-userland_defconfig -D ../UniXNU-muyu
           set +e
-          XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
+          # The parallel build died silently after LDFILELIST osfmk with no error
+          # text; rerun the bootstrap pass single-threaded to see the failing rule.
+          JOBS=1 XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
             ./unixnu build kernel -D ../UniXNU-muyu
           rc=$?
           echo "== first invocation exited rc=$rc =="
