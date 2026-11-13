@@ -200,6 +200,11 @@ jobs:
           if old4 not in source:
               sys.exit('UFS archive anchor not found; uke script changed?')
           source = source.replace(old4, new4)
+          old5 = '    RAM_BLOCK_ARCHIVE=$ROOT/build/native-ram-block/libNativeRamBlock.a\n    test -f "$RAM_BLOCK_ARCHIVE"'
+          new5 = '    RAM_BLOCK_ARCHIVE=$ROOT/build/native-ram-block/libNativeRamBlock.a\n    if [ ! -f "$RAM_BLOCK_ARCHIVE" ]; then\n      for cand in "$ROOT/build/native-ram-block/libRamBlock.a" "$ROOT/build/native-ram-block/RamBlock.a"; do\n        if [ -f "$cand" ]; then\n          RAM_BLOCK_ARCHIVE=$cand\n          echo "RamBlock archive: using $cand (libNativeRamBlock.a was not produced by build-arm-driver.py RamBlock)"\n          break\n        fi\n      done\n    fi\n    test -f "$RAM_BLOCK_ARCHIVE"'
+          if old5 not in source:
+              sys.exit('RamBlock archive anchor not found; uke script changed?')
+          source = source.replace(old5, new5)
           open(path, 'w', encoding='utf-8', newline='\n').write(source)
           print('patched', path)
           PY2
