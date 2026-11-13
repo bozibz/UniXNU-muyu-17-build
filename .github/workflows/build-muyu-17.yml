@@ -255,8 +255,11 @@ jobs:
             ./unixnu build kernel -D ../UniXNU-muyu
           rc=$?
           echo "== first invocation exited rc=$rc =="
-          echo '=== out/muyu/logs/kernel-bootstrap.log (tail) ==='
-          tail -n 160 out/muyu/logs/kernel-bootstrap.log 2>/dev/null || true
+          echo '=== error lines in kernel-bootstrap.log ==='
+          grep -n -E 'error|fatal|No such|cannot|failed|undefined|Undefined|Traceback' \
+            out/muyu/logs/kernel-bootstrap.log | head -n 100 || true
+          echo '=== out/muyu/logs/kernel-bootstrap.log (last 400 lines) ==='
+          tail -n 400 out/muyu/logs/kernel-bootstrap.log 2>/dev/null || true
           echo '=== out/muyu/logs/kernel.log (tail) ==='
           tail -n 160 out/muyu/logs/kernel.log 2>/dev/null || true
           for f in out/muyu/logs/archive-*.log; do
