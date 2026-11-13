@@ -117,7 +117,7 @@ jobs:
           path = 'UniXNU/scripts/build-xnu-4k-baseline.sh'
           source = open(path, encoding='utf-8').read()
           anchor = 'EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"'
-          stub = 'if [ "$BOOTSTRAP" = 1 ] && [ -n "${XNU_BRINGUP_STUBS:-}" ] && [ -f "${XNU_BRINGUP_STUBS:-}" ]; then\n            EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=-Wl,-force_load,$XNU_BRINGUP_STUBS")\n            echo "bringup stubs linked into the bootstrap pass"\n          fi\n          '
+          stub = 'if [ "$BOOTSTRAP" = 1 ] && [ -n "${XNU_BRINGUP_STUBS:-}" ] && [ -f "${XNU_BRINGUP_STUBS:-}" ]; then\n            EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=-Wl,-force_load,$XNU_BRINGUP_STUBS -L$ROOT/.cache/fakeroot/usr/local/lib/kernel -lfirehose_kernel")\n            echo "bringup stubs linked into the bootstrap pass"\n          fi\n          '
           if anchor not in source:
               sys.exit('anchor not found; uke script changed?')
           open(path, 'w', encoding='utf-8', newline='\n').write(source.replace(anchor, stub + anchor))
@@ -260,9 +260,19 @@ jobs:
           set -e
           mkdir -p out/muyu/tree/build/bringup-stubs
           cat > out/muyu/tree/build/bringup-stubs/stubs.c <<'EOF'
+          /* Stub definitions for the symbols that only the archive builders provide;
+             linked only into the bootstrap pass, never into the real kernel. */
           void muyu_dump_start_late(void) {}
           void muyu_panic_with_log(void) {}
           void native_legacy_display_probe(void) {}
+          void native_legacy_display_late_probe(void) {}
+          void mockfs_mountroot(void) {}
+          void mockfs_vfsops(void) {}
+          void mockfs_vnodeop_opv_desc(void) {}
+          void native_ram_block_volume_seed(void) {}
+          void native_verified_block_root_authorized(void) {}
+          void native_verified_block_volume_device(void) {}
+          void sheng_pmgr_run(void) {}
           EOF
           xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -c out/muyu/tree/build/bringup-stubs/stubs.c \
                -o out/muyu/tree/build/bringup-stubs/stubs.o
