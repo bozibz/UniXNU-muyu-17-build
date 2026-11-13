@@ -440,6 +440,7 @@ jobs:
           system_path="out/ipsw/21H461/$(basename "$system")"
           test -f "$static_path"
           test -f "$system_path"
+          cp ../UniXNU-muyu/scripts/bundle-ipsw-trust.py scripts/bundle-ipsw-trust.py
           python3 scripts/bundle-ipsw-trust.py artifacts/static-system.bundle "$static_path" "$system_path"
           want=7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7
           have=$(shasum -a 256 artifacts/static-system.bundle | awk '{print $1}')
