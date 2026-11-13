@@ -308,7 +308,7 @@ jobs:
           # the candidate only feeds the class-vtable readers, never the flashed
           # kernel.
           mkdir -p out/muyu/tree/build/native-prelink
-          ./unixnu prelink -D ../UniXNU-muyu
+          ./unixnu build prelink -D ../UniXNU-muyu
           cp out/muyu/kernel/kernel.macho \
              out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.macho
           cp out/muyu/kernel/kernel.json \
