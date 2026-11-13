@@ -323,20 +323,12 @@ for src in touch_c:
     obj=touch_dir/(src.stem+'.o');touch_objs.append(obj)
     run([str(src) if arg==str(process_source) else str(obj) if arg==str(process_obj) else arg for arg in process_cmd],cwd=pr['directory'])
 archive=OUT/'libNativeLegacyDisplay.late.a';archive.unlink(missing_ok=True)
-try:
-    print(run(['python3',ROOT/'scripts/build-native-hid-input.py'],text=True),end='')
-    hid_obj=OUT/'HidInputProbe.o'
-    hid_dir=ROOT/'build/native-hid-input'
-    HAVE_HID=True
-except subprocess.CalledProcessError as e:
-    print('SKIP: HID input qualification unavailable on this candidate; the display archive will ship without touch HID (drivers absent on this board).')
-    hid_obj=None
-    hid_dir=ROOT/'build/native-hid-input'
-    HAVE_HID=False
-hid_inputs = []
-if hid_obj is not None and (hid_dir/'NativeHidInput.late.o').is_file() and (hid_dir/'hid-original-bindings.o').is_file():
-    hid_inputs = [hid_obj,hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o']
-    print('HID input archive inputs qualified')
+print(run(['python3',ROOT/'scripts/build-native-hid-input.py'],text=True),end='')
+hid_obj=OUT/'HidInputProbe.o'
+hid_dir=ROOT/'build/native-hid-input'
+hid_inputs = [hid_obj,hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o']
+require(all(p.is_file() for p in hid_inputs), 'HID input archive inputs missing after qualification')
+print('HID input archive inputs qualified')
 try:
     print(run(['python3',ROOT/'scripts/build-arm-driver.py','AppleKeyStoreState'],text=True),end='')
     keyevents=ROOT/'build/native-keystore-events'
@@ -361,7 +353,7 @@ run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDispla
      *keyevents_inputs,touch_cpp_obj,cpufreq_obj,muyu_touch_obj,gpupower_obj,gmu_fw_obj,adreno_fw_obj,nvt_driver_obj,data_probe_obj,button_obj,stub_obj,*touch_objs,*smmu_objs,*cold_objs]+hid_inputs)
 sources=[ROOT/'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
          ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/muyu/BootUiTraceCore.h',ROOT/'kits/muyu/BootUiTraceDetails.h',
-         ROOT/'drivers/ShengHidInput/NativeHidInput.cpp',
+         ROOT/'drivers/ShengHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
          ROOT/'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp',touch_cpp,cpufreq_cpp,muyu_touch_cpp,gpupower_cpp,ROOT/'kits/muyu/MuyuGpuPowerBoard.h',gmu_fw_c,adreno_fw_c,ROOT/'drivers/ShengNovatekTouch/NativeNovatekTouch.cpp',ROOT/'drivers/ShengNovatekTouch/NativeNovatekTouch.h',ROOT/'kits/muyu/TouchBoardMuyu.h',ROOT/'kits/muyu/TouchBoard.h',stub_source,
          ROOT/'drivers/QcomGeniSpi/GeniSpi.c',ROOT/'drivers/QcomGeniSpi/GeniSpi.h',ROOT/'drivers/ShengNovatekTouch/NvtProtocol.c',
          ROOT/'drivers/ShengNovatekTouch/NvtProtocol.h',ROOT/'drivers/ShengNovatekTouch/NvtTouchCore.c',ROOT/'drivers/ShengNovatekTouch/NvtTouchCore.h',
