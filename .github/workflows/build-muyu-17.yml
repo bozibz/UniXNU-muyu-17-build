@@ -91,6 +91,17 @@ jobs:
         working-directory: UniXNU
         run: ./unixnu ipsw fetch -D ../UniXNU-muyu | tee ipsw.log
 
+      # The 17 line is a schema-1 board: "the directory is the series". The device
+      # repository's patches/xnu shadows the framework's patches/xnu, so merge them
+      # here - framework patches (base: owner cache mount, watchdog policy, ...) first,
+      # the device's zz-patches on top. Applying only the device's patches fails at
+      # zzzz-offline-owner-systemos-bringup.patch (its context comes from the
+      # framework's offline-owner-systemos-mount.patch).
+      - name: Merge the framework and device patch sets (17 line)
+        run: |
+          cp UniXNU/patches/xnu/*.patch UniXNU-muyu/patches/xnu/
+          ls UniXNU-muyu/patches/xnu | wc -l
+
       - name: Bootstrap kernel and prelinked candidate
         working-directory: UniXNU
         run: |
