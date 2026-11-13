@@ -63,6 +63,8 @@ jobs:
           git -C UniXNU/drivers/SoftwareAES checkout -q 4a45326da5c2cd6fe6813d79ee43db20805628af
           git clone -q https://github.com/UniXNU/RamBlock.git UniXNU/drivers/RamBlock
           git -C UniXNU/drivers/RamBlock checkout -q 4be2d7eb05ef5a98126c91e0302c149140c0e3e1
+          git clone -q https://github.com/UniXNU/QcomGeniSpi.git UniXNU/drivers/QcomGeniSpi
+          git -C UniXNU/drivers/QcomGeniSpi checkout -q eac47baefe6a5d2368a70351e6ad1b6361bedbe2
 
       - name: Make the uke patch loop apply-once
         run: |
