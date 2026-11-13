@@ -141,6 +141,11 @@ jobs:
           if old1 not in source or old2 not in source:
               sys.exit('owner-cache gates not found; uke script changed?')
           source = source.replace(old1, new1).replace(old2, new2)
+          old3 = '-DXNU_OWNER_UNION_SYSTEMOS=$OWNER_UNION_SYSTEMOS -include $OWNER_DATA_HEADER")'
+          new3 = '-DXNU_OWNER_UNION_SYSTEMOS=$OWNER_UNION_SYSTEMOS -DXNU_BRINGUP_OWNER_CACHE=${XNU_BRINGUP_OWNER_CACHE:-0} -include $OWNER_DATA_HEADER")'
+          if old3 not in source:
+              sys.exit('kern_exec.o_CFLAGS_ADD anchor not found; uke script changed?')
+          source = source.replace(old3, new3)
           open(path, 'w', encoding='utf-8', newline='\n').write(source)
           print('patched', path)
           PY2
@@ -251,9 +256,7 @@ jobs:
                out/muyu/tree/build/bringup-stubs/stubs.o
           ./unixnu defconfig muyu-userland_defconfig -D ../UniXNU-muyu
           set +e
-          # The parallel build died silently after LDFILELIST osfmk with no error
-          # text; rerun the bootstrap pass single-threaded to see the failing rule.
-          JOBS=1 XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
+          XNU_BRINGUP_STUBS="$(pwd)/out/muyu/tree/build/bringup-stubs/libMuyuBringUpStubs.a" \
             ./unixnu build kernel -D ../UniXNU-muyu
           rc=$?
           echo "== first invocation exited rc=$rc =="
