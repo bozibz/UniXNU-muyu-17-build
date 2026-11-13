@@ -12,7 +12,10 @@ from native_prelink import macho,backed_offset,exports
 def run(cmd,**kw):
     c=[str(x) for x in cmd]
     if c and 'clang' in c[0] and '-Wno-incompatible-sysroot' not in c:c.insert(1,'-Wno-incompatible-sysroot')
-    return subprocess.check_output(c,timeout=90,**kw)
+    try:return subprocess.check_output(c,timeout=90,stderr=subprocess.STDOUT,**kw)
+    except subprocess.CalledProcessError as e:
+        print((e.output or b'').decode('utf-8','replace'))
+        raise
 def require(v,why):
     if not v:raise SystemExit(why)
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
