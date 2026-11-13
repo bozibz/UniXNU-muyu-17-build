@@ -205,6 +205,11 @@ jobs:
           if old5 not in source:
               sys.exit('RamBlock archive anchor not found; uke script changed?')
           source = source.replace(old5, new5)
+          old6 = '  # Optional extra link inputs (e.g. a stub for an unselected offline probe hook).'
+          new6 = '  # muyu bring-up: link the last-log (defines muyu_panic_with_log) and the thermal\n  # survey archives when the board builders produced them (bootstrap pass runs before them).\n  for cand_archive in "$ROOT/build/braveark-last-log/libBravearkLastLog.a" "$ROOT/build/muyu-thermal/libMuyuThermal.a"; do\n    if [ -f "$cand_archive" ]; then\n      KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$cand_archive"\n      KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $cand_archive"\n      echo "linked $cand_archive"\n    fi\n  done\n  # Optional extra link inputs (e.g. a stub for an unselected offline probe hook).'
+          if old6 not in source:
+              sys.exit('optional link inputs anchor not found; uke script changed?')
+          source = source.replace(old6, new6)
           open(path, 'w', encoding='utf-8', newline='\n').write(source)
           print('patched', path)
           PY2
