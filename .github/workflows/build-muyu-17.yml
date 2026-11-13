@@ -58,8 +58,8 @@ jobs:
       # let the second invocation skip re-patching (the tree persists).
       # board.toml uses the upstream main module names; the uke branch still carries
       # XnuPrelink as NativePrelink, SoftwareAES as NativeAES and RamBlock as
-      # NativeRamBlock, and a much older ArmSmmu4K whose ABI the muyu kit does not
-      # match. Pin each to the commit upstream main references, like
+      # NativeRamBlock, and pinned versions of the Adreno kitset that do not match
+      # the 17-line kit ABI. Pin each to the commit upstream main references, as
       # UniXNU-muyu-isqian does, since the 17-line kit sources were written against
       # the main-line kit ABI.
       - name: Check out the kits and drivers the uke branch predates
@@ -72,18 +72,25 @@ jobs:
           git -C UniXNU/drivers/RamBlock checkout -q 4be2d7eb05ef5a98126c91e0302c149140c0e3e1
           git clone -q https://github.com/UniXNU/QcomGeniSpi.git UniXNU/drivers/QcomGeniSpi
           git -C UniXNU/drivers/QcomGeniSpi checkout -q eac47baefe6a5d2368a70351e6ad1b6361bedbe2
-          # ArmSmmu4K: uke pins 4d0d6598b1a36aeec3de01091893fa6660e49388; the muyu
-          # kit uses the main-line fork instead. AdrenoFirmware: uke pins an
-          # older ABI the muyu probe does not match; use the is-qian pin plus
-          # its DCVS fields patch.
-          git -C UniXNU config submodule.kits/ArmSmmu4K.update none
-          git -C UniXNU config submodule.kits/AdrenoFirmware.update none
-          rm -rf UniXNU/kits/ArmSmmu4K UniXNU/kits/AdrenoFirmware
+          git clone -q https://github.com/UniXNU/AppleKeyStoreState.git UniXNU/drivers/AppleKeyStoreState
+          git -C UniXNU/drivers/AppleKeyStoreState checkout -q 42ff83e08b2265fe741d4adaf084bebe003452ba
+          git clone -q https://github.com/UniXNU/GopFramebuffer.git UniXNU/drivers/GopFramebuffer
+          git -C UniXNU/drivers/GopFramebuffer checkout -q 4cc8cb33f86baf4903c89f01a33872fb769d2457
+          # These are uke submodules; pin them instead and stop the driver's
+          # `git submodule update` from resetting them to uke's older pins.
+          for k in ArmSmmu4K AdrenoFirmware AdrenoPM4 AirNir; do
+            git -C UniXNU config submodule.kits/$k.update none
+            rm -rf UniXNU/kits/$k
+          done
           git clone -q https://github.com/UniXNU/ArmSmmu4K.git UniXNU/kits/ArmSmmu4K
           git -C UniXNU/kits/ArmSmmu4K checkout -q 83969cd874503e65997ff7639f7dcf3d0a92cd17
           git clone -q https://github.com/UniXNU/AdrenoFirmware.git UniXNU/kits/AdrenoFirmware
           git -C UniXNU/kits/AdrenoFirmware checkout -q 20ad3d7aca14bd46aecab6335c780f5413fa054b
           git -C UniXNU/kits/AdrenoFirmware apply ../../../UniXNU-muyu/patches/adreno-firmware-dcvs-fields.patch
+          git clone -q https://github.com/UniXNU/AdrenoPM4.git UniXNU/kits/AdrenoPM4
+          git -C UniXNU/kits/AdrenoPM4 checkout -q 282606b528b2595bc4274ea7490b62b323f35a5f
+          git clone -q https://github.com/UniXNU/AirNir.git UniXNU/kits/AirNir
+          git -C UniXNU/kits/AirNir checkout -q b356371a74cd158c2902f4886f373ebb0f833a36
 
       - name: Use the pre-seeded Apple public headers
         # prepare-xnu-source.py restores Apple's omitted headers over the GitHub
