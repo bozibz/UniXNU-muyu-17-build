@@ -6,6 +6,41 @@
 # the Codemagic API. Artifacts land in the build's Artifacts panel.
 
 workflows:
+  # Throwaway probes to find free macOS machine types: each prints the toolchain
+  # versions and exits; use them to check which instance types the free tier serves.
+  probe-mac_mini:
+    name: probe-mac_mini
+    instance_type: mac_mini
+    max_build_duration: 5
+    scripts:
+      - name: probe
+        script: |
+          sw_vers && uname -m && xcodebuild -version
+  probe-mac_mini_m1:
+    name: probe-mac_mini_m1
+    instance_type: mac_mini_m1
+    max_build_duration: 5
+    scripts:
+      - name: probe
+        script: |
+          sw_vers && uname -m && xcodebuild -version
+  probe-mac_mini_m4:
+    name: probe-mac_mini_m4
+    instance_type: mac_mini_m4
+    max_build_duration: 5
+    scripts:
+      - name: probe
+        script: |
+          sw_vers && uname -m && xcodebuild -version
+  probe-mac_studio_m4_max:
+    name: probe-mac_studio_m4_max
+    instance_type: mac_studio_m4_max
+    max_build_duration: 5
+    scripts:
+      - name: probe
+        script: |
+          sw_vers && uname -m && xcodebuild -version
+
   muyu-17:
     name: muyu-17-build
     instance_type: mac_mini_m2
