@@ -222,7 +222,7 @@ def assemble_c(source, va, workdir, symbols, trace_frames=0):
     The linker may start .text a little after VA (it keeps the ELF headers in front), so the
     load address is read back from the ELF and is what the caller must write the bytes to."""
     clang = shutil.which('clang') or '/opt/homebrew/opt/llvm/bin/clang'
-    lld = shutil.which('ld.lld') or '/opt/homebrew/opt/llvm/bin/ld.lld'
+    lld = shutil.which('ld.lld') or '/opt/homebrew/opt/llvm/bin/ld.lld' if Path('/opt/homebrew/opt/llvm/bin/ld.lld').is_file() else '/opt/homebrew/opt/lld/bin/ld.lld'
     objcopy = shutil.which('llvm-objcopy') or '/opt/homebrew/opt/llvm/bin/llvm-objcopy'
     nm = shutil.which('llvm-nm') or '/opt/homebrew/opt/llvm/bin/llvm-nm'
     # UNIXNU_UEFI is the Mu-Silicium checkout when the unixnu driver runs this script.
@@ -416,7 +416,7 @@ def assemble(source, va, symbols, workdir):
     asm, obj, elf, binary = (workdir / name for name in ('cave.S', 'cave.o', 'cave.elf', 'cave.bin'))
     asm.write_text(source)
     clang = shutil.which('clang') or '/opt/homebrew/opt/llvm/bin/clang'
-    lld = shutil.which('ld.lld') or '/opt/homebrew/opt/llvm/bin/ld.lld'
+    lld = shutil.which('ld.lld') or '/opt/homebrew/opt/llvm/bin/ld.lld' if Path('/opt/homebrew/opt/llvm/bin/ld.lld').is_file() else '/opt/homebrew/opt/lld/bin/ld.lld'
     objcopy = shutil.which('llvm-objcopy') or '/opt/homebrew/opt/llvm/bin/llvm-objcopy'
     subprocess.run([clang, '--target=aarch64-none-elf', '-c', asm, '-o', obj], check=True)
     subprocess.run([lld, f'-Ttext={va:#x}', *[f'--defsym={name}={value:#x}' for name, value in symbols.items()], '-e', '_start', obj, '-o', elf], check=True)
