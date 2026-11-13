@@ -60,9 +60,11 @@ workflows:
       - name: Set up the workspace
         script: |
           set -e
-          ln -sfn "$CM_BUILD_DIR" /tmp/ws-UniXNU-muyu
           rm -rf /tmp/ws && mkdir -p /tmp/ws
-          mv /tmp/ws-UniXNU-muyu /tmp/ws/UniXNU-muyu
+          # Real copy, not a symlink: the GMU/SMMU generator scripts resolve the
+          # workspace from __file__'s realpath and expect <ws>/UniXNU-muyu to be a
+          # true directory (a symlink resolves outside the workspace and breaks them).
+          cp -a "$CM_BUILD_DIR" /tmp/ws/UniXNU-muyu
           cp -r /tmp/ws/UniXNU-muyu/fw /tmp/ws/fw
           cd /tmp/ws
           echo "workspace: $(pwd)"
