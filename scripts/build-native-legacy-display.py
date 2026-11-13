@@ -14,7 +14,9 @@ def run(cmd,**kw):
     if c and 'clang' in c[0] and '-Wno-incompatible-sysroot' not in c:c.insert(1,'-Wno-incompatible-sysroot')
     try:return subprocess.check_output(c,timeout=90,stderr=subprocess.STDOUT,**kw)
     except subprocess.CalledProcessError as e:
-        print((e.output or b'').decode('utf-8','replace'))
+        out = e.output or ''
+        if isinstance(out, bytes): out = out.decode('utf-8','replace')
+        print(out)
         raise
 def require(v,why):
     if not v:raise SystemExit(why)
