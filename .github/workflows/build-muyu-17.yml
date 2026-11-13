@@ -72,6 +72,13 @@ jobs:
           git clone -q https://github.com/UniXNU/QcomGeniSpi.git UniXNU/drivers/QcomGeniSpi
           git -C UniXNU/drivers/QcomGeniSpi checkout -q eac47baefe6a5d2368a70351e6ad1b6361bedbe2
 
+      - name: Use the pre-seeded Apple public headers
+        # prepare-xnu-source.py restores Apple's omitted headers over the GitHub
+        # API; hosted CI runners share an anonymous quota (HTTP 403). The device
+        # repository carries the same files in fw/xnu-foundation/, so swap the
+        # network restore for the local one.
+        run: cp UniXNU-muyu/scripts/prepare-xnu-source-local.py UniXNU/scripts/prepare-xnu-source.py
+
       - name: Make the uke patch loop apply-once
         run: |
           python3 - <<'PY'
