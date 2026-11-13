@@ -1,0 +1,13 @@
+--- a/AdrenoHfiStartup.h
++++ b/AdrenoHfiStartup.h
+@@ -16,6 +16,10 @@
+     uint32_t ddr_addresses[8],ddr_data[16][8];
+     uint32_t acd_version,acd_enable_mask,acd_stride,acd_count,acd_data[32];
+     unsigned enable_ifpc;
++    /* muyu's GPU power probe (modes 26/27/29/30) selects the newer
++     * performance-table message and the GMU DCVS vote; advisory until the
++     * encoder grows support. */
++    unsigned perf_table_v2,gmu_dcvs_enable,gmu_dcvs_level,gmu_dcvs_repeat;
+ } AdrenoHfiStartupConfig;
+ typedef enum {
+     AdrenoHfiStageNone,AdrenoHfiStagePerformance,AdrenoHfiStageBandwidth,
