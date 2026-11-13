@@ -1,8 +1,8 @@
-diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
+﻿diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
 index e9f2f0c..a1c2d3e 100644
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
-@@ -3056,5 +3056,13 @@ vcattach(void)
+@@ -3056,5 +3056,17 @@ vcattach(void)
  {
  	vm_initialized = TRUE;
  
