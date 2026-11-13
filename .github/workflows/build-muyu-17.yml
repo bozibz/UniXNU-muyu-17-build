@@ -1,0 +1,235 @@
+name: build-muyu-17
+
+# Build the iPadOS 17.7.11 (21H461) muyu XNU kernel, the Data seed and the payload
+# on a macOS runner. The kernel needs macOS: xnu's makefiles are driven with
+# xcodebuild and the iPhoneOS SDK, and MIG ships only inside Xcode.
+#
+# This workflow is dispatch-only. Artifacts stay private to this repository.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-muyu-17-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CACHE_SCHEMA: v6-muyu-17
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          path: UniXNU-muyu
+
+      - name: Check out UniXNU
+        uses: actions/checkout@v4
+        with:
+          repository: Allenwdk/UniXNU
+          ref: uke
+          path: UniXNU
+          submodules: recursive
+
+      - name: Record the UniXNU revision
+        id: base
+        working-directory: UniXNU
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-${{ hashFiles('UniXNU-muyu/.github/workflows/build-muyu-17.yml') }}
+          restore-keys: brew-${{ runner.os }}-
+
+      - name: Restore the build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            UniXNU/out
+            UniXNU/build
+            UniXNU-muyu/.cache
+          key: unixnu-build-${{ env.CACHE_SCHEMA }}-${{ steps.base.outputs.sha }}-${{ hashFiles('UniXNU-muyu/board.toml', 'UniXNU-muyu/feeds.toml', 'UniXNU-muyu/unixnu.lock', 'UniXNU-muyu/configs/**', 'UniXNU-muyu/scripts/**', 'UniXNU-muyu/patches/**', 'UniXNU-muyu/package/**', 'UniXNU-muyu/drivers/**', 'UniXNU-muyu/kits/**') }}
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun -sdk iphoneos -find mig || echo 'mig not found for iphoneos'
+
+      - name: Install the host tools
+        run: |
+          brew install cmake ninja unifdef llvm mtools dtc
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the tools unixnu checks for
+        run: |
+          for tool in git make clang cmake ninja unifdef mtools dtc xcodebuild; do
+            printf '%-10s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+
+      - name: Fetch the Apple references
+        working-directory: UniXNU
+        run: |
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
+                        corecrypto-2023 IOStorageFamily -D ../UniXNU-muyu
+
+      - name: Fetch the target IPSW members
+        working-directory: UniXNU
+        run: ./unixnu ipsw fetch -D ../UniXNU-muyu | tee ipsw.log
+
+      - name: Bootstrap kernel and prelinked candidate
+        working-directory: UniXNU
+        run: |
+          ./unixnu defconfig bootstrap_defconfig -D ../UniXNU-muyu
+          ./unixnu build kernel -D ../UniXNU-muyu
+          test -f out/muyu/kernel/kernel.macho
+          test -f out/muyu/kernel/kernel.json
+          mkdir -p out/muyu/tree/build/native-prelink
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-mobile-graphics-candidate.json
+          cp out/muyu/kernel/kernel.macho \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho
+          cp out/muyu/kernel/kernel.json \
+             out/muyu/tree/build/native-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.json
+          rm -f out/muyu/kernel/kernel.macho out/muyu/kernel/kernel.json
+          ls -l out/muyu/tree/build/native-prelink/
+
+      - name: Seed the display ABI observation cache
+        working-directory: UniXNU
+        run: |
+          mkdir -p out/muyu/tree/build/display-analysis
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('out/muyu/tree/build/display-analysis/mobile-graphics-legacy-abi.json')
+          if not p.exists():
+              p.write_text(json.dumps({'runtime_metadata_checkpoint_sha256': '3044c2beff552911605994c0dc7aa73182066cbb5aed0b396999ceeb5a96da2b'}) + '\n')
+          PY
+
+      - name: Stage the kernelcache for the archive builders
+        working-directory: UniXNU
+        run: |
+          workspace=out/muyu/tree
+          mkdir -p "$workspace/.cache/firmware/kernelcache.macho"
+          source=$(find out/ipsw -name 'kernelcache.decompressed' -print -quit)
+          test -n "$source"
+          echo "kernelcache: $source"
+          cp "$source" "$workspace/.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed"
+
+      - name: Build and prelink the full kernel
+        working-directory: UniXNU
+        run: |
+          ./unixnu defconfig muyu-userland_defconfig -D ../UniXNU-muyu
+          ./unixnu build kernel -D ../UniXNU-muyu
+
+      - name: Save the kernel before the disk cleanup
+        working-directory: UniXNU
+        run: |
+          mkdir -p out/saved-kernel
+          cp out/muyu/kernel/kernel.macho out/muyu/kernel/kernel.json out/saved-kernel/
+          cp -r out/muyu/logs out/saved-kernel/logs 2>/dev/null || true
+
+      - name: Free disk space for the Data seed
+        working-directory: UniXNU
+        run: |
+          rm -rf out/muyu/tree out/feeds out/ipsw/21H461/kernelcache.decompressed
+          df -h .
+
+      - name: Fetch the OS member for the Data seed
+        working-directory: UniXNU
+        run: ./unixnu ipsw fetch OS -D ../UniXNU-muyu | tee ipsw-os.log
+
+      - name: Build the Data seed
+        working-directory: UniXNU
+        run: |
+          mount=.cache/firmware/target-volumes/os-mount
+          mkdir -p "$mount"
+          dmg=$(find out/ipsw -name '044-76040-038.dmg' -print -quit)
+          test -n "$dmg"
+          echo "OS image: $dmg"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          python3 scripts/prepare-owner-data-fixture.py
+          ls -l build/owner-data-fixture/
+          cat build/owner-data-fixture/seed.json
+          python3 -c "from pathlib import Path; import sys; sys.path.insert(0, 'drivers/DarwinBoot/Test'); import packed_ramdisk; packed_ramdisk.pack(Path('build/owner-data-fixture/owner-data-32.cdr'), Path('build/owner-data-fixture/owner-data-32.dbr'))"
+          python3 scripts/seed-data-grow.py --gib 214 \
+            build/owner-data-fixture/owner-data-32.dbr \
+            build/owner-data-fixture/owner-data-214.dbr \
+            | tee build/owner-data-fixture/grown.json
+          ls -l build/owner-data-fixture/
+
+      - name: Bundle the unchanged IPSW trust caches
+        working-directory: UniXNU
+        run: |
+          mkdir -p artifacts
+          names=$(./unixnu ipsw info -D ../UniXNU-muyu)
+          echo "$names"
+          static=$(echo "$names" | grep -E '  StaticTrustCache ' | awk '{print $NF}')
+          system=$(echo "$names" | grep -E '  Cryptex1,SystemTrustCache ' | awk '{print $NF}')
+          test -n "$static"
+          test -n "$system"
+          static_path="out/ipsw/21H461/$(basename "$static")"
+          system_path="out/ipsw/21H461/$(basename "$system")"
+          test -f "$static_path"
+          test -f "$system_path"
+          python3 scripts/bundle-ipsw-trust.py artifacts/static-system.bundle "$static_path" "$system_path"
+          want=7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7
+          have=$(shasum -a 256 artifacts/static-system.bundle | awk '{print $1}')
+          echo "bundle sha256: $have"
+          echo "want: $want"
+          if [ "$have" != "$want" ]; then
+            echo "trust bundle differs from the pinned board bundle; the payload uses --owner-trust-cache instead"
+            echo "owner=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build the payload
+        working-directory: UniXNU
+        run: |
+          extra="--trust-cache $(pwd)/artifacts/static-system.bundle"
+          if [ "${owner:-0}" = "1" ]; then extra="--owner-trust-cache $(pwd)/artifacts/static-system.bundle"; fi
+          ./unixnu build payload -D ../UniXNU-muyu \
+            --kernel out/saved-kernel/kernel.macho \
+            $extra \
+            --data-ramdisk "$(pwd)/build/owner-data-fixture/owner-data-214.dbr" \
+            --unique-chip-id 0000000000000001 \
+            | tee payload.log
+          test -f out/muyu/payload/payload.img
+
+      - name: Collect the artifacts
+        working-directory: UniXNU
+        if: always()
+        run: |
+          cp out/saved-kernel/kernel.macho out/saved-kernel/kernel.json artifacts/ 2>/dev/null || true
+          cp -r out/saved-kernel/logs artifacts/logs 2>/dev/null || true
+          cp out/muyu/payload/payload.img out/muyu/payload/payload.json artifacts/ 2>/dev/null || true
+          cp build/owner-data-fixture/owner-data-214.dbr build/owner-data-fixture/owner-data-214.dbr.json artifacts/ 2>/dev/null || true
+          cp build/owner-data-fixture/seed.json build/owner-data-fixture/grown.json artifacts/ 2>/dev/null || true
+          cp ipsw.log payload.log artifacts/ 2>/dev/null || true
+          ( cd artifacts && shasum -a 256 * ) > artifacts/SHA256SUMS.txt || true
+          ls -l artifacts
+
+      - name: Upload the artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: muyu-17-build
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
